@@ -1,0 +1,757 @@
+import { create } from 'zustand'
+import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware'
+import { get as idbGet, set as idbSet, del as idbDel } from 'idb-keyval'
+import { addMonths, format, parseISO } from 'date-fns'
+import type {
+  Activity,
+  AttendanceRecord,
+  AttendanceStatus,
+  Bed,
+  Complaint,
+  ComplaintComment,
+  Expense,
+  GateLog,
+  HDocument,
+  Hostel,
+  Hosteler,
+  ID,
+  Invoice,
+  InvoiceItem,
+  LeaveRequest,
+  LeaveStatus,
+  Meal,
+  MealOptOut,
+  MessFeedback,
+  MessMenuEntry,
+  Notice,
+  Organization,
+  Payment,
+  Plan,
+  Room,
+  Session,
+  Settings,
+  Staff,
+  Visitor,
+} from '@/types'
+import { nowISO, today, uid } from '@/lib/utils'
+import { buildDemoData } from './seed'
+
+/* ------------------------------------------------------------------ */
+/* Data shape                                                          */
+/* ------------------------------------------------------------------ */
+
+export interface DB {
+  org: Organization | null
+  settings: Settings
+  hostels: Hostel[]
+  rooms: Room[]
+  beds: Bed[]
+  hostelers: Hosteler[]
+  documents: HDocument[]
+  invoices: Invoice[]
+  payments: Payment[]
+  gateLogs: GateLog[]
+  messMenu: MessMenuEntry[]
+  mealOptOuts: MealOptOut[]
+  messFeedback: MessFeedback[]
+  attendance: AttendanceRecord[]
+  leaves: LeaveRequest[]
+  complaints: Complaint[]
+  visitors: Visitor[]
+  expenses: Expense[]
+  notices: Notice[]
+  staff: Staff[]
+  activities: Activity[]
+  invoiceSeq: number
+  receiptSeq: number
+}
+
+export const defaultSettings: Settings = {
+  rentDueDay: 5,
+  lateFeePerDay: 50,
+  receiptPrefix: 'RCPT',
+  defaultSecurityDeposit: 5000,
+  messMonthlyCharge: 3000,
+  nightCurfew: '22:00',
+  currencySymbol: '₹',
+}
+
+export function emptyDB(): DB {
+  return {
+    org: null,
+    settings: { ...defaultSettings },
+    hostels: [],
+    rooms: [],
+    beds: [],
+    hostelers: [],
+    documents: [],
+    invoices: [],
+    payments: [],
+    gateLogs: [],
+    messMenu: [],
+    mealOptOuts: [],
+    messFeedback: [],
+    attendance: [],
+    leaves: [],
+    complaints: [],
+    visitors: [],
+    expenses: [],
+    notices: [],
+    staff: [],
+    activities: [],
+    invoiceSeq: 1000,
+    receiptSeq: 5000,
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Action input types                                                  */
+/* ------------------------------------------------------------------ */
+
+export type HostelerInput = Omit<
+  Hosteler,
+  'id' | 'createdAt' | 'roomId' | 'bedId' | 'status' | 'checkOutDate' | 'depositRefunded'
+>
+
+export interface AdmitInput {
+  hosteler: HostelerInput
+  bedId: ID | null
+  reserveOnly: boolean // true = hold bed, check in later
+  depositPayment: { amount: number; mode: Payment['mode']; reference: string } | null
+  generateFirstInvoice: boolean
+}
+
+export interface CheckOutInput {
+  date: string
+  depositRefund: number
+  deductionNote: string
+}
+
+export type RoomInput = Omit<Room, 'id'>
+
+/* ------------------------------------------------------------------ */
+/* Store                                                               */
+/* ------------------------------------------------------------------ */
+
+export interface AppState extends DB {
+  session: Session | null
+  currentHostelId: ID | 'all'
+  hydrated: boolean
+
+  // auth & workspace
+  login: (email: string, password: string) => boolean
+  loginHosteler: (phone: string, pin: string) => boolean
+  logout: () => void
+  signup: (input: { orgName: string; ownerName: string; email: string; phone: string; password: string }) => void
+  loadDemo: () => void
+  resetWorkspace: () => void
+  updateOrg: (patch: Partial<Organization>) => void
+  setPlan: (plan: Plan) => void
+  updateSettings: (patch: Partial<Settings>) => void
+  setCurrentHostel: (id: ID | 'all') => void
+
+  // hostels
+  addHostel: (h: Omit<Hostel, 'id' | 'createdAt'>) => ID
+  updateHostel: (id: ID, patch: Partial<Hostel>) => void
+  deleteHostel: (id: ID) => { ok: boolean; error?: string }
+
+  // rooms & beds
+  addRoom: (r: RoomInput) => ID
+  addRoomsBulk: (base: Omit<RoomInput, 'number'>, numbers: string[]) => number
+  updateRoom: (id: ID, patch: Partial<RoomInput>) => { ok: boolean; error?: string }
+  deleteRoom: (id: ID) => { ok: boolean; error?: string }
+
+  // hostelers
+  admitHosteler: (input: AdmitInput) => ID
+  updateHosteler: (id: ID, patch: Partial<Hosteler>) => void
+  deleteHosteler: (id: ID) => void
+  confirmCheckIn: (hostelerId: ID, date: string) => void
+  transferBed: (hostelerId: ID, bedId: ID) => { ok: boolean; error?: string }
+  checkOut: (hostelerId: ID, input: CheckOutInput) => void
+
+  // documents
+  addDocument: (d: Omit<HDocument, 'id' | 'uploadedAt'>) => ID
+  updateDocument: (id: ID, patch: Partial<HDocument>) => void
+  deleteDocument: (id: ID) => void
+
+  // fees
+  generateInvoices: (month: string, hostelId: ID | 'all') => number
+  createInvoice: (inv: { hostelerId: ID; month: string; items: InvoiceItem[]; dueDate: string }) => ID
+  updateInvoice: (id: ID, patch: Partial<Pick<Invoice, 'items' | 'dueDate'>>) => void
+  cancelInvoice: (id: ID) => void
+  recordPayment: (p: Omit<Payment, 'id' | 'receiptNo' | 'createdAt' | 'hostelId'>) => Payment
+  deletePayment: (id: ID) => void
+
+  // gate
+  addGateLog: (hostelerId: ID, direction: 'in' | 'out', note?: string) => void
+
+  // mess
+  setMenuEntry: (hostelId: ID, day: number, meal: Meal, items: string) => void
+  toggleOptOut: (hostelerId: ID, date: string, meal: Meal) => void
+  addMessFeedback: (f: Omit<MessFeedback, 'id' | 'createdAt' | 'hostelId'>) => void
+
+  // attendance & leave
+  markAttendance: (hostelerId: ID, date: string, status: AttendanceStatus) => void
+  markAllPresent: (hostelId: ID | 'all', date: string) => number
+  requestLeave: (l: Omit<LeaveRequest, 'id' | 'createdAt' | 'status' | 'decidedAt' | 'hostelId'>) => void
+  decideLeave: (id: ID, status: LeaveStatus) => void
+
+  // complaints
+  addComplaint: (c: Omit<Complaint, 'id' | 'createdAt' | 'status' | 'comments' | 'resolvedAt' | 'assignedStaffId'>) => ID
+  updateComplaint: (id: ID, patch: Partial<Complaint>) => void
+  addComplaintComment: (id: ID, by: string, text: string) => void
+  deleteComplaint: (id: ID) => void
+
+  // visitors
+  addVisitor: (v: Omit<Visitor, 'id' | 'inTime' | 'outTime' | 'hostelId'>) => void
+  checkoutVisitor: (id: ID) => void
+
+  // expenses
+  addExpense: (e: Omit<Expense, 'id' | 'createdAt'>) => void
+  updateExpense: (id: ID, patch: Partial<Expense>) => void
+  deleteExpense: (id: ID) => void
+
+  // notices
+  addNotice: (n: Omit<Notice, 'id' | 'createdAt'>) => void
+  updateNotice: (id: ID, patch: Partial<Notice>) => void
+  deleteNotice: (id: ID) => void
+
+  // staff
+  addStaff: (s: Omit<Staff, 'id'>) => void
+  updateStaff: (id: ID, patch: Partial<Staff>) => void
+  deleteStaff: (id: ID) => void
+}
+
+const idbStorage: StateStorage = {
+  getItem: async (name) => (await idbGet<string>(name)) ?? null,
+  setItem: async (name, value) => {
+    await idbSet(name, value)
+  },
+  removeItem: async (name) => {
+    await idbDel(name)
+  },
+}
+
+function activity(message: string, kind: Activity['kind']): Activity {
+  return { id: uid('act_'), message, kind, at: nowISO() }
+}
+
+function pushActivity(list: Activity[], a: Activity): Activity[] {
+  return [a, ...list].slice(0, 200)
+}
+
+function dueDateFor(month: string, dueDay: number): string {
+  const d = Math.min(Math.max(dueDay, 1), 28)
+  return `${month}-${String(d).padStart(2, '0')}`
+}
+
+export const useStore = create<AppState>()(
+  persist(
+    (set, get) => {
+      const log = (message: string, kind: Activity['kind']) =>
+        set((s) => ({ activities: pushActivity(s.activities, activity(message, kind)) }))
+
+      const hostelerName = (id: ID) => get().hostelers.find((h) => h.id === id)?.name ?? 'Hosteler'
+
+      return {
+        ...emptyDB(),
+        session: null,
+        currentHostelId: 'all',
+        hydrated: false,
+
+        /* ---------------- auth ---------------- */
+        login: (email, password) => {
+          const org = get().org
+          if (org && org.email.toLowerCase() === email.trim().toLowerCase() && org.password === password) {
+            set({ session: { kind: 'admin' } })
+            return true
+          }
+          return false
+        },
+        loginHosteler: (phone, pin) => {
+          const h = get().hostelers.find(
+            (x) => x.phone.replace(/\D/g, '').endsWith(phone.replace(/\D/g, '').slice(-10)) && x.portalPin === pin && x.status !== 'checked_out',
+          )
+          if (!h) return false
+          set({ session: { kind: 'hosteler', hostelerId: h.id } })
+          return true
+        },
+        logout: () => set({ session: null }),
+        signup: (input) => {
+          const db = emptyDB()
+          db.org = {
+            id: uid('org_'),
+            name: input.orgName,
+            ownerName: input.ownerName,
+            email: input.email.trim(),
+            phone: input.phone,
+            password: input.password,
+            plan: 'free',
+            createdAt: nowISO(),
+          }
+          set({ ...db, session: { kind: 'admin' }, currentHostelId: 'all' })
+        },
+        loadDemo: () => {
+          set({ ...buildDemoData(), session: { kind: 'admin' }, currentHostelId: 'all' })
+        },
+        resetWorkspace: () => {
+          const org = get().org
+          set({ ...emptyDB(), org, currentHostelId: 'all' })
+        },
+        updateOrg: (patch) => set((s) => ({ org: s.org ? { ...s.org, ...patch } : s.org })),
+        setPlan: (plan) => set((s) => ({ org: s.org ? { ...s.org, plan } : s.org })),
+        updateSettings: (patch) => set((s) => ({ settings: { ...s.settings, ...patch } })),
+        setCurrentHostel: (id) => set({ currentHostelId: id }),
+
+        /* ---------------- hostels ---------------- */
+        addHostel: (h) => {
+          const hostel: Hostel = { ...h, id: uid('hst_'), createdAt: nowISO() }
+          set((s) => ({ hostels: [...s.hostels, hostel] }))
+          log(`Hostel "${hostel.name}" created`, 'room')
+          return hostel.id
+        },
+        updateHostel: (id, patch) => set((s) => ({ hostels: s.hostels.map((h) => (h.id === id ? { ...h, ...patch } : h)) })),
+        deleteHostel: (id) => {
+          const s = get()
+          if (s.hostelers.some((h) => h.hostelId === id && h.status !== 'checked_out'))
+            return { ok: false, error: 'This hostel still has active or reserved hostelers.' }
+          set({
+            hostels: s.hostels.filter((h) => h.id !== id),
+            rooms: s.rooms.filter((r) => r.hostelId !== id),
+            beds: s.beds.filter((b) => b.hostelId !== id),
+            messMenu: s.messMenu.filter((m) => m.hostelId !== id),
+            staff: s.staff.filter((m) => m.hostelId !== id),
+            currentHostelId: s.currentHostelId === id ? 'all' : s.currentHostelId,
+          })
+          return { ok: true }
+        },
+
+        /* ---------------- rooms ---------------- */
+        addRoom: (r) => {
+          const room: Room = { ...r, id: uid('rm_') }
+          const beds: Bed[] = Array.from({ length: r.sharing }, (_, i) => ({
+            id: uid('bed_'),
+            roomId: room.id,
+            hostelId: r.hostelId,
+            label: String.fromCharCode(65 + i),
+            hostelerId: null,
+          }))
+          set((s) => ({ rooms: [...s.rooms, room], beds: [...s.beds, ...beds] }))
+          return room.id
+        },
+        addRoomsBulk: (base, numbers) => {
+          const existing = new Set(get().rooms.filter((r) => r.hostelId === base.hostelId).map((r) => r.number))
+          let count = 0
+          for (const n of numbers) {
+            if (!n || existing.has(n)) continue
+            get().addRoom({ ...base, number: n })
+            count++
+          }
+          if (count) log(`${count} rooms added`, 'room')
+          return count
+        },
+        updateRoom: (id, patch) => {
+          const s = get()
+          const room = s.rooms.find((r) => r.id === id)
+          if (!room) return { ok: false, error: 'Room not found' }
+          let beds = s.beds
+          if (patch.sharing !== undefined && patch.sharing !== room.sharing) {
+            const roomBeds = beds.filter((b) => b.roomId === id).sort((a, b) => a.label.localeCompare(b.label))
+            if (patch.sharing > roomBeds.length) {
+              const extra: Bed[] = []
+              for (let i = roomBeds.length; i < patch.sharing; i++) {
+                extra.push({ id: uid('bed_'), roomId: id, hostelId: room.hostelId, label: String.fromCharCode(65 + i), hostelerId: null })
+              }
+              beds = [...beds, ...extra]
+            } else {
+              const toRemove = roomBeds.length - patch.sharing
+              const empty = roomBeds.filter((b) => !b.hostelerId).reverse().slice(0, toRemove)
+              if (empty.length < toRemove)
+                return { ok: false, error: 'Not enough empty beds to reduce sharing. Move hostelers first.' }
+              const removeIds = new Set(empty.map((b) => b.id))
+              beds = beds.filter((b) => !removeIds.has(b.id))
+              // relabel remaining beds
+              const remaining = beds.filter((b) => b.roomId === id).sort((a, b) => a.label.localeCompare(b.label))
+              const relabel = new Map(remaining.map((b, i) => [b.id, String.fromCharCode(65 + i)]))
+              beds = beds.map((b) => (relabel.has(b.id) ? { ...b, label: relabel.get(b.id)! } : b))
+            }
+          }
+          set({ rooms: s.rooms.map((r) => (r.id === id ? { ...r, ...patch } : r)), beds })
+          return { ok: true }
+        },
+        deleteRoom: (id) => {
+          const s = get()
+          if (s.beds.some((b) => b.roomId === id && b.hostelerId))
+            return { ok: false, error: 'Room has occupied beds. Move or check out hostelers first.' }
+          set({ rooms: s.rooms.filter((r) => r.id !== id), beds: s.beds.filter((b) => b.roomId !== id) })
+          return { ok: true }
+        },
+
+        /* ---------------- hostelers ---------------- */
+        admitHosteler: ({ hosteler, bedId, reserveOnly, depositPayment, generateFirstInvoice }) => {
+          const s = get()
+          const bed = bedId ? s.beds.find((b) => b.id === bedId && !b.hostelerId) : undefined
+          const h: Hosteler = {
+            ...hosteler,
+            id: uid('hos_'),
+            roomId: bed?.roomId ?? null,
+            bedId: bed?.id ?? null,
+            hostelId: bed?.hostelId ?? hosteler.hostelId,
+            status: reserveOnly ? 'reserved' : 'active',
+            checkOutDate: null,
+            depositRefunded: null,
+            createdAt: nowISO(),
+          }
+          set((st) => ({
+            hostelers: [...st.hostelers, h],
+            beds: bed ? st.beds.map((b) => (b.id === bed.id ? { ...b, hostelerId: h.id } : b)) : st.beds,
+            activities: pushActivity(
+              st.activities,
+              activity(reserveOnly ? `${h.name} reserved a bed` : `${h.name} checked in`, 'checkin'),
+            ),
+          }))
+          if (!reserveOnly) {
+            set((st) => ({
+              gateLogs: [{ id: uid('gl_'), hostelerId: h.id, hostelId: h.hostelId, direction: 'in', time: nowISO(), note: 'Check-in' }, ...st.gateLogs],
+            }))
+          }
+          if (depositPayment && depositPayment.amount > 0) {
+            get().recordPayment({
+              invoiceId: null,
+              hostelerId: h.id,
+              amount: depositPayment.amount,
+              mode: depositPayment.mode,
+              reference: depositPayment.reference,
+              date: today(),
+              note: 'Security deposit',
+            })
+          }
+          if (generateFirstInvoice && !reserveOnly) {
+            const month = h.checkInDate.slice(0, 7)
+            const items: InvoiceItem[] = [{ label: `Room rent – ${month}`, amount: h.monthlyRent }]
+            if (h.messOpted) items.push({ label: 'Mess charges', amount: get().settings.messMonthlyCharge })
+            get().createInvoice({ hostelerId: h.id, month, items, dueDate: h.checkInDate })
+          }
+          return h.id
+        },
+        updateHosteler: (id, patch) =>
+          set((s) => ({ hostelers: s.hostelers.map((h) => (h.id === id ? { ...h, ...patch } : h)) })),
+        deleteHosteler: (id) => {
+          const s = get()
+          set({
+            hostelers: s.hostelers.filter((h) => h.id !== id),
+            beds: s.beds.map((b) => (b.hostelerId === id ? { ...b, hostelerId: null } : b)),
+            documents: s.documents.filter((d) => d.hostelerId !== id),
+            invoices: s.invoices.filter((d) => d.hostelerId !== id),
+            payments: s.payments.filter((d) => d.hostelerId !== id),
+            gateLogs: s.gateLogs.filter((d) => d.hostelerId !== id),
+            mealOptOuts: s.mealOptOuts.filter((d) => d.hostelerId !== id),
+            attendance: s.attendance.filter((d) => d.hostelerId !== id),
+            leaves: s.leaves.filter((d) => d.hostelerId !== id),
+            visitors: s.visitors.filter((d) => d.hostelerId !== id),
+          })
+        },
+        confirmCheckIn: (hostelerId, date) => {
+          set((s) => ({
+            hostelers: s.hostelers.map((h) => (h.id === hostelerId ? { ...h, status: 'active', checkInDate: date } : h)),
+            gateLogs: [
+              { id: uid('gl_'), hostelerId, hostelId: s.hostelers.find((h) => h.id === hostelerId)?.hostelId ?? '', direction: 'in', time: nowISO(), note: 'Check-in' },
+              ...s.gateLogs,
+            ],
+          }))
+          log(`${hostelerName(hostelerId)} checked in`, 'checkin')
+        },
+        transferBed: (hostelerId, bedId) => {
+          const s = get()
+          const bed = s.beds.find((b) => b.id === bedId)
+          const h = s.hostelers.find((x) => x.id === hostelerId)
+          if (!bed || !h) return { ok: false, error: 'Not found' }
+          if (bed.hostelerId && bed.hostelerId !== hostelerId) return { ok: false, error: 'Bed is already occupied' }
+          const room = s.rooms.find((r) => r.id === bed.roomId)
+          set({
+            beds: s.beds.map((b) =>
+              b.id === bedId ? { ...b, hostelerId } : b.hostelerId === hostelerId ? { ...b, hostelerId: null } : b,
+            ),
+            hostelers: s.hostelers.map((x) =>
+              x.id === hostelerId ? { ...x, bedId, roomId: bed.roomId, hostelId: bed.hostelId } : x,
+            ),
+          })
+          log(`${h.name} moved to Room ${room?.number ?? ''}-${bed.label}`, 'room')
+          return { ok: true }
+        },
+        checkOut: (hostelerId, { date, depositRefund, deductionNote }) => {
+          const s = get()
+          const h = s.hostelers.find((x) => x.id === hostelerId)
+          if (!h) return
+          set({
+            hostelers: s.hostelers.map((x) =>
+              x.id === hostelerId
+                ? {
+                    ...x,
+                    status: 'checked_out',
+                    checkOutDate: date,
+                    depositRefunded: depositRefund,
+                    bedId: null,
+                    roomId: null,
+                    notes: deductionNote ? `${x.notes ? x.notes + '\n' : ''}Checkout: ${deductionNote}` : x.notes,
+                  }
+                : x,
+            ),
+            beds: s.beds.map((b) => (b.hostelerId === hostelerId ? { ...b, hostelerId: null } : b)),
+            gateLogs: [{ id: uid('gl_'), hostelerId, hostelId: h.hostelId, direction: 'out', time: nowISO(), note: 'Check-out' }, ...s.gateLogs],
+            activities: pushActivity(s.activities, activity(`${h.name} checked out`, 'checkout')),
+          })
+        },
+
+        /* ---------------- documents ---------------- */
+        addDocument: (d) => {
+          const doc: HDocument = { ...d, id: uid('doc_'), uploadedAt: nowISO() }
+          set((s) => ({ documents: [doc, ...s.documents] }))
+          log(`Document uploaded for ${hostelerName(d.hostelerId)}`, 'document')
+          return doc.id
+        },
+        updateDocument: (id, patch) =>
+          set((s) => ({ documents: s.documents.map((d) => (d.id === id ? { ...d, ...patch } : d)) })),
+        deleteDocument: (id) => set((s) => ({ documents: s.documents.filter((d) => d.id !== id) })),
+
+        /* ---------------- fees ---------------- */
+        generateInvoices: (month, hostelId) => {
+          const s = get()
+          const existing = new Set(s.invoices.filter((i) => i.month === month && !i.cancelled).map((i) => i.hostelerId))
+          const targets = s.hostelers.filter(
+            (h) =>
+              h.status === 'active' &&
+              (hostelId === 'all' || h.hostelId === hostelId) &&
+              !existing.has(h.id) &&
+              h.checkInDate.slice(0, 7) <= month,
+          )
+          for (const h of targets) {
+            const items: InvoiceItem[] = [{ label: `Room rent – ${month}`, amount: h.monthlyRent }]
+            if (h.messOpted) items.push({ label: 'Mess charges', amount: s.settings.messMonthlyCharge })
+            get().createInvoice({ hostelerId: h.id, month, items, dueDate: dueDateFor(month, s.settings.rentDueDay) })
+          }
+          if (targets.length) log(`${targets.length} invoices generated for ${month}`, 'payment')
+          return targets.length
+        },
+        createInvoice: ({ hostelerId, month, items, dueDate }) => {
+          const s = get()
+          const h = s.hostelers.find((x) => x.id === hostelerId)
+          const seq = s.invoiceSeq + 1
+          const inv: Invoice = {
+            id: uid('inv_'),
+            number: `INV-${seq}`,
+            hostelerId,
+            hostelId: h?.hostelId ?? '',
+            month,
+            items,
+            total: items.reduce((a, i) => a + Number(i.amount || 0), 0),
+            dueDate,
+            createdAt: nowISO(),
+            cancelled: false,
+          }
+          set({ invoices: [inv, ...s.invoices], invoiceSeq: seq })
+          return inv.id
+        },
+        updateInvoice: (id, patch) =>
+          set((s) => ({
+            invoices: s.invoices.map((i) =>
+              i.id === id
+                ? { ...i, ...patch, total: (patch.items ?? i.items).reduce((a, x) => a + Number(x.amount || 0), 0) }
+                : i,
+            ),
+          })),
+        cancelInvoice: (id) =>
+          set((s) => ({ invoices: s.invoices.map((i) => (i.id === id ? { ...i, cancelled: true } : i)) })),
+        recordPayment: (p) => {
+          const s = get()
+          const h = s.hostelers.find((x) => x.id === p.hostelerId)
+          const seq = s.receiptSeq + 1
+          const pay: Payment = {
+            ...p,
+            id: uid('pay_'),
+            receiptNo: `${s.settings.receiptPrefix}-${seq}`,
+            hostelId: h?.hostelId ?? '',
+            createdAt: nowISO(),
+          }
+          set({
+            payments: [pay, ...s.payments],
+            receiptSeq: seq,
+            activities: pushActivity(s.activities, activity(`₹${pay.amount.toLocaleString('en-IN')} received from ${h?.name ?? 'hosteler'}`, 'payment')),
+          })
+          return pay
+        },
+        deletePayment: (id) => set((s) => ({ payments: s.payments.filter((p) => p.id !== id) })),
+
+        /* ---------------- gate ---------------- */
+        addGateLog: (hostelerId, direction, note = '') => {
+          const h = get().hostelers.find((x) => x.id === hostelerId)
+          if (!h) return
+          set((s) => ({
+            gateLogs: [{ id: uid('gl_'), hostelerId, hostelId: h.hostelId, direction, time: nowISO(), note }, ...s.gateLogs],
+          }))
+        },
+
+        /* ---------------- mess ---------------- */
+        setMenuEntry: (hostelId, day, meal, items) =>
+          set((s) => {
+            const rest = s.messMenu.filter((m) => !(m.hostelId === hostelId && m.day === day && m.meal === meal))
+            return { messMenu: [...rest, { hostelId, day, meal, items }] }
+          }),
+        toggleOptOut: (hostelerId, date, meal) =>
+          set((s) => {
+            const found = s.mealOptOuts.find((o) => o.hostelerId === hostelerId && o.date === date && o.meal === meal)
+            if (found) return { mealOptOuts: s.mealOptOuts.filter((o) => o.id !== found.id) }
+            const h = s.hostelers.find((x) => x.id === hostelerId)
+            return {
+              mealOptOuts: [
+                ...s.mealOptOuts,
+                { id: uid('opt_'), hostelerId, hostelId: h?.hostelId ?? '', date, meal, createdAt: nowISO() },
+              ],
+            }
+          }),
+        addMessFeedback: (f) => {
+          const h = get().hostelers.find((x) => x.id === f.hostelerId)
+          set((s) => ({
+            messFeedback: [{ ...f, id: uid('fb_'), hostelId: h?.hostelId ?? '', createdAt: nowISO() }, ...s.messFeedback],
+          }))
+        },
+
+        /* ---------------- attendance ---------------- */
+        markAttendance: (hostelerId, date, status) =>
+          set((s) => {
+            const h = s.hostelers.find((x) => x.id === hostelerId)
+            const rest = s.attendance.filter((a) => !(a.hostelerId === hostelerId && a.date === date))
+            return {
+              attendance: [...rest, { id: uid('att_'), hostelerId, hostelId: h?.hostelId ?? '', date, status }],
+            }
+          }),
+        markAllPresent: (hostelId, date) => {
+          const s = get()
+          const targets = s.hostelers.filter(
+            (h) => h.status === 'active' && (hostelId === 'all' || h.hostelId === hostelId),
+          )
+          const onLeave = new Set(
+            s.leaves.filter((l) => l.status === 'approved' && l.from <= date && l.to >= date).map((l) => l.hostelerId),
+          )
+          const marked = new Set(s.attendance.filter((a) => a.date === date).map((a) => a.hostelerId))
+          const add: AttendanceRecord[] = targets
+            .filter((h) => !marked.has(h.id))
+            .map((h) => ({
+              id: uid('att_'),
+              hostelerId: h.id,
+              hostelId: h.hostelId,
+              date,
+              status: onLeave.has(h.id) ? 'leave' : 'present',
+            }))
+          set({ attendance: [...s.attendance, ...add] })
+          return add.length
+        },
+        requestLeave: (l) => {
+          const h = get().hostelers.find((x) => x.id === l.hostelerId)
+          set((s) => ({
+            leaves: [
+              { ...l, id: uid('lv_'), hostelId: h?.hostelId ?? '', status: 'pending', createdAt: nowISO(), decidedAt: null },
+              ...s.leaves,
+            ],
+            activities: pushActivity(s.activities, activity(`${h?.name ?? 'Hosteler'} requested leave`, 'leave')),
+          }))
+        },
+        decideLeave: (id, status) => {
+          set((s) => ({
+            leaves: s.leaves.map((l) => (l.id === id ? { ...l, status, decidedAt: nowISO() } : l)),
+          }))
+          const l = get().leaves.find((x) => x.id === id)
+          if (l) log(`Leave ${status} for ${hostelerName(l.hostelerId)}`, 'leave')
+        },
+
+        /* ---------------- complaints ---------------- */
+        addComplaint: (c) => {
+          const comp: Complaint = {
+            ...c,
+            id: uid('cmp_'),
+            status: 'open',
+            assignedStaffId: null,
+            comments: [],
+            createdAt: nowISO(),
+            resolvedAt: null,
+          }
+          set((s) => ({
+            complaints: [comp, ...s.complaints],
+            activities: pushActivity(s.activities, activity(`New complaint: ${comp.title}`, 'complaint')),
+          }))
+          return comp.id
+        },
+        updateComplaint: (id, patch) =>
+          set((s) => ({
+            complaints: s.complaints.map((c) =>
+              c.id === id
+                ? {
+                    ...c,
+                    ...patch,
+                    resolvedAt:
+                      patch.status === 'resolved' ? nowISO() : patch.status ? null : c.resolvedAt,
+                  }
+                : c,
+            ),
+          })),
+        addComplaintComment: (id, by, text) => {
+          const comment: ComplaintComment = { id: uid('cc_'), by, text, at: nowISO() }
+          set((s) => ({
+            complaints: s.complaints.map((c) => (c.id === id ? { ...c, comments: [...c.comments, comment] } : c)),
+          }))
+        },
+        deleteComplaint: (id) => set((s) => ({ complaints: s.complaints.filter((c) => c.id !== id) })),
+
+        /* ---------------- visitors ---------------- */
+        addVisitor: (v) => {
+          const h = get().hostelers.find((x) => x.id === v.hostelerId)
+          set((s) => ({
+            visitors: [{ ...v, id: uid('vis_'), hostelId: h?.hostelId ?? '', inTime: nowISO(), outTime: null }, ...s.visitors],
+          }))
+        },
+        checkoutVisitor: (id) =>
+          set((s) => ({ visitors: s.visitors.map((v) => (v.id === id ? { ...v, outTime: nowISO() } : v)) })),
+
+        /* ---------------- expenses ---------------- */
+        addExpense: (e) => set((s) => ({ expenses: [{ ...e, id: uid('exp_'), createdAt: nowISO() }, ...s.expenses] })),
+        updateExpense: (id, patch) =>
+          set((s) => ({ expenses: s.expenses.map((e) => (e.id === id ? { ...e, ...patch } : e)) })),
+        deleteExpense: (id) => set((s) => ({ expenses: s.expenses.filter((e) => e.id !== id) })),
+
+        /* ---------------- notices ---------------- */
+        addNotice: (n) => set((s) => ({ notices: [{ ...n, id: uid('ntc_'), createdAt: nowISO() }, ...s.notices] })),
+        updateNotice: (id, patch) =>
+          set((s) => ({ notices: s.notices.map((n) => (n.id === id ? { ...n, ...patch } : n)) })),
+        deleteNotice: (id) => set((s) => ({ notices: s.notices.filter((n) => n.id !== id) })),
+
+        /* ---------------- staff ---------------- */
+        addStaff: (st) => set((s) => ({ staff: [...s.staff, { ...st, id: uid('stf_') }] })),
+        updateStaff: (id, patch) => set((s) => ({ staff: s.staff.map((x) => (x.id === id ? { ...x, ...patch } : x)) })),
+        deleteStaff: (id) => set((s) => ({ staff: s.staff.filter((x) => x.id !== id) })),
+      }
+    },
+    {
+      name: 'hostelhub-db',
+      version: 1,
+      storage: createJSONStorage(() => idbStorage),
+      partialize: (s) => {
+        // persist everything except functions and the hydration flag
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { hydrated, ...rest } = s
+        return Object.fromEntries(Object.entries(rest).filter(([, v]) => typeof v !== 'function')) as Partial<AppState>
+      },
+      onRehydrateStorage: () => () => {
+        useStore.setState({ hydrated: true })
+      },
+    },
+  ),
+)
+
+/** Months list helper: last n months as YYYY-MM, oldest first */
+export function lastMonths(n: number, from = new Date()): string[] {
+  return Array.from({ length: n }, (_, i) => format(addMonths(from, -(n - 1 - i)), 'yyyy-MM'))
+}
+
+export function monthFromDate(date: string): string {
+  return format(parseISO(date), 'yyyy-MM')
+}

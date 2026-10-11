@@ -320,7 +320,6 @@ export function buildDemoData(): DB {
         ['electricity', big ? int(28000, 36000) : int(18000, 24000), 'MPEB'],
         ['water', int(2500, 4000), 'Nagar Nigam'],
         ['groceries', big ? int(70000, 85000) : int(45000, 55000), 'Shree Kirana Store'],
-        ['salary', big ? 54000 : 52000, 'Staff salaries'],
         ['internet', 2999, 'JioFiber'],
         ['maintenance', int(2000, 9000), 'Local vendor'],
       ]
@@ -329,6 +328,17 @@ export function buildDemoData(): DB {
         if (date > d(now)) continue
         expenses.push({ id: id('exp_'), hostelId: hs.id, category, amount, date, paidTo, mode: category === 'salary' ? 'bank' : pick(['upi', 'cash', 'bank']), note: '', createdAt: `${date}T10:00:00.000Z` })
       }
+    }
+  }
+
+  // Salaries paid per staff member for past months (current month left unpaid)
+  for (const month of months.slice(0, -1)) {
+    for (const st of staff) {
+      const date = `${month}-01`
+      expenses.push({
+        id: id('exp_'), hostelId: st.hostelId, category: 'salary', amount: st.salary, date, paidTo: st.name, mode: 'bank',
+        note: `Salary ${format(new Date(`${month}-01T00:00:00`), 'MMM yyyy')}`, createdAt: `${date}T10:00:00.000Z`,
+      })
     }
   }
 

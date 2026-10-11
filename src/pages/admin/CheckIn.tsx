@@ -8,7 +8,9 @@ import {
   Check,
   CheckCircle2,
   Clock,
+  Copy,
   FileText,
+  MessageCircle,
   Printer,
   RefreshCw,
   Trash2,
@@ -48,6 +50,8 @@ import {
   PersonalFields,
   SectionTitle,
   emptyProfile,
+  portalInviteText,
+  portalInviteWhatsApp,
   randomPin,
   readFile,
   validateGuardian,
@@ -452,6 +456,29 @@ export default function CheckIn() {
                 <p className="text-xs text-brand-700">PIN</p>
                 <p className="font-mono text-2xl font-bold tracking-[0.25em] text-brand-700">{done.pin}</p>
               </div>
+            </div>
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+              <a
+                href={portalInviteWhatsApp(done.name, done.phone, done.pin, hostelName(hostelId))}
+                target="_blank"
+                rel="noreferrer"
+                className="flex-1"
+              >
+                <Button variant="success" icon={<MessageCircle className="h-4 w-4" />} className="w-full">
+                  Send login on WhatsApp
+                </Button>
+              </a>
+              <Button
+                variant="outline"
+                icon={<Copy className="h-4 w-4" />}
+                onClick={() => {
+                  void navigator.clipboard
+                    ?.writeText(portalInviteText(done.name, done.phone, done.pin, hostelName(hostelId)))
+                    .then(() => toast.success('Login details copied'))
+                }}
+              >
+                Copy message
+              </Button>
             </div>
           </div>
           <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-center">

@@ -74,6 +74,30 @@ export function whatsappLink(phone: string): string {
   return `https://wa.me/91${cleanPhone(phone)}`
 }
 
+/** Direct portal login link with the phone pre-filled */
+export function portalLoginUrl(phone: string): string {
+  return `${window.location.origin}/portal/login?phone=${cleanPhone(phone)}`
+}
+
+/** Welcome message with portal login details, ready to send to the resident */
+export function portalInviteText(name: string, phone: string, pin: string, hostelName: string): string {
+  return [
+    `Hi ${name.split(' ')[0]}, welcome to ${hostelName}!`,
+    ``,
+    `Use the HostelHub resident portal to pay rent, see the mess menu, skip meals, raise complaints and apply for leave.`,
+    ``,
+    `Login: ${portalLoginUrl(phone)}`,
+    `Mobile: ${cleanPhone(phone)}`,
+    `PIN: ${pin}`,
+    ``,
+    `Please change your PIN after first login (Profile > Change PIN).`,
+  ].join('\n')
+}
+
+export function portalInviteWhatsApp(name: string, phone: string, pin: string, hostelName: string): string {
+  return `${whatsappLink(phone)}?text=${encodeURIComponent(portalInviteText(name, phone, pin, hostelName))}`
+}
+
 export function isValidPhone(p: string): boolean {
   return /^[6-9]\d{9}$/.test(cleanPhone(p)) && p.replace(/\D/g, '').length >= 10
 }

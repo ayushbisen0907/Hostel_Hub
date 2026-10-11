@@ -16,6 +16,7 @@ import {
   Pencil,
   Phone,
   Printer,
+  Send,
   Trash2,
   Upload,
   UserCheck,
@@ -61,6 +62,7 @@ import {
   SectionTitle,
   UploadDocModal,
   expiryState,
+  portalInviteWhatsApp,
   randomPin,
   readFile,
   validateGuardian,
@@ -610,6 +612,13 @@ export default function HostelerDetail() {
               </Button>
             )}
             {h.status !== 'checked_out' && (
+              <a href={portalInviteWhatsApp(h.name, h.phone, h.portalPin, hostelName(h.hostelId))} target="_blank" rel="noreferrer">
+                <Button variant="outline" size="sm" icon={<Send className="h-4 w-4" />}>
+                  Share portal login
+                </Button>
+              </a>
+            )}
+            {h.status !== 'checked_out' && (
               <Button variant="outline" size="sm" icon={<KeyRound className="h-4 w-4" />} onClick={resetPin}>
                 Reset portal PIN
               </Button>
@@ -1028,7 +1037,20 @@ export default function HostelerDetail() {
         onClose={() => setPinShown(null)}
         size="sm"
         title="New portal PIN"
-        footer={<Button onClick={() => setPinShown(null)}>Done</Button>}
+        footer={
+          <>
+            {pinShown && (
+              <a href={portalInviteWhatsApp(h.name, h.phone, pinShown, hostelName(h.hostelId))} target="_blank" rel="noreferrer">
+                <Button variant="success" icon={<MessageCircle className="h-4 w-4" />}>
+                  Send on WhatsApp
+                </Button>
+              </a>
+            )}
+            <Button variant="outline" onClick={() => setPinShown(null)}>
+              Done
+            </Button>
+          </>
+        }
       >
         <div className="text-center">
           <CheckCircle2 className="mx-auto mb-3 h-10 w-10 text-emerald-500" />

@@ -1,5 +1,5 @@
 import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { Link, Navigate, useNavigate } from 'react-router-dom'
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import { AlertCircle, ArrowLeft, BedDouble, Database, Smartphone } from 'lucide-react'
 import { useStore } from '@/store'
 import { Button, Card, Field, Input, confirm, toast } from '@/components/ui'
@@ -15,7 +15,8 @@ export default function PortalLogin() {
   const logout = useStore((s) => s.logout)
   const navigate = useNavigate()
 
-  const [phone, setPhone] = useState('')
+  const [params] = useSearchParams()
+  const [phone, setPhone] = useState(() => (params.get('phone') ?? '').replace(/\D/g, '').slice(-10))
   const [pin, setPin] = useState(['', '', '', ''])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)

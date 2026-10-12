@@ -23,6 +23,11 @@ import type {
 } from '@/types'
 import type { DB } from './index'
 import { defaultSettings } from './index'
+import { formatLoginId, generateTempPassword, hashPassword } from '@/lib/auth'
+
+/** Demo portal accounts (shown on the hosteler login page) */
+export const DEMO_HOSTELER = { loginId: 'SBH-0001', password: 'Hostel@123' }
+export const DEMO_FIRST_LOGIN = { loginId: 'SBH-0002', tempPassword: 'Welcome8' }
 
 // Small deterministic PRNG so the demo looks the same each time
 function rng(seed: number) {
@@ -68,8 +73,8 @@ export function buildDemoData(): DB {
   const iso = (date: Date) => date.toISOString()
 
   const hostels: Hostel[] = [
-    { id: 'hst_sunrise', name: 'Sunrise Boys Hostel', type: 'boys', address: '12, Vijay Nagar, Scheme 54', city: 'Indore', phone: '9826012345', createdAt: iso(subDays(now, 400)) },
-    { id: 'hst_lotus', name: 'Lotus Girls Hostel', type: 'girls', address: '45, Palasia Square', city: 'Indore', phone: '9826054321', createdAt: iso(subDays(now, 300)) },
+    { id: 'hst_sunrise', name: 'Sunrise Boys Hostel', type: 'boys', address: '12, Vijay Nagar, Scheme 54', city: 'Indore', phone: '9826012345', code: 'SBH', hostelerSeq: 0, createdAt: iso(subDays(now, 400)) },
+    { id: 'hst_lotus', name: 'Lotus Girls Hostel', type: 'girls', address: '45, Palasia Square', city: 'Indore', phone: '9826054321', code: 'LGH', hostelerSeq: 0, createdAt: iso(subDays(now, 300)) },
   ]
 
   const rooms: Room[] = []
@@ -133,7 +138,13 @@ export function buildDemoData(): DB {
         securityDeposit: defaultSettings.defaultSecurityDeposit,
         depositRefunded: null,
         messOpted: r() > 0.25,
-        portalPin: '1234',
+        // credentials are assigned below, once all hostelers exist
+        loginId: '',
+        passwordHash: '',
+        tempPassword: null,
+        mustChangePassword: true,
+        passwordChangedAt: null,
+        lastLoginAt: null,
         notes: '',
         createdAt: iso(checkIn),
       }
@@ -183,6 +194,29 @@ export function buildDemoData(): DB {
       depositRefunded: 4000,
       notes: 'Checkout: ₹1000 deducted for broken cupboard lock',
     })
+  }
+
+  // Portal credentials: Hosteler ID per hostel + password
+  for (const h of hostelers) {
+    const hostel = hostels.find((x) => x.id === h.hostelId)!
+    hostel.hostelerSeq++
+    h.loginId = formatLoginId(hostel.code, hostel.hostelerSeq)
+    let password: string
+    if (h.loginId === DEMO_HOSTELER.loginId) {
+      password = DEMO_HOSTELER.password
+      h.mustChangePassword = false
+    } else if (h.loginId === DEMO_FIRST_LOGIN.loginId) {
+      password = DEMO_FIRST_LOGIN.tempPassword
+      h.mustChangePassword = true
+    } else {
+      password = generateTempPassword(r)
+      // most residents have already activated their account
+      h.mustChangePassword = h.status === 'reserved' || r() < 0.3
+    }
+    h.passwordHash = hashPassword(password, h.id)
+    h.tempPassword = h.mustChangePassword ? password : null
+    h.passwordChangedAt = h.mustChangePassword ? null : h.createdAt
+    h.lastLoginAt = h.mustChangePassword ? null : iso(subDays(now, int(0, 6)))
   }
 
   // Invoices + payments for last 3 months (incl. current)

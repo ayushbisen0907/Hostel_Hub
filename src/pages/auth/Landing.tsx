@@ -53,7 +53,7 @@ const FAQS: { q: string; a: string }[] = [
   },
   {
     q: 'Can my residents log in?',
-    a: 'Yes. Every hosteler gets a 4-digit PIN to log in with their mobile number. They can view dues, the mess menu, notices and raise complaints or leave requests.',
+    a: 'Yes. At check-in every hosteler gets a unique Hosteler ID and a temporary password (sent on WhatsApp). On first login they set their own password. They can view dues, the mess menu, notices and raise complaints or leave requests.',
   },
   {
     q: 'Where is my data stored?',
@@ -261,7 +261,7 @@ export default function Landing() {
             <p className="text-sm font-semibold uppercase tracking-wider text-brand-300">Hosteler portal</p>
             <h2 className="mt-2 text-3xl font-bold text-white">Your residents get their own app</h2>
             <p className="mt-4 text-slate-300">
-              Fewer calls to the warden. Residents log in with their mobile number and a PIN to see their dues and receipts,
+              Fewer calls to the warden. Residents log in with their own Hosteler ID and password to see their dues and receipts,
               this week's mess menu, notices, and to raise complaints or apply for leave.
             </p>
             <ul className="mt-6 space-y-2 text-sm text-slate-200">

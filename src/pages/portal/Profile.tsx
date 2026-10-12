@@ -15,6 +15,8 @@ import {
   Upload,
 } from 'lucide-react'
 import { useStore } from '@/store'
+import { checkPasswordStrength } from '@/lib/auth'
+import { PasswordRules } from '@/components/PasswordRules'
 import { bedLabel, useCurrentHosteler } from '@/store/selectors'
 import {
   Avatar,
@@ -31,6 +33,7 @@ import {
   Select,
   Textarea,
   toast,
+  PasswordInput,
 } from '@/components/ui'
 import { cn, fileToDataUrl, formatBytes, formatDate, formatDateTime, titleCase, today } from '@/lib/utils'
 import type { AttendanceStatus, DocumentType, HDocument } from '@/types'
@@ -85,6 +88,7 @@ export default function Profile() {
   const gateLogs = useStore((s) => s.gateLogs)
   const attendance = useStore((s) => s.attendance)
   const updateHosteler = useStore((s) => s.updateHosteler)
+  const changeHostelerPassword = useStore((s) => s.changeHostelerPassword)
   const addDocument = useStore((s) => s.addDocument)
   const money = useMoney()
   useScrollToHash()
@@ -181,31 +185,21 @@ export default function Profile() {
     }
   }
 
-  const changePin = () => {
+  const changePassword = () => {
     const e: Record<string, string> = {}
-    if (pin.current !== me.portalPin) e.current = 'Current PIN is incorrect'
-    if (!/^\d{4}$/.test(pin.next)) e.next = 'PIN must be exactly 4 digits'
-    else if (pin.next === me.portalPin) e.next = 'New PIN must be different'
-    if (pin.confirm !== pin.next) e.confirm = "PINs don't match"
+    if (!pin.current) e.current = 'Enter your current password'
+    if (!checkPasswordStrength(pin.next).ok) e.next = 'At least 8 characters with a letter and a number'
+    if (pin.confirm !== pin.next) e.confirm = "Passwords don't match"
     setPinErr(e)
     if (Object.keys(e).length) return
-    updateHosteler(me.id, { portalPin: pin.next })
+    const res = changeHostelerPassword(me.id, pin.current, pin.next)
+    if (!res.ok) {
+      setPinErr(/current/i.test(res.error ?? '') ? { current: res.error! } : { next: res.error ?? 'Could not change password' })
+      return
+    }
     setPin({ current: '', next: '', confirm: '' })
-    toast.success('Portal PIN changed')
+    toast.success('Password changed')
   }
-
-  const pinInput = (key: keyof typeof pin) => (
-    <Input
-      type="password"
-      inputMode="numeric"
-      autoComplete="off"
-      maxLength={4}
-      value={pin[key]}
-      onChange={(e) => setPin((p) => ({ ...p, [key]: e.target.value.replace(/\D/g, '').slice(0, 4) }))}
-      placeholder="••••"
-      className="h-11 text-center text-lg tracking-[0.5em]"
-    />
-  )
 
   return (
     <div className="pb-4">
@@ -457,32 +451,40 @@ export default function Profile() {
         </div>
       </div>
 
-      {/* PIN */}
+      {/* Password */}
       <SectionTitle>Security</SectionTitle>
       <Card className="p-4">
-        <div className="mb-3 flex items-center gap-2">
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
+        <div className="mb-4 flex items-center gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-600">
             <KeyRound className="h-5 w-5" />
           </span>
-          <div>
-            <p className="font-semibold text-slate-900">Change portal PIN</p>
-            <p className="text-xs text-slate-500">You log in with your phone number and this 4-digit PIN.</p>
+          <div className="min-w-0">
+            <p className="font-semibold text-slate-900">Change password</p>
+            <p className="text-xs text-slate-500">
+              You log in with Hosteler ID <span className="font-mono font-semibold text-slate-700">{me.loginId}</span> and your password.
+            </p>
           </div>
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Field label="Current PIN" error={pinErr.current}>
-            {pinInput('current')}
+          <Field label="Current password" error={pinErr.current}>
+            <PasswordInput autoComplete="current-password" value={pin.current} onChange={(e) => setPin((p) => ({ ...p, current: e.target.value }))} />
           </Field>
-          <Field label="New PIN" error={pinErr.next}>
-            {pinInput('next')}
+          <Field label="New password" error={pinErr.next}>
+            <PasswordInput autoComplete="new-password" value={pin.next} onChange={(e) => setPin((p) => ({ ...p, next: e.target.value }))} />
           </Field>
-          <Field label="Confirm new PIN" error={pinErr.confirm}>
-            {pinInput('confirm')}
+          <Field label="Confirm new password" error={pinErr.confirm}>
+            <PasswordInput autoComplete="new-password" value={pin.confirm} onChange={(e) => setPin((p) => ({ ...p, confirm: e.target.value }))} />
           </Field>
         </div>
-        <Button className="mt-4 w-full rounded-xl sm:w-auto" size="lg" onClick={changePin} icon={<ShieldCheck className="h-4 w-4" />}>
-          Update PIN
+        {pin.next && (
+          <div className="mt-3">
+            <PasswordRules password={pin.next} />
+          </div>
+        )}
+        <Button className="mt-4 w-full rounded-xl sm:w-auto" size="lg" onClick={changePassword} icon={<ShieldCheck className="h-4 w-4" />}>
+          Update password
         </Button>
+        <p className="mt-3 text-xs text-slate-500">Forgot your password? Ask the hostel office to reset it.</p>
       </Card>
 
       <Modal

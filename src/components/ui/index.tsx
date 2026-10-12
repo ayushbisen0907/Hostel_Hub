@@ -10,7 +10,7 @@ import {
   type TextareaHTMLAttributes,
 } from 'react'
 import { create } from 'zustand'
-import { AlertTriangle, CheckCircle2, Info, Loader2, Search, Upload, X, XCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Eye, EyeOff, Info, Loader2, Search, Upload, X, XCircle } from 'lucide-react'
 import { cn, initials } from '@/lib/utils'
 
 /* ------------------------------------------------------------------ */
@@ -96,6 +96,35 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
 ) {
   return <input ref={ref} className={cn(controlBase, 'h-10', className)} {...rest} />
 })
+
+/** Password input with a show/hide toggle. */
+export const PasswordInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes<HTMLInputElement>, 'type'>>(
+  function PasswordInput({ className, ...rest }, ref) {
+    const [show, setShow] = useState(false)
+    return (
+      <div className="relative">
+        <input
+          ref={ref}
+          type={show ? 'text' : 'password'}
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          className={cn(controlBase, 'h-11 pr-11 sm:h-10', className)}
+          {...rest}
+        />
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={() => setShow((v) => !v)}
+          aria-label={show ? 'Hide password' : 'Show password'}
+          className="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-slate-400 hover:text-slate-700"
+        >
+          {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+        </button>
+      </div>
+    )
+  },
+)
 
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement>>(
   function Textarea({ className, rows = 3, ...rest }, ref) {

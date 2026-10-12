@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { render, cleanup, act } from '@testing-library/react'
 import App from '@/App'
 import { useStore } from '@/store'
-import { buildDemoData } from '@/store/seed'
+import { buildDemoData, DEMO_FIRST_LOGIN, DEMO_HOSTELER } from '@/store/seed'
 
 // jsdom lacks these
 beforeAll(() => {
@@ -35,7 +35,7 @@ async function renderAt(path: string) {
 describe('smoke', () => {
   it('public pages render', async () => {
     useStore.setState({ hydrated: true, session: null })
-    for (const p of ['/', '/login', '/signup', '/portal/login']) {
+    for (const p of ['/', '/login', '/signup', '/portal/login', '/portal/login?id=SBH-0001']) {
       const { html, errors } = await renderAt(p)
       expect(html.length, p).toBeGreaterThan(200)
       expect(errors, p).toEqual([])
@@ -71,7 +71,7 @@ describe('smoke', () => {
 
   it('portal pages render', async () => {
     useStore.setState({ ...buildDemoData(), hydrated: true, session: null })
-    expect(useStore.getState().loginHosteler('9876543210', '1234')).toBe(true)
+    expect(useStore.getState().loginHosteler(DEMO_HOSTELER.loginId, DEMO_HOSTELER.password)).toEqual({ ok: true, mustChangePassword: false })
     for (const p of PORTAL) {
       const { html, errors } = await renderAt(p)
       expect(html.length, p).toBeGreaterThan(200)
@@ -101,5 +101,59 @@ describe('smoke', () => {
     expect(n).toBeGreaterThan(10)
     expect(st().generateInvoices(month, 'all')).toBe(0)
     expect(st().invoices.length).toBe(before + n)
+  })
+
+  it('hosteler credentials: ID + temp password -> forced password change', async () => {
+    useStore.setState({ ...buildDemoData(), hydrated: true, session: { kind: 'admin' } })
+    const st = useStore.getState
+    const hostel = st().hostels.find((h) => h.code === 'SBH')!
+    const bed = st().beds.find((b) => !b.hostelerId && b.hostelId === hostel.id && st().rooms.find((r) => r.id === b.roomId)?.status === 'active')!
+    const base = st().hostelers[0]!
+    const seqBefore = hostel.hostelerSeq
+    const id = st().admitHosteler({
+      hosteler: { ...base, name: 'New Kid', phone: '9000000002', hostelId: hostel.id },
+      bedId: bed.id, reserveOnly: false, depositPayment: null, generateFirstInvoice: false,
+    })
+    const h = st().hostelers.find((x) => x.id === id)!
+    // unique ID for this hostel, plus a temp password that isn't stored in plain text as the hash
+    expect(h.loginId).toBe(`SBH-${String(seqBefore + 1).padStart(4, '0')}`)
+    expect(new Set(st().hostelers.map((x) => x.loginId)).size).toBe(st().hostelers.length)
+    expect(h.mustChangePassword).toBe(true)
+    expect(h.tempPassword).toMatch(/^[A-Za-z2-9]{8}$/)
+    expect(h.passwordHash).not.toContain(h.tempPassword!)
+    const temp = h.tempPassword!
+
+    st().logout()
+    expect(st().loginHosteler(h.loginId, 'wrong')).toMatchObject({ ok: false })
+    expect(st().loginHosteler(h.loginId.toLowerCase(), temp)).toEqual({ ok: true, mustChangePassword: true })
+
+    // portal pages bounce to set-password while on temp password
+    const { html } = await renderAt('/portal/fees')
+    expect(html).toContain('set your password')
+
+    expect(st().changeHostelerPassword(id, temp, 'short')).toMatchObject({ ok: false })
+    expect(st().changeHostelerPassword(id, 'nope', 'MyNewPass9')).toMatchObject({ ok: false })
+    expect(st().changeHostelerPassword(id, temp, 'MyNewPass9')).toEqual({ ok: true })
+    const after = st().hostelers.find((x) => x.id === id)!
+    expect(after.tempPassword).toBeNull()
+    expect(after.mustChangePassword).toBe(false)
+
+    st().logout()
+    expect(st().loginHosteler(h.loginId, temp)).toMatchObject({ ok: false }) // temp no longer works
+    expect(st().loginHosteler(h.loginId, 'MyNewPass9')).toEqual({ ok: true, mustChangePassword: false })
+
+    // staff reset issues a new temp password and signs the hosteler out
+    const newTemp = st().resetHostelerPassword(id)
+    expect(st().session).toBeNull()
+    expect(st().loginHosteler(h.loginId, 'MyNewPass9')).toMatchObject({ ok: false })
+    expect(st().loginHosteler(h.loginId, newTemp)).toEqual({ ok: true, mustChangePassword: true })
+
+    // demo first-login account
+    st().logout()
+    expect(st().loginHosteler(DEMO_FIRST_LOGIN.loginId, DEMO_FIRST_LOGIN.tempPassword)).toEqual({ ok: true, mustChangePassword: true })
+
+    // checked-out hostelers cannot log in
+    st().checkOut(id, { date: '2026-10-12', depositRefund: 0, deductionNote: '' })
+    expect(st().loginHosteler(h.loginId, newTemp)).toMatchObject({ ok: false })
   })
 })

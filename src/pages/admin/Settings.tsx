@@ -171,8 +171,8 @@ function ProfileTab() {
 /* Hostels                                                             */
 /* ------------------------------------------------------------------ */
 
-type HostelForm = Omit<Hostel, 'id' | 'createdAt'>
-const blankHostel: HostelForm = { name: '', type: 'boys', address: '', city: '', phone: '' }
+type HostelForm = Omit<Hostel, 'id' | 'createdAt' | 'hostelerSeq'>
+const blankHostel: HostelForm = { name: '', type: 'boys', address: '', city: '', phone: '', code: '' }
 const HOSTEL_TYPES: { value: HostelType; label: string }[] = [
   { value: 'boys', label: 'Boys' },
   { value: 'girls', label: 'Girls' },
@@ -203,7 +203,7 @@ function HostelsTab() {
   }
   const openEdit = (h: Hostel) => {
     setEditing(h)
-    setForm({ name: h.name, type: h.type, address: h.address, city: h.city, phone: h.phone })
+    setForm({ name: h.name, type: h.type, address: h.address, city: h.city, phone: h.phone, code: h.code })
     setErrors({})
     setOpen(true)
   }
@@ -213,11 +213,14 @@ function HostelsTab() {
     if (form.name.trim().length < 2) e.name = 'Enter a hostel name.'
     else if (hostels.some((h) => h.id !== editing?.id && h.name.trim().toLowerCase() === form.name.trim().toLowerCase())) e.name = 'A hostel with this name already exists.'
     if (!form.city.trim()) e.city = 'Enter the city.'
+    const code = form.code.trim().toUpperCase()
+    if (code && !/^[A-Z0-9]{2,5}$/.test(code)) e.code = '2–5 letters or numbers, e.g. SBH'
+    else if (code && hostels.some((h) => h.id !== editing?.id && h.code === code)) e.code = 'Another hostel already uses this prefix.'
     setErrors(e)
     if (Object.keys(e).length) return
-    const clean = { ...form, name: form.name.trim(), city: form.city.trim(), address: form.address.trim(), phone: form.phone.trim() }
+    const clean = { ...form, code, name: form.name.trim(), city: form.city.trim(), address: form.address.trim(), phone: form.phone.trim() }
     if (editing) {
-      updateHostel(editing.id, clean)
+      updateHostel(editing.id, { ...clean, code: editing.hostelerSeq > 0 || !code ? editing.code : code })
       toast.success('Hostel updated')
     } else {
       addHostel(clean)
@@ -277,9 +280,12 @@ function HostelsTab() {
                       </div>
                       <div className="min-w-0">
                         <p className="truncate font-semibold text-slate-900">{h.name}</p>
-                        <Badge tone={h.type === 'girls' ? 'violet' : h.type === 'boys' ? 'blue' : 'green'}>
-                          {HOSTEL_TYPES.find((t) => t.value === h.type)?.label}
-                        </Badge>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                          <Badge tone={h.type === 'girls' ? 'violet' : h.type === 'boys' ? 'blue' : 'green'}>
+                            {HOSTEL_TYPES.find((t) => t.value === h.type)?.label}
+                          </Badge>
+                          <Badge>IDs: {h.code}-0001</Badge>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -369,6 +375,24 @@ function HostelsTab() {
           </Field>
           <Field label="City" required error={errors.city}>
             <Input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
+          </Field>
+          <Field
+            label="Hosteler ID prefix"
+            error={errors.code}
+            hint={
+              editing && editing.hostelerSeq > 0
+                ? `Locked: ${editing.hostelerSeq} IDs already issued (${editing.code}-0001…)`
+                : `Hosteler IDs will look like ${(form.code.trim().toUpperCase() || 'auto')}-0001. Leave blank to auto-generate.`
+            }
+          >
+            <Input
+              value={form.code}
+              maxLength={5}
+              disabled={!!editing && editing.hostelerSeq > 0}
+              onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '') })}
+              placeholder="e.g. SBH"
+              className="font-mono uppercase"
+            />
           </Field>
         </div>
       </Modal>

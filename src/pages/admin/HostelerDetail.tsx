@@ -63,7 +63,6 @@ import {
   UploadDocModal,
   expiryState,
   portalInviteWhatsApp,
-  randomPin,
   readFile,
   validateGuardian,
   validatePersonal,
@@ -419,6 +418,7 @@ export default function HostelerDetail() {
   const complaints = useStore((s) => s.complaints)
   const leaves = useStore((s) => s.leaves)
   const updateHosteler = useStore((s) => s.updateHosteler)
+  const resetHostelerPassword = useStore((s) => s.resetHostelerPassword)
   const deleteHosteler = useStore((s) => s.deleteHosteler)
   const confirmCheckIn = useStore((s) => s.confirmCheckIn)
   const updateDocument = useStore((s) => s.updateDocument)
@@ -511,13 +511,23 @@ export default function HostelerDetail() {
     toast.success(`${h.name} checked in`)
   }
 
-  const resetPin = async () => {
-    const ok = await confirm({ title: 'Reset portal PIN?', message: 'The old PIN will stop working immediately.', confirmText: 'Reset PIN' })
+  const resetPassword = async () => {
+    const ok = await confirm({
+      title: 'Reset portal password?',
+      message: `${h.name}'s current password will stop working. A new temporary password is created, and they'll set their own on next login.`,
+      confirmText: 'Reset password',
+    })
     if (!ok) return
-    const pin = randomPin()
-    updateHosteler(h.id, { portalPin: pin })
-    setPinShown(pin)
+    setPinShown(resetHostelerPassword(h.id))
   }
+
+  const invite = (tempPassword: string) => ({
+    name: h.name,
+    phone: h.phone,
+    loginId: h.loginId,
+    tempPassword,
+    hostelName: hostelName(h.hostelId),
+  })
 
   const removeDoc = async (d: HDocument) => {
     const ok = await confirm({ title: 'Delete document?', message: `${DOC_TYPE_LABELS[d.type]} (${d.fileName}) will be removed.`, danger: true, confirmText: 'Delete' })
@@ -611,16 +621,16 @@ export default function HostelerDetail() {
                 Check out
               </Button>
             )}
-            {h.status !== 'checked_out' && (
-              <a href={portalInviteWhatsApp(h.name, h.phone, h.portalPin, hostelName(h.hostelId))} target="_blank" rel="noreferrer">
+            {h.status !== 'checked_out' && h.mustChangePassword && h.tempPassword && (
+              <a href={portalInviteWhatsApp(invite(h.tempPassword))} target="_blank" rel="noreferrer">
                 <Button variant="outline" size="sm" icon={<Send className="h-4 w-4" />}>
                   Share portal login
                 </Button>
               </a>
             )}
             {h.status !== 'checked_out' && (
-              <Button variant="outline" size="sm" icon={<KeyRound className="h-4 w-4" />} onClick={resetPin}>
-                Reset portal PIN
+              <Button variant="outline" size="sm" icon={<KeyRound className="h-4 w-4" />} onClick={resetPassword}>
+                Reset password
               </Button>
             )}
             <Button variant="ghost" size="sm" className="text-red-600 hover:bg-red-50" icon={<Trash2 className="h-4 w-4" />} onClick={doDelete}>
@@ -730,7 +740,29 @@ export default function HostelerDetail() {
                       />
                     ),
                   },
-                  { label: 'Portal PIN', value: <span className="font-mono">{h.portalPin}</span> },
+                ]}
+              />
+            </Section>
+            <Section title="Portal account">
+              <DescriptionList
+                cols={3}
+                items={[
+                  { label: 'Hosteler ID', value: <span className="font-mono font-semibold">{h.loginId}</span> },
+                  {
+                    label: 'Status',
+                    value:
+                      h.status === 'checked_out' ? (
+                        <Badge>Closed</Badge>
+                      ) : h.mustChangePassword ? (
+                        <Badge tone="amber">Waiting for first login</Badge>
+                      ) : (
+                        <Badge tone="green">Active</Badge>
+                      ),
+                  },
+                  h.mustChangePassword && h.tempPassword && h.status !== 'checked_out'
+                    ? { label: 'Temporary password', value: <span className="font-mono">{h.tempPassword}</span> }
+                    : { label: 'Password set on', value: h.passwordChangedAt ? formatDate(h.passwordChangedAt) : '' },
+                  { label: 'Last login', value: h.lastLoginAt ? formatDateTime(h.lastLoginAt) : 'Never' },
                 ]}
               />
             </Section>
@@ -1036,29 +1068,29 @@ export default function HostelerDetail() {
         open={!!pinShown}
         onClose={() => setPinShown(null)}
         size="sm"
-        title="New portal PIN"
+        title="Password reset"
         footer={
           <>
+            <Button variant="outline" onClick={() => setPinShown(null)}>
+              Done
+            </Button>
             {pinShown && (
-              <a href={portalInviteWhatsApp(h.name, h.phone, pinShown, hostelName(h.hostelId))} target="_blank" rel="noreferrer">
+              <a href={portalInviteWhatsApp(invite(pinShown))} target="_blank" rel="noreferrer">
                 <Button variant="success" icon={<MessageCircle className="h-4 w-4" />}>
                   Send on WhatsApp
                 </Button>
               </a>
             )}
-            <Button variant="outline" onClick={() => setPinShown(null)}>
-              Done
-            </Button>
           </>
         }
       >
         <div className="text-center">
           <CheckCircle2 className="mx-auto mb-3 h-10 w-10 text-emerald-500" />
-          <p className="text-sm text-slate-600">Share these login details with {h.name}:</p>
-          <p className="mt-3 text-sm text-slate-500">Phone</p>
-          <p className="font-semibold text-slate-900">{h.phone}</p>
-          <p className="mt-2 text-sm text-slate-500">PIN</p>
-          <p className="font-mono text-3xl font-bold tracking-[0.3em] text-brand-700">{pinShown}</p>
+          <p className="text-sm text-slate-600">Share these with {h.name}. They'll create a new password when they log in.</p>
+          <p className="mt-4 text-xs text-slate-500">Hosteler ID</p>
+          <p className="font-mono text-xl font-bold text-slate-900">{h.loginId}</p>
+          <p className="mt-3 text-xs text-slate-500">Temporary password</p>
+          <p className="font-mono text-2xl font-bold tracking-wider text-brand-700">{pinShown}</p>
         </div>
       </Modal>
     </>

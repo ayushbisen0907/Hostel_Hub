@@ -62,10 +62,6 @@ export const AMENITIES = ['WiFi', 'Attached bathroom', 'Balcony', 'Geyser', 'Stu
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-export function randomPin(): string {
-  return String(Math.floor(1000 + Math.random() * 9000))
-}
-
 export function cleanPhone(p: string): string {
   return p.replace(/\D/g, '').slice(-10)
 }
@@ -74,28 +70,36 @@ export function whatsappLink(phone: string): string {
   return `https://wa.me/91${cleanPhone(phone)}`
 }
 
-/** Direct portal login link with the phone pre-filled */
-export function portalLoginUrl(phone: string): string {
-  return `${window.location.origin}/portal/login?phone=${cleanPhone(phone)}`
+/** Direct portal login link with the Hosteler ID pre-filled */
+export function portalLoginUrl(loginId: string): string {
+  return `${window.location.origin}/portal/login?id=${encodeURIComponent(loginId)}`
+}
+
+export interface PortalInvite {
+  name: string
+  phone: string
+  loginId: string
+  tempPassword: string
+  hostelName: string
 }
 
 /** Welcome message with portal login details, ready to send to the resident */
-export function portalInviteText(name: string, phone: string, pin: string, hostelName: string): string {
+export function portalInviteText({ name, loginId, tempPassword, hostelName }: PortalInvite): string {
   return [
     `Hi ${name.split(' ')[0]}, welcome to ${hostelName}!`,
     ``,
-    `Use the HostelHub resident portal to pay rent, see the mess menu, skip meals, raise complaints and apply for leave.`,
+    `Your HostelHub resident portal is ready. Pay rent, see the mess menu, skip meals, raise complaints and apply for leave.`,
     ``,
-    `Login: ${portalLoginUrl(phone)}`,
-    `Mobile: ${cleanPhone(phone)}`,
-    `PIN: ${pin}`,
+    `Login: ${portalLoginUrl(loginId)}`,
+    `Hosteler ID: ${loginId}`,
+    `Temporary password: ${tempPassword}`,
     ``,
-    `Please change your PIN after first login (Profile > Change PIN).`,
+    `You'll be asked to create your own password when you first log in. Don't share it with anyone.`,
   ].join('\n')
 }
 
-export function portalInviteWhatsApp(name: string, phone: string, pin: string, hostelName: string): string {
-  return `${whatsappLink(phone)}?text=${encodeURIComponent(portalInviteText(name, phone, pin, hostelName))}`
+export function portalInviteWhatsApp(invite: PortalInvite): string {
+  return `${whatsappLink(invite.phone)}?text=${encodeURIComponent(portalInviteText(invite))}`
 }
 
 export function isValidPhone(p: string): boolean {

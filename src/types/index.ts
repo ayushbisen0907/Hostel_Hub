@@ -33,6 +33,10 @@ export interface Hostel {
   address: string
   city: string
   phone: string
+  /** Short prefix for hosteler IDs, e.g. "SBH" -> SBH-0001 */
+  code: string
+  /** Last issued hosteler number for this hostel */
+  hostelerSeq: number
   createdAt: string
 }
 
@@ -92,7 +96,14 @@ export interface Hosteler {
   securityDeposit: number
   depositRefunded: number | null
   messOpted: boolean
-  portalPin: string // hosteler portal login
+  // ---- portal credentials ----
+  loginId: string // unique per hostel, e.g. "SBH-0007"
+  passwordHash: string
+  /** Shown to staff until the hosteler sets their own password on first login. */
+  tempPassword: string | null
+  mustChangePassword: boolean
+  passwordChangedAt: string | null
+  lastLoginAt: string | null
   notes: string
   createdAt: string
 }

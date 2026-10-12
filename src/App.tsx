@@ -11,6 +11,7 @@ import Landing from '@/pages/auth/Landing'
 import Login from '@/pages/auth/Login'
 import Signup from '@/pages/auth/Signup'
 import PortalLogin from '@/pages/auth/PortalLogin'
+import SetPassword from '@/pages/auth/SetPassword'
 
 import Dashboard from '@/pages/admin/Dashboard'
 import Rooms from '@/pages/admin/Rooms'
@@ -47,15 +48,29 @@ function RequireAdmin({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
+/** True while a logged-in hosteler is still on their temporary password. */
+function useNeedsPasswordSetup() {
+  return useStore((s) =>
+    s.session?.kind === 'hosteler'
+      ? (s.hostelers.find((h) => h.id === s.session!.hostelerId)?.mustChangePassword ?? false)
+      : false,
+  )
+}
+
 function RequireHosteler({ children }: { children: ReactNode }) {
   const session = useStore((s) => s.session)
-  if (session?.kind !== 'hosteler') return <Navigate to="/portal/login" replace />
+  const exists = useStore((s) => (s.session?.kind === 'hosteler' ? s.hostelers.some((h) => h.id === s.session!.hostelerId && h.status !== 'checked_out') : false))
+  const needsSetup = useNeedsPasswordSetup()
+  if (session?.kind !== 'hosteler' || !exists) return <Navigate to="/portal/login" replace />
+  if (needsSetup) return <Navigate to="/portal/set-password" replace />
   return <>{children}</>
 }
 
 function RequireAny({ children }: { children: ReactNode }) {
   const session = useStore((s) => s.session)
+  const needsSetup = useNeedsPasswordSetup()
   if (!session) return <Navigate to="/login" replace />
+  if (needsSetup) return <Navigate to="/portal/set-password" replace />
   return <>{children}</>
 }
 
@@ -101,7 +116,7 @@ export default function App() {
             session?.kind === 'admin' ? (
               <Navigate to="/app/dashboard" replace />
             ) : session?.kind === 'hosteler' ? (
-              <Navigate to="/portal" replace />
+              <Navigate to="/portal" replace /> // RequireHosteler forwards to set-password if needed
             ) : (
               <Landing />
             )
@@ -110,6 +125,7 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/portal/login" element={<PortalLogin />} />
+        <Route path="/portal/set-password" element={<SetPassword />} />
 
         <Route
           path="/app"

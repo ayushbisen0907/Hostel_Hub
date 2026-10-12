@@ -12,12 +12,12 @@ import {
   FileText,
   MessageCircle,
   Printer,
-  RefreshCw,
   Trash2,
   UserCheck,
   UserPlus,
 } from 'lucide-react'
 import { useStore } from '@/store'
+import { formatLoginId } from '@/lib/auth'
 import { bedLabel, useHostelName, useScope, useScopedHostelers, useVacantBeds } from '@/store/selectors'
 import type { DocumentType, ID, PaymentMode, Room } from '@/types'
 import {
@@ -52,7 +52,6 @@ import {
   emptyProfile,
   portalInviteText,
   portalInviteWhatsApp,
-  randomPin,
   readFile,
   validateGuardian,
   validatePersonal,
@@ -74,7 +73,8 @@ interface Done {
   hostelerId: ID
   name: string
   phone: string
-  pin: string
+  loginId: string
+  tempPassword: string
   bed: string
   reserved: boolean
   receiptId: ID | null
@@ -213,6 +213,10 @@ export default function CheckIn() {
   const [errors, setErrors] = useState<ProfileErrors>({})
   const [docs, setDocs] = useState<PendingDoc[]>([])
   const [hostelId, setHostelId] = useState<ID>(defaultHostel)
+  const nextLoginId = useMemo(() => {
+    const h = hostels.find((x) => x.id === hostelId)
+    return h ? formatLoginId(h.code, h.hostelerSeq + 1) : '—'
+  }, [hostels, hostelId])
   const [bedId, setBedId] = useState<ID | ''>('')
   const [reserveOnly, setReserveOnly] = useState(false)
   const [rent, setRent] = useState('')
@@ -225,7 +229,6 @@ export default function CheckIn() {
   const [genInvoice, setGenInvoice] = useState(true)
   const [checkInDate, setCheckInDate] = useState(today())
   const [expectedOut, setExpectedOut] = useState('')
-  const [pin, setPin] = useState(randomPin)
   const [notes, setNotes] = useState('')
 
   const vacant = useVacantBeds(hostelId || 'all')
@@ -347,7 +350,6 @@ export default function CheckIn() {
         monthlyRent: Number(rent) || 0,
         securityDeposit: depositNum,
         messOpted,
-        portalPin: pin,
         notes: notes.trim(),
       },
       bedId: bed,
@@ -364,7 +366,8 @@ export default function CheckIn() {
       hostelerId: id,
       name: profile.name.trim(),
       phone: profile.phone,
-      pin,
+      loginId: st.hostelers.find((h) => h.id === id)?.loginId ?? '',
+      tempPassword: st.hostelers.find((h) => h.id === id)?.tempPassword ?? '',
       bed: bedLabel(st, st.hostelers.find((h) => h.id === id)?.bedId ?? null),
       reserved: reserveOnly,
       receiptId: pay?.id ?? null,
@@ -393,7 +396,6 @@ export default function CheckIn() {
     setGenInvoice(true)
     setCheckInDate(today())
     setExpectedOut('')
-    setPin(randomPin())
     setNotes('')
   }
 
@@ -419,6 +421,7 @@ export default function CheckIn() {
 
   /* ---------------- success screen ---------------- */
   if (done) {
+    const invite = { name: done.name, phone: done.phone, loginId: done.loginId, tempPassword: done.tempPassword, hostelName: hostelName(hostelId) }
     return (
       <>
         <PageHeader title={done.reserved ? 'Bed reserved' : 'Check-in complete'} />
@@ -444,26 +447,23 @@ export default function CheckIn() {
               ]}
             />
           </div>
-          <div className="mt-4 rounded-xl bg-brand-50 p-5">
-            <p className="text-sm font-semibold text-brand-900">Resident portal login</p>
-            <p className="mt-1 text-xs text-brand-700">Share these with the resident so they can view fees, raise complaints and apply for leave.</p>
-            <div className="mt-3 grid grid-cols-2 gap-4">
-              <div>
-                <p className="text-xs text-brand-700">Phone</p>
-                <p className="font-semibold text-slate-900">{done.phone}</p>
+          <div className="mt-4 rounded-xl bg-brand-50 p-4 sm:p-5">
+            <p className="text-sm font-semibold text-brand-900">Hosteler portal login</p>
+            <p className="mt-1 text-xs text-brand-700">
+              Send these to {done.name.split(' ')[0]}. On first login they'll be asked to create their own password, and the temporary one stops working.
+            </p>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="rounded-lg bg-white px-3 py-2.5">
+                <p className="text-xs text-slate-500">Hosteler ID</p>
+                <p className="font-mono text-xl font-bold tracking-wide text-slate-900">{done.loginId}</p>
               </div>
-              <div>
-                <p className="text-xs text-brand-700">PIN</p>
-                <p className="font-mono text-2xl font-bold tracking-[0.25em] text-brand-700">{done.pin}</p>
+              <div className="rounded-lg bg-white px-3 py-2.5">
+                <p className="text-xs text-slate-500">Temporary password</p>
+                <p className="font-mono text-xl font-bold tracking-wide text-brand-700">{done.tempPassword}</p>
               </div>
             </div>
             <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-              <a
-                href={portalInviteWhatsApp(done.name, done.phone, done.pin, hostelName(hostelId))}
-                target="_blank"
-                rel="noreferrer"
-                className="flex-1"
-              >
+              <a href={portalInviteWhatsApp(invite)} target="_blank" rel="noreferrer" className="flex-1">
                 <Button variant="success" icon={<MessageCircle className="h-4 w-4" />} className="w-full">
                   Send login on WhatsApp
                 </Button>
@@ -472,9 +472,7 @@ export default function CheckIn() {
                 variant="outline"
                 icon={<Copy className="h-4 w-4" />}
                 onClick={() => {
-                  void navigator.clipboard
-                    ?.writeText(portalInviteText(done.name, done.phone, done.pin, hostelName(hostelId)))
-                    .then(() => toast.success('Login details copied'))
+                  void navigator.clipboard?.writeText(portalInviteText(invite)).then(() => toast.success('Login details copied'))
                 }}
               >
                 Copy message
@@ -683,12 +681,16 @@ export default function CheckIn() {
           )}
         </section>
         <section>
-          <SectionTitle hint="The resident logs in to the portal with their phone and this PIN.">Portal access</SectionTitle>
-          <div className="flex items-center gap-3">
-            <span className="rounded-lg bg-slate-100 px-4 py-2 font-mono text-xl font-bold tracking-[0.3em] text-slate-900">{pin}</span>
-            <Button variant="ghost" size="sm" icon={<RefreshCw className="h-4 w-4" />} onClick={() => setPin(randomPin())}>
-              Regenerate
-            </Button>
+          <SectionTitle hint="Created automatically when you confirm. You'll get them on the next screen to share on WhatsApp.">Portal access</SectionTitle>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+              <p className="text-xs text-slate-500">Hosteler ID</p>
+              <p className="font-mono text-lg font-bold tracking-wide text-slate-900">{nextLoginId}</p>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+              <p className="text-xs text-slate-500">Password</p>
+              <p className="text-sm font-medium text-slate-700">Temporary password, auto-generated</p>
+            </div>
           </div>
         </section>
         <Field label="Notes">

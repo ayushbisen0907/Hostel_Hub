@@ -23,8 +23,13 @@ export const objectId = z
   .string()
   .refine((v) => mongoose.isValidObjectId(v), { message: 'Invalid id' })
 
-export const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD')
-export const monthStr = z.string().regex(/^\d{4}-\d{2}$/, 'Use YYYY-MM')
+export const dateStr = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD')
+  .refine((s) => !Number.isNaN(Date.parse(`${s}T00:00:00Z`)) && new Date(`${s}T00:00:00Z`).toISOString().startsWith(s), {
+    message: 'Invalid date',
+  })
+export const monthStr = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Use YYYY-MM')
 export const phone = z
   .string()
   .transform((s) => s.replace(/\D/g, '').slice(-10))

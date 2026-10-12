@@ -231,7 +231,7 @@ export default function Reports() {
         }
       />
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Income" value={formatMoney(r.totalIncome)} hint={`+ ${formatMoney(r.totalDeposits)} deposits held`} tone="brand" />
         <StatCard label="Expenses" value={formatMoney(r.totalExpenses)} hint={`${r.byCategory.length} categories`} tone="amber" />
         <StatCard label="Net profit" value={formatMoney(net)} hint={`${margin}% margin`} tone={net >= 0 ? 'green' : 'red'} />

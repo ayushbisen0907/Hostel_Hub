@@ -1,6 +1,7 @@
 import {
   forwardRef,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ButtonHTMLAttributes,
@@ -88,7 +89,7 @@ export function IconButton({
 /* ------------------------------------------------------------------ */
 
 const controlBase =
-  'w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-800 placeholder:text-slate-400 transition focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:bg-slate-100 disabled:text-slate-500'
+  'w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-800 placeholder:text-slate-400 transition focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:bg-slate-100 disabled:text-slate-500'
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function Input(
   { className, ...rest },
@@ -368,14 +369,16 @@ export function StatCard({
     slate: 'bg-slate-100 text-slate-600',
   }
   return (
-    <Card className={cn('p-5', onClick && 'cursor-pointer transition hover:border-brand-300 hover:shadow')}>
-      <div onClick={onClick} className="flex items-start justify-between gap-3">
+    <Card className={cn('p-3.5 sm:p-5', onClick && 'cursor-pointer transition hover:border-brand-300 hover:shadow')}>
+      <div onClick={onClick} className="flex items-start justify-between gap-2 sm:gap-3">
         <div className="min-w-0">
-          <p className="text-sm font-medium text-slate-500">{label}</p>
-          <p className="mt-1.5 text-2xl font-bold text-slate-900">{value}</p>
-          {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+          <p className="text-xs font-medium text-slate-500 sm:text-sm">{label}</p>
+          <p className="mt-1 break-words text-lg font-bold leading-tight text-slate-900 sm:mt-1.5 sm:text-2xl">{value}</p>
+          {hint && <p className="mt-1 text-[11px] leading-snug text-slate-500 sm:text-xs">{hint}</p>}
         </div>
-        {icon && <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-lg', tones[tone])}>{icon}</div>}
+        {icon && (
+          <div className={cn('hidden h-10 w-10 shrink-0 items-center justify-center rounded-lg sm:flex', tones[tone])}>{icon}</div>
+        )}
       </div>
     </Card>
   )
@@ -516,10 +519,40 @@ export function Avatar({ name, src, size = 'md' }: { name: string; src?: string 
 /* Table                                                               */
 /* ------------------------------------------------------------------ */
 
-export function Table({ children, className }: { children: ReactNode; className?: string }) {
+/**
+ * Data table. On phones (< 640px) each row turns into a card: the first cell
+ * becomes the card title and every other cell is shown as "Column: value"
+ * (labels are copied from the header cells — see `.rtable` in index.css).
+ * Pass `responsive={false}` to keep a plain scrolling table.
+ */
+export function Table({ children, className, responsive = true }: { children: ReactNode; className?: string; responsive?: boolean }) {
+  const ref = useRef<HTMLTableElement>(null)
+  useLayoutEffect(() => {
+    const table = ref.current
+    if (!table || !responsive) return
+    const apply = () => {
+      const heads = Array.from(table.querySelectorAll('thead th')).map((th) => th.textContent?.trim() ?? '')
+      table.querySelectorAll('tbody tr, tfoot tr').forEach((tr) => {
+        let col = 0
+        for (const cell of Array.from(tr.children) as HTMLTableCellElement[]) {
+          const span = cell.colSpan || 1
+          if (span === 1) cell.setAttribute('data-label', heads[col] ?? '')
+          else cell.removeAttribute('data-label')
+          col += span
+        }
+      })
+    }
+    apply()
+    // rows change as data/filters change; only childList is observed so setting attributes can't loop
+    const mo = new MutationObserver(apply)
+    mo.observe(table, { childList: true, subtree: true })
+    return () => mo.disconnect()
+  }, [responsive])
   return (
     <div className={cn('overflow-x-auto', className)}>
-      <table className="w-full text-left text-sm">{children}</table>
+      <table ref={ref} className={cn('w-full text-left text-sm', responsive && 'rtable')}>
+        {children}
+      </table>
     </div>
   )
 }

@@ -514,7 +514,7 @@ function LeavesTab() {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <StatCard label="Pending requests" value={count('pending')} icon={<Clock className="h-5 w-5" />} tone="amber" onClick={() => setStatus('pending')} />
         <StatCard label="Currently on leave" value={current.length} icon={<Plane className="h-5 w-5" />} tone="violet" />
         <StatCard label="Approved" value={count('approved')} icon={<Check className="h-5 w-5" />} tone="green" onClick={() => setStatus('approved')} />

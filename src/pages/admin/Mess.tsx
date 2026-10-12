@@ -439,7 +439,7 @@ function MembersTab() {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <StatCard label="Mess members" value={on} icon={<Users className="h-5 w-5" />} hint={`of ${active.length} active hostelers`} />
         <StatCard label="Not opted" value={active.length - on} icon={<UserMinus className="h-5 w-5" />} tone="slate" />
         <StatCard label="Monthly charge" value={formatMoney(charge)} icon={<Wallet className="h-5 w-5" />} tone="violet" hint="per member · change in Settings" />
@@ -553,7 +553,7 @@ function OptOutsTab() {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <StatCard label="Meals saved this month" value={monthCount} icon={<UtensilsCrossed className="h-5 w-5" />} tone="green" />
         <StatCard
           label="Estimated savings"

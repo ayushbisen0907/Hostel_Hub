@@ -4,6 +4,65 @@
 
 body { @apply bg-slate-50 text-slate-800 antialiased; }
 
+/* ---- Responsive tables: rows become cards on phones (see <Table>) ---- */
+@media (max-width: 639px) {
+  .rtable thead { display: none; }
+  .rtable, .rtable tbody, .rtable tfoot { display: block; }
+  .rtable tbody { padding: 0.75rem 0.75rem 0.25rem; }
+  .rtable tfoot { padding: 0 0.75rem 0.75rem; }
+  .rtable tr {
+    display: block;
+    margin-bottom: 0.75rem;
+    padding: 0.25rem 0.875rem;
+    border: 1px solid theme('colors.slate.200') !important;
+    border-radius: 0.75rem;
+    background: white;
+  }
+  .rtable tfoot tr { background: theme('colors.slate.50'); }
+  .rtable td {
+    /* label on the left (::before), cell content stacked on the right */
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: 0.75rem;
+    align-items: center;
+    justify-items: end;
+    min-width: 0;
+    padding: 0.5rem 0 !important;
+    text-align: right;
+    border: 0;
+  }
+  .rtable td + td { border-top: 1px dashed theme('colors.slate.100'); }
+  .rtable td::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    grid-column: 1;
+    grid-row: 1 / span 6;
+    justify-self: start;
+    max-width: 9rem;
+    text-align: left;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: theme('colors.slate.500');
+  }
+  /* first cell = card title */
+  .rtable td:first-child { display: block; justify-items: start; text-align: left; padding-top: 0.75rem !important; }
+  .rtable td:first-child::before { display: none; }
+  /* cells without a header label (e.g. row actions) */
+  .rtable td[data-label='']::before, .rtable td:not([data-label])::before { display: none; }
+  .rtable td > * { grid-column: 2; }
+  .rtable td[data-label=''] { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; }
+  .rtable td:not([data-label]) { display: block; text-align: center; }
+  .rtable td > * { min-width: 0; }
+  /* desktop width limits / truncation don't apply to card rows */
+  .rtable td { max-width: none !important; width: auto !important; white-space: normal !important; overflow: visible !important; }
+}
+
+/* Comfortable tap targets for form controls on touch screens */
+@media (max-width: 639px) {
+  input:not([type='checkbox']):not([type='radio']):not([type='file']), select { min-height: 2.75rem; font-size: 16px; }
+  textarea { font-size: 16px; }
+}
+
 @media print {
   .no-print { display: none !important; }
   body { background: white; }

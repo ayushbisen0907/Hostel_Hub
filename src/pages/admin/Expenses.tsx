@@ -141,7 +141,7 @@ export default function Expenses() {
         }
       />
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
         <StatCard
           label={`Spent in ${formatMonth(refMonth)}`}
           value={formatMoney(stats.curTotal)}

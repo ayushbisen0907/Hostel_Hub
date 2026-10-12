@@ -170,7 +170,7 @@ export default function Complaints() {
       </Card>
 
       {view === 'board' ? (
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           {COLUMNS.map((col) => {
             const items = filtered.filter((c) => c.status === col.status)
             return (
@@ -181,7 +181,7 @@ export default function Complaints() {
                   if (dragId) moveTo(dragId, col.status)
                   setDragId(null)
                 }}
-                className={cn('flex flex-col rounded-xl border border-t-4 border-slate-200 bg-slate-100/60', col.tone)}
+                className={cn('flex min-w-0 flex-col rounded-xl border border-t-4 border-slate-200 bg-slate-100/60', col.tone)}
               >
                 <div className="flex items-center justify-between px-4 py-3">
                   <p className="flex items-center gap-2 text-sm font-semibold text-slate-800">

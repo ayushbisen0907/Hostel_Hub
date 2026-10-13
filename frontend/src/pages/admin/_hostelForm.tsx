@@ -3,13 +3,13 @@
  * hostelers pay rent (+ optional QR image) and the monthly charge heads.
  */
 import { useEffect, useState } from 'react'
-import { Plus, QrCode, Receipt, Trash2, Upload } from 'lucide-react'
+import { QrCode, Receipt, Trash2, Upload } from 'lucide-react'
 import { errorMessage } from '@/api/client'
 import { hostelQrUrl, useCreateHostel, useRemoveHostelQr, useUpdateHostel, useUploadHostelQr, type HostelInput } from '@/api/hostels'
 import type { Hostel, HostelCharges, HostelType } from '@/api/types'
-import { Badge, Button, Field, FileDrop, IconButton, Input, Modal, Select, Textarea, confirm, toast } from '@/components/ui'
+import { Badge, Button, Field, FileDrop, Input, Modal, Select, Textarea, confirm, toast } from '@/components/ui'
 import { UpiQr } from '@/components/UpiQr'
-import { FIXED_CHARGES, UPI_ID_RE, configuredCharges } from '@/lib/charges'
+import { FIXED_CHARGES, INCLUDED_IN_RENT, UPI_ID_RE, configuredCharges } from '@/lib/charges'
 import { cn, formatMoney } from '@/lib/utils'
 
 export const HOSTEL_TYPES: { value: HostelType; label: string }[] = [
@@ -32,18 +32,12 @@ const blankHostel: HostelForm = { name: '', type: 'boys', address: '', city: '',
 
 type FixedKey = (typeof FIXED_CHARGES)[number]['key']
 type ChargeDraft = Record<'mess' | FixedKey, string>
-interface OtherDraft {
-  key: number
-  label: string
-  amount: string
-}
-let otherKey = 0
 const QR_MAX = 2 * 1024 * 1024
 const MAX_CHARGE = 1_000_000
 
 function chargeDraft(c: HostelCharges | undefined): ChargeDraft {
   const v = (n: number | undefined) => (n && n > 0 ? String(n) : '')
-  return { mess: v(c?.mess), electricity: v(c?.electricity), water: v(c?.water), internet: v(c?.internet), laundry: v(c?.laundry), maintenance: v(c?.maintenance) }
+  return { mess: v(c?.mess), electricity: v(c?.electricity) }
 }
 
 /** Configured monthly charges as small chips (hostel cards). */
@@ -98,9 +92,6 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
       : blankHostel,
   )
   const [charges, setCharges] = useState<ChargeDraft>(() => chargeDraft(editing?.charges))
-  const [others, setOthers] = useState<OtherDraft[]>(() =>
-    (editing?.charges?.others ?? []).map((o) => ({ key: ++otherKey, label: o.label, amount: String(o.amount) })),
-  )
   const [errors, setErrors] = useState<Errors>({})
   const [apiError, setApiError] = useState('')
   // QR: for a new hostel the file is uploaded right after the hostel is created;
@@ -186,14 +177,6 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
       const n = parse(charges[f.key])
       if (n === null) return `Enter a valid amount for ${f.label.toLowerCase()}.`
       out[f.key] = n
-    }
-    for (const o of others) {
-      const label = o.label.trim()
-      if (!label && !o.amount.trim()) continue
-      if (!label) return 'Give every custom charge a name.'
-      const n = parse(o.amount)
-      if (n === null) return `Enter a valid amount for "${label}".`
-      out.others.push({ label: label.slice(0, 60), amount: n })
     }
     return out
   }
@@ -395,11 +378,13 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
         {/* ---------------- Monthly charges ---------------- */}
         <div className="border-t border-slate-100 pt-4 sm:col-span-2">
           <p className="flex items-center gap-2 font-semibold text-slate-900">
-            <Receipt className="h-4 w-4 text-brand-600" /> Monthly charges (optional)
+            <Receipt className="h-4 w-4 text-brand-600" /> Monthly charges besides rent (optional)
           </p>
-          <p className="mt-0.5 text-sm text-slate-500">Added to every monthly bill next to room rent. Leave blank for anything you don't charge.</p>
+          <p className="mt-0.5 text-sm text-slate-500">
+            Room rent (set per room) already includes {INCLUDED_IN_RENT}. Only mess and electricity are billed separately. Leave blank if you don't charge them.
+          </p>
         </div>
-        <div className="grid grid-cols-2 gap-3 sm:col-span-2 sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 sm:col-span-2">
           <Field label="Mess" hint="Mess members only">
             <AmountInput label="Mess" value={charges.mess} onChange={(v) => setCharges({ ...charges, mess: v })} />
           </Field>
@@ -409,36 +394,7 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
             </Field>
           ))}
         </div>
-        <div className="space-y-2 sm:col-span-2">
-          {others.length > 0 && <p className="text-sm font-medium text-slate-700">Other charges</p>}
-          {others.map((o) => (
-            <div key={o.key} className="flex items-center gap-2">
-              <Input
-                value={o.label}
-                maxLength={60}
-                placeholder="Name, e.g. Housekeeping"
-                className="min-w-0 flex-1"
-                aria-label="Charge name"
-                onChange={(e) => setOthers(others.map((x) => (x.key === o.key ? { ...x, label: e.target.value } : x)))}
-              />
-              <AmountInput
-                label="Charge amount"
-                className="w-28 shrink-0 sm:w-32"
-                value={o.amount}
-                onChange={(v) => setOthers(others.map((x) => (x.key === o.key ? { ...x, amount: v } : x)))}
-              />
-              <IconButton label="Remove charge" onClick={() => setOthers(others.filter((x) => x.key !== o.key))}>
-                <Trash2 className="h-4 w-4" />
-              </IconButton>
-            </div>
-          ))}
-          {others.length < 10 && (
-            <Button size="sm" variant="ghost" icon={<Plus className="h-4 w-4" />} onClick={() => setOthers([...others, { key: ++otherKey, label: '', amount: '' }])}>
-              Add other charge
-            </Button>
-          )}
-          {errors.charges && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{errors.charges}</p>}
-        </div>
+        {errors.charges && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 sm:col-span-2">{errors.charges}</p>}
       </div>
     </Modal>
   )

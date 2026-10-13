@@ -352,7 +352,7 @@ describe('profile photo (staff)', () => {
 })
 
 describe('first bill at check-in', () => {
-  it('is itemized like a monthly bill (hostel charge heads, mess only if opted)', async () => {
+  it('is itemized like a monthly bill (rent + mess if opted + electricity)', async () => {
     const w = await makeWorld()
     await Hostel.updateOne({ _id: w.hostel._id }, { charges: { mess: 2000, electricity: 350, laundry: 250, others: [{ label: 'Housekeeping', amount: 100 }] } })
     const r = await api().post('/api/hostelers').set(w.auth).send(admission(w.hostel._id, w.beds[1]!._id)).expect(201)
@@ -361,17 +361,16 @@ describe('first bill at check-in', () => {
       { key: 'rent', label: 'Room rent', amount: 6000 },
       { key: 'mess', label: 'Mess fees', amount: 2000 },
       { key: 'electricity', label: 'Electricity', amount: 350 },
-      { key: 'laundry', label: 'Laundry', amount: 250 },
-      { key: 'other', label: 'Housekeeping', amount: 100 },
+      // laundry / custom heads are included in the room rent
     ])
-    expect(inv).toMatchObject({ month: '2026-10', total: 8700, dueDate: '2026-10-01' })
-    expect(r.body.hosteler.dues).toBe(8700)
+    expect(inv).toMatchObject({ month: '2026-10', total: 8350, dueDate: '2026-10-01' })
+    expect(r.body.hosteler.dues).toBe(8350)
 
     const room2 = await makeRoom(w.org._id, w.hostel._id, '102', 1)
     const r2 = await api().post('/api/hostelers').set(w.auth).send(admission(w.hostel._id, room2.beds[0]!._id, { name: 'No Mess', messOpted: false })).expect(201)
     const [inv2] = await Invoice.find({ hostelerId: r2.body.hosteler.id }).lean()
-    expect(inv2!.items.map((i) => i.key)).toEqual(['rent', 'electricity', 'laundry', 'other'])
-    expect(inv2!.total).toBe(6700)
+    expect(inv2!.items.map((i) => i.key)).toEqual(['rent', 'electricity'])
+    expect(inv2!.total).toBe(6350)
 
     // no first bill when not asked for
     const room3 = await makeRoom(w.org._id, w.hostel._id, '103', 1)

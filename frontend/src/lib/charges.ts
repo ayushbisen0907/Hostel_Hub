@@ -24,14 +24,15 @@ export const CHARGE_KEY_OPTIONS: { value: ChargeKey; label: string }[] = (Object
   label: CHARGE_KEY_LABELS[k],
 }))
 
-/** Fixed charge heads configured per hostel (besides mess and custom "others"). */
-export const FIXED_CHARGES: { key: 'electricity' | 'water' | 'internet' | 'laundry' | 'maintenance'; label: string }[] = [
-  { key: 'electricity', label: 'Electricity' },
-  { key: 'water', label: 'Water' },
-  { key: 'internet', label: 'Internet / Wi-Fi' },
-  { key: 'laundry', label: 'Laundry' },
-  { key: 'maintenance', label: 'Maintenance' },
-]
+/**
+ * Separate monthly charges besides room rent and mess. Water, internet,
+ * cleaning, maintenance etc. are included in the room rent, so electricity is
+ * the only one (mirrors backend/src/lib/billing.ts).
+ */
+export const FIXED_CHARGES: { key: 'electricity'; label: string }[] = [{ key: 'electricity', label: 'Electricity' }]
+
+/** What room rent covers (shown as a hint). */
+export const INCLUDED_IN_RENT = 'water, Wi-Fi, cleaning and maintenance'
 
 export const EMPTY_CHARGES: HostelCharges = { mess: 0, electricity: 0, water: 0, internet: 0, laundry: 0, maintenance: 0, others: [] }
 
@@ -51,7 +52,7 @@ export function guessKey(label: string): ChargeKey {
 
 /**
  * Lines of a hosteler's monthly bill: rent, mess (if opted; the hostel's mess
- * charge, else the organization default) and every configured charge head.
+ * charge, else the organization default) and electricity.
  */
 export function monthlyBillItems(
   hosteler: { monthlyRent: number; messOpted: boolean },
@@ -66,7 +67,6 @@ export function monthlyBillItems(
     const amount = Number(c[f.key] ?? 0)
     if (amount > 0) items.push({ key: f.key, label: f.label, amount })
   }
-  for (const o of c.others ?? []) if (o.amount > 0) items.push({ key: 'other', label: o.label, amount: o.amount })
   return items
 }
 
@@ -79,6 +79,5 @@ export function configuredCharges(charges: Partial<HostelCharges> | null | undef
     const amount = Number(c[f.key] ?? 0)
     if (amount > 0) out.push({ label: f.label, amount })
   }
-  for (const o of c.others ?? []) if (o.amount > 0) out.push({ label: o.label, amount: o.amount })
   return out
 }

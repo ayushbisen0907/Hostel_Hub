@@ -247,7 +247,7 @@ try {
   const hTok = await pp.evaluate(() => JSON.parse(localStorage.getItem('hostelhub-session') || '{}').state?.session?.token)
   const info = await apiCall('GET', '/portal/payment-info', null, hTok)
   const keys = info.bills[0]?.items.map((i) => i.key).sort().join(',')
-  ok('first bill is itemized (rent, electricity, water; no mess when not opted)', keys === 'electricity,rent,water', `${keys} = ₹${info.totalDue}`)
+  ok('first bill: rent + mess (on by default) + electricity; water is part of rent', keys === 'electricity,mess,rent', `${keys} = ₹${info.totalDue}`)
   ok('hosteler sees the hostel UPI ID', info.upiId === 'sunrise.hostel@okhdfc')
 
   // hosteler pays by UPI outside the app, then reports it

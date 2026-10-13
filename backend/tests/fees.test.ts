@@ -332,7 +332,7 @@ describe('isolation and permissions', () => {
 describe('itemized monthly bills', () => {
   const lines = (inv: { items: { key?: string | null; label: string; amount: number }[] }) => inv.items.map((i) => ({ key: i.key, label: i.label, amount: i.amount }))
 
-  it('bills rent + mess (opted only) + every configured hostel charge head', async () => {
+  it('bills rent + mess (opted only) + electricity; other heads are included in rent', async () => {
     const w = await makeWorld()
     await Hostel.updateOne(
       { _id: w.hostel._id },
@@ -366,16 +366,14 @@ describe('itemized monthly bills', () => {
       { key: 'rent', label: 'Room rent', amount: 6000 },
       { key: 'mess', label: 'Mess fees', amount: 2500 }, // hostel's mess charge wins over the org setting (3000)
       { key: 'electricity', label: 'Electricity', amount: 400 },
-      { key: 'internet', label: 'Internet / Wi-Fi', amount: 300 },
-      { key: 'maintenance', label: 'Maintenance', amount: 200 },
-      { key: 'other', label: 'Housekeeping', amount: 150 },
+      // internet / maintenance / custom heads are part of the room rent now, never billed separately
     ])
-    expect(a.total).toBe(9550)
+    expect(a.total).toBe(8900)
     expect(a.dueDate).toBe('2026-10-05')
 
     const b = of(noMess._id)
-    expect(lines(b).map((l) => l.key)).toEqual(['rent', 'electricity', 'internet', 'maintenance', 'other'])
-    expect(b.total).toBe(5500 + 400 + 300 + 200 + 150)
+    expect(lines(b).map((l) => l.key)).toEqual(['rent', 'electricity'])
+    expect(b.total).toBe(5500 + 400)
 
     const c = of(elsewhere._id)
     expect(lines(c)).toEqual([
@@ -393,14 +391,13 @@ describe('itemized monthly bills', () => {
     expect(lines(oct!)).toEqual([
       { key: 'rent', label: 'Room rent', amount: 6000 },
       { key: 'mess', label: 'Mess fees', amount: 2800 },
-      { key: 'water', label: 'Water', amount: 100 },
     ])
-    expect(oct!.total).toBe(8900)
+    expect(oct!.total).toBe(8800) // water is included in rent
 
     await Organization.updateOne({ _id: w.org._id }, { 'settings.messMonthlyCharge': 0 })
     await api().post('/api/invoices/generate').set(w.auth).send({ month: '2026-11' }).expect(200)
     const nov = await Invoice.findOne({ orgId: w.org._id, month: '2026-11' }).lean()
-    expect(nov!.items.map((i) => i.key)).toEqual(['rent', 'water'])
+    expect(nov!.items.map((i) => i.key)).toEqual(['rent'])
   })
 
   it('notifies each billed hosteler once (bill_generated)', async () => {

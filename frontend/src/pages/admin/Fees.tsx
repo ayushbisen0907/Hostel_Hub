@@ -794,7 +794,7 @@ function GenerateModal({ open, onClose, initialMonth }: { open: boolean; onClose
         <ul className="space-y-1.5 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
           <li>
             • Each active hosteler gets an itemised bill: room rent, mess fees for mess members, and the monthly charges set for their hostel
-            (electricity, water, internet…) in Settings → Hostels.
+            (mess and electricity; everything else is part of room rent) in Settings → Hostels.
             {settings.messMonthlyCharge
               ? ` Hostels without their own mess charge use the default ${formatMoney(settings.messMonthlyCharge)}.`
               : ''}

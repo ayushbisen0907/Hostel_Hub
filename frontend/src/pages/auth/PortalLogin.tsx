@@ -1,72 +1,44 @@
 import { useState, type FormEvent } from 'react'
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
-import { AlertCircle, ArrowLeft, BedDouble, Database, HelpCircle, IdCard, KeyRound, Smartphone } from 'lucide-react'
-import { useStore } from '@/store'
-import { DEMO_FIRST_LOGIN, DEMO_HOSTELER } from '@/store/seed'
-import { Button, Card, Field, Input, Modal, PasswordInput, confirm, toast } from '@/components/ui'
+import { AlertCircle, ArrowLeft, BedDouble, HelpCircle, IdCard, KeyRound, Smartphone } from 'lucide-react'
+import { hostelerLogin } from '@/api/auth'
+import { errorMessage } from '@/api/client'
+import { useHostelerSession } from '@/api/session'
+import { Button, Card, Field, Input, Modal, PasswordInput, toast } from '@/components/ui'
 import { normalizeLoginId } from '@/lib/auth'
 
 export default function PortalLogin() {
-  const session = useStore((s) => s.session)
-  const org = useStore((s) => s.org)
-  const mustChange = useStore((s) =>
-    s.session?.kind === 'hosteler' ? s.hostelers.find((h) => h.id === s.session!.hostelerId)?.mustChangePassword : false,
-  )
-  const loginHosteler = useStore((s) => s.loginHosteler)
-  const loadDemo = useStore((s) => s.loadDemo)
-  const logout = useStore((s) => s.logout)
+  const session = useHostelerSession()
   const navigate = useNavigate()
-
   const [params] = useSearchParams()
+
   const [loginId, setLoginId] = useState(() => normalizeLoginId(params.get('id') ?? ''))
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
 
-  if (session?.kind === 'hosteler') return <Navigate to={mustChange ? '/portal/set-password' : '/portal'} replace />
+  if (session) return <Navigate to={session.mustChangePassword ? '/portal/set-password' : '/portal'} replace />
 
-  const isDemo = org?.email.toLowerCase() === 'demo@hostelhub.in'
-
-  const submit = (e: FormEvent) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault()
     setError('')
     if (!loginId.trim()) return setError('Enter your Hosteler ID.')
     if (!password) return setError('Enter your password.')
     setLoading(true)
-    setTimeout(() => {
-      const res = loginHosteler(loginId, password)
-      setLoading(false)
-      if (!res.ok) return setError(res.error)
-      if (res.mustChangePassword) {
+    try {
+      const s = await hostelerLogin(loginId, password)
+      if (s.mustChangePassword) {
         navigate('/portal/set-password', { replace: true })
       } else {
-        toast.success('Welcome back!')
+        toast.success(`Welcome back, ${s.hosteler.name.split(' ')[0]}!`)
         navigate('/portal', { replace: true })
       }
-    }, 300)
-  }
-
-  const fill = (id: string, pw: string) => {
-    setLoginId(id)
-    setPassword(pw)
-    setError('')
-  }
-
-  const loadDemoData = async () => {
-    if (org && !isDemo) {
-      const ok = await confirm({
-        title: 'Load demo data?',
-        message: `This replaces the "${org.name}" workspace stored in this browser with demo data.`,
-        confirmText: 'Load demo',
-        danger: true,
-      })
-      if (!ok) return
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setLoading(false)
     }
-    loadDemo()
-    logout()
-    fill(DEMO_HOSTELER.loginId, DEMO_HOSTELER.password)
-    toast.success('Demo data loaded — tap Log in to continue')
   }
 
   return (
@@ -135,46 +107,6 @@ export default function PortalLogin() {
                 <HelpCircle className="h-4 w-4" /> First time here / forgot password?
               </button>
             </form>
-
-            <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-sm font-semibold text-slate-800">Try the demo</p>
-              <p className="mt-0.5 text-xs text-slate-500">
-                {isDemo ? 'Demo data is loaded in this browser.' : 'Load the demo data in this browser first.'}
-              </p>
-              <div className="mt-3 space-y-2">
-                {!isDemo && (
-                  <Button size="sm" variant="outline" className="w-full" icon={<Database className="h-3.5 w-3.5" />} onClick={loadDemoData}>
-                    Load demo data
-                  </Button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => fill(DEMO_HOSTELER.loginId, DEMO_HOSTELER.password)}
-                  className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-left hover:border-brand-300"
-                >
-                  <span>
-                    <span className="block text-xs font-medium text-slate-800">Regular hosteler</span>
-                    <span className="font-mono text-xs text-slate-500">
-                      {DEMO_HOSTELER.loginId} · {DEMO_HOSTELER.password}
-                    </span>
-                  </span>
-                  <span className="text-xs font-medium text-brand-600">Fill</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => fill(DEMO_FIRST_LOGIN.loginId, DEMO_FIRST_LOGIN.tempPassword)}
-                  className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-left hover:border-brand-300"
-                >
-                  <span>
-                    <span className="block text-xs font-medium text-slate-800">First login (temporary password)</span>
-                    <span className="font-mono text-xs text-slate-500">
-                      {DEMO_FIRST_LOGIN.loginId} · {DEMO_FIRST_LOGIN.tempPassword}
-                    </span>
-                  </span>
-                  <span className="text-xs font-medium text-brand-600">Fill</span>
-                </button>
-              </div>
-            </div>
           </Card>
           <Link to="/" className="mt-6 flex items-center justify-center gap-1 text-sm text-slate-400 hover:text-white">
             <ArrowLeft className="h-4 w-4" /> Back to home

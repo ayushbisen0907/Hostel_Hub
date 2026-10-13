@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { BedDouble, CalendarDays, Home, LogOut, MessageSquareWarning, UserRound, UtensilsCrossed, Wallet } from 'lucide-react'
-import { useStore } from '@/store'
-import { useCurrentHosteler } from '@/store/selectors'
+import { logout } from '@/api/auth'
+import { useHostelerSession } from '@/api/session'
 import { Avatar } from '@/components/ui'
 import { cn } from '@/lib/utils'
 
@@ -15,9 +15,9 @@ const NAV = [
 ]
 
 export function PortalLayout() {
-  const me = useCurrentHosteler()
-  const hostel = useStore((s) => s.hostels.find((h) => h.id === me?.hostelId))
-  const logout = useStore((s) => s.logout)
+  const session = useHostelerSession()
+  const me = session?.hosteler
+  const hostel = session?.hostel
   const navigate = useNavigate()
 
   return (
@@ -45,7 +45,7 @@ export function PortalLayout() {
               </NavLink>
             ))}
           </nav>
-          {me && <Avatar name={me.name} src={me.photo} size="sm" />}
+          {me && <Avatar name={me.name} size="sm" />}
           <button
             title="Log out"
             className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"

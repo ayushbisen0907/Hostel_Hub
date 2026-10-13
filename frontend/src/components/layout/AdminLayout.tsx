@@ -24,7 +24,12 @@ import {
   Wallet,
   X,
 } from 'lucide-react'
-import { useStore } from '@/store'
+import { useQuery } from '@tanstack/react-query'
+import { get } from '@/api/client'
+import { logout } from '@/api/auth'
+import { useHostels, useOrg, useScope, useScopeStore } from '@/api/common'
+import { roleCan, useStaffSession, type StaffModule } from '@/api/session'
+import type { ListResponse } from '@/api/types'
 import { Avatar, Badge, Select } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { hasModule, planInfo, type ModuleKey } from '@/lib/plans'
@@ -79,11 +84,37 @@ const NAV: { section: string; items: NavItem[] }[] = [
   },
 ]
 
+/** Counts for the sidebar badges & bell. Query keys share prefixes with the modules, so they refresh after changes. */
+function usePendingCounts() {
+  const staff = useStaffSession()
+  const { data: org } = useOrg()
+  const role = staff?.user.role
+  const plan = org?.plan ?? staff?.organization.plan
+  const complaints = useQuery({
+    queryKey: ['complaints', 'stats'],
+    queryFn: () => get<{ open: number; inProgress: number }>('/complaints/stats'),
+    enabled: roleCan(role, 'complaints'),
+    refetchInterval: 60_000,
+  })
+  const leaves = useQuery({
+    queryKey: ['leaves', { status: 'pending' }],
+    queryFn: () => get<ListResponse<unknown>>('/leaves', { status: 'pending' }),
+    enabled: roleCan(role, 'attendance') && hasModule(plan, 'attendance'),
+    refetchInterval: 60_000,
+  })
+  const openComplaints = (complaints.data?.open ?? 0) + (complaints.data?.inProgress ?? 0)
+  return { openComplaints, newComplaints: complaints.data?.open ?? 0, pendingLeaves: leaves.data?.items.length ?? 0 }
+}
+
 function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
-  const plan = useStore((s) => s.org?.plan)
-  const openComplaints = useStore((s) => s.complaints.filter((c) => c.status !== 'resolved').length)
-  const pendingLeaves = useStore((s) => s.leaves.filter((l) => l.status === 'pending').length)
+  const staff = useStaffSession()
+  const { data: org } = useOrg()
+  const plan = org?.plan ?? staff?.organization.plan
+  const role = staff?.user.role
+  const { openComplaints, pendingLeaves } = usePendingCounts()
   const badges: Record<string, number> = { '/app/complaints': openComplaints, '/app/attendance': pendingLeaves }
+  // modules the role can't use are hidden; plan-locked ones show a lock
+  const visible = (item: NavItem) => !item.module || item.module === 'portal' || roleCan(role, item.module as StaffModule)
 
   return (
     <nav className="flex h-full flex-col">
@@ -94,7 +125,9 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         <span className="text-lg font-bold text-slate-900">HostelHub</span>
       </Link>
       <div className="flex-1 space-y-5 overflow-y-auto px-3 pb-6 pt-2">
-        {NAV.map((group) => (
+        {NAV.map((group) => ({ ...group, items: group.items.filter(visible) }))
+          .filter((group) => group.items.length > 0)
+          .map((group) => (
           <div key={group.section}>
             <p className="mb-1.5 px-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400">{group.section}</p>
             <div className="space-y-0.5">
@@ -128,26 +161,27 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           </div>
         ))}
       </div>
-      <div className="border-t border-slate-200 p-4">
+      {role === 'owner' && <div className="border-t border-slate-200 p-4">
         <Link to="/app/settings?tab=billing" onClick={onNavigate} className="block rounded-lg bg-gradient-to-br from-brand-600 to-brand-800 p-3 text-white">
           <p className="text-xs opacity-80">Current plan</p>
           <p className="font-semibold">{planInfo(plan ?? 'free').name}</p>
           {plan !== 'pro' && <p className="mt-1 text-xs underline opacity-90">Upgrade →</p>}
         </Link>
-      </div>
+      </div>}
     </nav>
   )
 }
 
 export function AdminLayout() {
   const [mobileOpen, setMobileOpen] = useState(false)
-  const org = useStore((s) => s.org)
-  const hostels = useStore((s) => s.hostels)
-  const current = useStore((s) => s.currentHostelId)
-  const setCurrent = useStore((s) => s.setCurrentHostel)
-  const logout = useStore((s) => s.logout)
-  const pendingLeaves = useStore((s) => s.leaves.filter((l) => l.status === 'pending').length)
-  const openComplaints = useStore((s) => s.complaints.filter((c) => c.status === 'open').length)
+  const staff = useStaffSession()
+  const { data: orgDetails } = useOrg()
+  const org = orgDetails ?? staff?.organization
+  const user = staff?.user
+  const { data: hostels = [] } = useHostels()
+  const current = useScope()
+  const setCurrent = useScopeStore((s) => s.setHostelId)
+  const { pendingLeaves, newComplaints: openComplaints } = usePendingCounts()
   const navigate = useNavigate()
   const location = useLocation()
   const [userMenu, setUserMenu] = useState(false)
@@ -197,9 +231,9 @@ export function AdminLayout() {
           </button>
           <div className="relative">
             <button className="flex items-center gap-2 rounded-lg p-1 hover:bg-slate-100" onClick={() => setUserMenu((v) => !v)}>
-              <Avatar name={org?.ownerName ?? 'Owner'} size="sm" />
+              <Avatar name={user?.name ?? 'User'} size="sm" />
               <div className="hidden text-left sm:block">
-                <p className="text-sm font-medium leading-tight text-slate-800">{org?.ownerName}</p>
+                <p className="text-sm font-medium leading-tight text-slate-800">{user?.name}</p>
                 <p className="text-xs leading-tight text-slate-500">{org?.name}</p>
               </div>
             </button>
@@ -208,11 +242,12 @@ export function AdminLayout() {
                 <div className="fixed inset-0 z-10" onClick={() => setUserMenu(false)} />
                 <div className="absolute right-0 z-20 mt-2 w-56 rounded-xl border border-slate-200 bg-white py-1 shadow-lg">
                   <div className="border-b border-slate-100 px-4 py-2">
-                    <p className="text-sm font-medium">{org?.ownerName}</p>
-                    <p className="truncate text-xs text-slate-500">{org?.email}</p>
-                    <Badge tone="blue" className="mt-1">
-                      {planInfo(org?.plan ?? 'free').name} plan
-                    </Badge>
+                    <p className="text-sm font-medium">{user?.name}</p>
+                    <p className="truncate text-xs text-slate-500">{user?.email}</p>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      <Badge>{user?.role ? user.role[0]!.toUpperCase() + user.role.slice(1) : ''}</Badge>
+                      <Badge tone="blue">{planInfo(org?.plan ?? 'free').name} plan</Badge>
+                    </div>
                   </div>
                   <button
                     className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-slate-50"

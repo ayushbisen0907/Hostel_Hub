@@ -31,7 +31,6 @@ To browse the data in **MongoDB Compass**, paste the same connection string into
 
 ```bash
 npm install
-npm run seed      # optional: demo data (prints the logins)
 npm run dev       # http://localhost:4000/api
 ```
 
@@ -41,15 +40,8 @@ npm run dev       # http://localhost:4000/api
 | `npm run build` / `npm start` | Compile to `dist/` and run in production |
 | `npm test` | Full test suite against an in-memory MongoDB (doesn't touch Atlas) |
 | `npm run typecheck` | TypeScript check |
-| `npm run seed` / `npm run seed -- --reset` | Create / recreate the demo organization |
 
-Demo logins after seeding:
-
-| Who | Login |
-|---|---|
-| Owner | `demo@hostelhub.in` / `Demo@1234` |
-| Hosteler (activated) | `SBH-0001` / `Hostel@123` |
-| Hosteler (first login) | `SBH-0002` / `Welcome8` (the API forces a password change) |
+The first owner account is created from the website's **Sign up** page (`POST /api/auth/signup`).
 
 ## 3. How auth works
 
@@ -99,7 +91,6 @@ src/
   lib/          errors, validation helpers, auth (bcrypt/JWT/IDs), money (invoices & payments), plans, uploads
   models/       Mongoose schemas
   modules/      one folder per area, each with routes.ts
-  scripts/      seed
 tests/          API tests (vitest + supertest + in-memory MongoDB)
 ```
 

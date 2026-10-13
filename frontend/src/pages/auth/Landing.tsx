@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import {
   ArrowRight,
   BarChart3,
@@ -12,7 +12,6 @@ import {
   LogIn,
   Menu,
   MessageSquareWarning,
-  PlayCircle,
   ShieldCheck,
   Smartphone,
   Sparkles,
@@ -22,8 +21,7 @@ import {
   Wallet,
   X,
 } from 'lucide-react'
-import { useStore } from '@/store'
-import { Badge, Button, toast } from '@/components/ui'
+import { Badge, Button } from '@/components/ui'
 import { PLANS } from '@/lib/plans'
 import { cn, formatMoney } from '@/lib/utils'
 
@@ -57,7 +55,7 @@ const FAQS: { q: string; a: string }[] = [
   },
   {
     q: 'Where is my data stored?',
-    a: 'In this version, everything is stored in your own browser. You can export a full backup any time from Settings → Data and import it on another device.',
+    a: 'Your data is stored securely in the cloud (MongoDB), separated per account, with hashed passwords. Owners can export a full backup any time from Settings → Data.',
   },
   {
     q: 'I run more than one hostel. Does that work?',
@@ -66,16 +64,8 @@ const FAQS: { q: string; a: string }[] = [
 ]
 
 export default function Landing() {
-  const loadDemo = useStore((s) => s.loadDemo)
-  const navigate = useNavigate()
   const [menuOpen, setMenuOpen] = useState(false)
   const [openFaq, setOpenFaq] = useState<number | null>(0)
-
-  const tryDemo = () => {
-    loadDemo()
-    toast.success('Demo workspace loaded')
-    navigate('/app/dashboard')
-  }
 
   const navLinks = [
     { href: '#features', label: 'Features' },
@@ -163,9 +153,11 @@ export default function Landing() {
                   Start free
                 </Button>
               </Link>
-              <Button size="lg" variant="outline" icon={<PlayCircle className="h-5 w-5" />} onClick={tryDemo}>
-                Try live demo
-              </Button>
+              <Link to="/login">
+                <Button size="lg" variant="outline" className="w-full sm:w-auto">
+                  Owner login
+                </Button>
+              </Link>
             </div>
             <p className="mt-4 text-sm text-slate-500">Free up to 20 beds · No credit card · Set up in 10 minutes</p>
           </div>
@@ -375,7 +367,7 @@ export default function Landing() {
           <div className="rounded-3xl bg-gradient-to-br from-brand-600 to-brand-800 px-6 py-14 text-center sm:px-12">
             <h2 className="text-3xl font-bold text-white sm:text-4xl">Ready to ditch the register?</h2>
             <p className="mx-auto mt-4 max-w-xl text-brand-100">
-              Create your workspace in a minute, or explore a fully loaded demo hostel first.
+              Create your workspace in a minute and add your first hostel today.
             </p>
             <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
               <Link to="/signup">
@@ -383,9 +375,11 @@ export default function Landing() {
                   Create free account
                 </Button>
               </Link>
-              <Button size="lg" variant="outline" className="border-white/40 bg-transparent text-white hover:bg-white/10" onClick={tryDemo}>
-                Try live demo
-              </Button>
+              <Link to="/portal/login">
+                <Button size="lg" variant="outline" className="w-full border-white/40 bg-transparent text-white hover:bg-white/10 sm:w-auto">
+                  Hosteler login
+                </Button>
+              </Link>
             </div>
           </div>
         </div>
@@ -409,7 +403,6 @@ export default function Landing() {
               <li><a href="#features" className="hover:text-slate-900">Features</a></li>
               <li><a href="#pricing" className="hover:text-slate-900">Pricing</a></li>
               <li><a href="#faq" className="hover:text-slate-900">FAQ</a></li>
-              <li><button onClick={tryDemo} className="hover:text-slate-900">Live demo</button></li>
             </ul>
           </div>
           <div>

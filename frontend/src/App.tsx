@@ -1,10 +1,13 @@
 import type { ReactNode } from 'react'
 import { BrowserRouter, Link, Navigate, Route, Routes } from 'react-router-dom'
 import { Lock } from 'lucide-react'
-import { useStore } from '@/store'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { queryClient } from '@/api/query'
+import { useCan, useHostelerSession, useSession, useStaffSession } from '@/api/session'
+import { useOrg } from '@/api/common'
 import { AdminLayout } from '@/components/layout/AdminLayout'
 import { PortalLayout } from '@/components/layout/PortalLayout'
-import { Button, Card, ConfirmHost, Spinner, Toaster } from '@/components/ui'
+import { Button, Card, ConfirmHost, LoadingState, Toaster } from '@/components/ui'
 import { hasModule, planInfo, PLANS, type ModuleKey } from '@/lib/plans'
 
 import Landing from '@/pages/auth/Landing'
@@ -43,85 +46,82 @@ import PortalLeave from '@/pages/portal/Leave'
 import PortalProfile from '@/pages/portal/Profile'
 
 function RequireAdmin({ children }: { children: ReactNode }) {
-  const session = useStore((s) => s.session)
-  if (session?.kind !== 'admin') return <Navigate to="/login" replace />
+  const staff = useStaffSession()
+  if (!staff) return <Navigate to="/login" replace />
   return <>{children}</>
-}
-
-/** True while a logged-in hosteler is still on their temporary password. */
-function useNeedsPasswordSetup() {
-  return useStore((s) =>
-    s.session?.kind === 'hosteler'
-      ? (s.hostelers.find((h) => h.id === s.session!.hostelerId)?.mustChangePassword ?? false)
-      : false,
-  )
 }
 
 function RequireHosteler({ children }: { children: ReactNode }) {
-  const session = useStore((s) => s.session)
-  const exists = useStore((s) => (s.session?.kind === 'hosteler' ? s.hostelers.some((h) => h.id === s.session!.hostelerId && h.status !== 'checked_out') : false))
-  const needsSetup = useNeedsPasswordSetup()
-  if (session?.kind !== 'hosteler' || !exists) return <Navigate to="/portal/login" replace />
-  if (needsSetup) return <Navigate to="/portal/set-password" replace />
+  const h = useHostelerSession()
+  if (!h) return <Navigate to="/portal/login" replace />
+  if (h.mustChangePassword) return <Navigate to="/portal/set-password" replace />
   return <>{children}</>
 }
 
+/** Print pages work for both staff and hostelers. */
 function RequireAny({ children }: { children: ReactNode }) {
-  const session = useStore((s) => s.session)
-  const needsSetup = useNeedsPasswordSetup()
+  const session = useSession((s) => s.session)
   if (!session) return <Navigate to="/login" replace />
-  if (needsSetup) return <Navigate to="/portal/set-password" replace />
+  if (session.kind === 'hosteler' && session.mustChangePassword) return <Navigate to="/portal/set-password" replace />
   return <>{children}</>
 }
 
-/** Shows an upgrade prompt when the current plan doesn't include a module. */
-function Gate({ module, children }: { module: ModuleKey; children: ReactNode }) {
-  const plan = useStore((s) => s.org?.plan)
-  if (hasModule(plan, module)) return <>{children}</>
-  const needed = PLANS.find((p) => p.modules.includes(module))
+function LockedCard({ title, message, action }: { title: string; message: string; action?: ReactNode }) {
   return (
     <Card className="mx-auto mt-10 max-w-lg p-8 text-center">
       <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-50 text-amber-600">
         <Lock className="h-6 w-6" />
       </div>
-      <h2 className="text-xl font-bold text-slate-900">Upgrade to unlock</h2>
-      <p className="mt-2 text-sm text-slate-500">
-        This module isn't part of the {planInfo(plan ?? 'free').name} plan. Upgrade to {needed?.name ?? 'a higher plan'} to use it.
-      </p>
-      <Link to="/app/settings?tab=billing">
-        <Button className="mt-6">See plans</Button>
-      </Link>
+      <h2 className="text-xl font-bold text-slate-900">{title}</h2>
+      <p className="mt-2 text-sm text-slate-500">{message}</p>
+      {action}
     </Card>
   )
 }
 
-export default function App() {
-  const hydrated = useStore((s) => s.hydrated)
-  const session = useStore((s) => s.session)
-
-  if (!hydrated) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <Spinner className="h-8 w-8" />
-      </div>
-    )
+/**
+ * Blocks a module when the staff member's role can't use it, or the
+ * organization's plan doesn't include it (the API enforces the same rules).
+ */
+function Gate({ module, children }: { module: ModuleKey; children: ReactNode }) {
+  const staff = useStaffSession()
+  const { data: org, isLoading } = useOrg()
+  const can = useCan()
+  if (module !== 'portal' && !can(module)) {
+    return <LockedCard title="No access" message={`Your role (${staff?.user.role}) can't open this section. Ask the owner for access.`} />
   }
-
+  if (isLoading) return <LoadingState />
+  const plan = org?.plan ?? staff?.organization.plan ?? 'free'
+  if (hasModule(plan, module)) return <>{children}</>
+  const needed = PLANS.find((p) => p.modules.includes(module))
   return (
+    <LockedCard
+      title="Upgrade to unlock"
+      message={`This module isn't part of the ${planInfo(plan).name} plan. Upgrade to ${needed?.name ?? 'a higher plan'} to use it.`}
+      action={
+        staff?.user.role === 'owner' ? (
+          <Link to="/app/settings?tab=billing">
+            <Button className="mt-6">See plans</Button>
+          </Link>
+        ) : undefined
+      }
+    />
+  )
+}
+
+function Home() {
+  const session = useSession((s) => s.session)
+  if (session?.kind === 'staff') return <Navigate to="/app/dashboard" replace />
+  if (session?.kind === 'hosteler') return <Navigate to="/portal" replace />
+  return <Landing />
+}
+
+export default function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
     <BrowserRouter>
       <Routes>
-        <Route
-          path="/"
-          element={
-            session?.kind === 'admin' ? (
-              <Navigate to="/app/dashboard" replace />
-            ) : session?.kind === 'hosteler' ? (
-              <Navigate to="/portal" replace /> // RequireHosteler forwards to set-password if needed
-            ) : (
-              <Landing />
-            )
-          }
-        />
+        <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/portal/login" element={<PortalLogin />} />
@@ -180,5 +180,6 @@ export default function App() {
       <Toaster />
       <ConfirmHost />
     </BrowserRouter>
+    </QueryClientProvider>
   )
 }

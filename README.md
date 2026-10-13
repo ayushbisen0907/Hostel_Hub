@@ -16,7 +16,6 @@ hostelhub/
 cd backend
 npm install
 cp .env.example .env      # paste your Atlas MONGODB_URI and a JWT_SECRET
-npm run seed              # optional demo data
 npm run dev               # http://localhost:4000/api
 ```
 
@@ -28,7 +27,7 @@ npm install
 npm run dev               # http://localhost:5173
 ```
 
-> Right now the frontend still stores its data in the browser (demo mode). Connecting it to the backend API is the next step.
+> The frontend talks to the backend through `/api` (Vite proxies it to http://localhost:4000 in development). Start the backend first.
 
 ## Tests
 

@@ -1,8 +1,12 @@
 import { useState, type ChangeEvent, type FormEvent } from 'react'
 import { Link, Navigate, useNavigate } from 'react-router-dom'
-import { BedDouble, Check, Info } from 'lucide-react'
-import { useStore } from '@/store'
-import { Button, Card, Field, Input, confirm, toast } from '@/components/ui'
+import { AlertCircle, BedDouble, Check } from 'lucide-react'
+import { staffSignup } from '@/api/auth'
+import { ApiError, errorMessage } from '@/api/client'
+import { useStaffSession } from '@/api/session'
+import { Button, Card, Field, Input, PasswordInput, toast } from '@/components/ui'
+import { PasswordRules } from '@/components/PasswordRules'
+import { checkPasswordStrength } from '@/lib/auth'
 
 interface FormState {
   orgName: string
@@ -22,22 +26,21 @@ function validate(f: FormState): Errors {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim())) e.email = 'Enter a valid email address.'
   const digits = f.phone.replace(/\D/g, '')
   if (digits.length < 10 || digits.length > 12) e.phone = 'Enter a valid 10-digit mobile number.'
-  if (f.password.length < 6) e.password = 'Password must be at least 6 characters.'
+  if (!checkPasswordStrength(f.password).ok) e.password = 'At least 8 characters with a letter and a number.'
   if (f.confirm !== f.password) e.confirm = 'Passwords do not match.'
   return e
 }
 
 export default function Signup() {
-  const session = useStore((s) => s.session)
-  const org = useStore((s) => s.org)
-  const signup = useStore((s) => s.signup)
+  const staff = useStaffSession()
   const navigate = useNavigate()
 
   const [form, setForm] = useState<FormState>({ orgName: '', ownerName: '', email: '', phone: '', password: '', confirm: '' })
   const [errors, setErrors] = useState<Errors>({})
+  const [serverError, setServerError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  if (session?.kind === 'admin') return <Navigate to="/app/dashboard" replace />
+  if (staff) return <Navigate to="/app/dashboard" replace />
 
   const set = (k: keyof FormState) => (e: ChangeEvent<HTMLInputElement>) => {
     setForm((f) => ({ ...f, [k]: e.target.value }))
@@ -46,37 +49,33 @@ export default function Signup() {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
+    setServerError('')
     const errs = validate(form)
     setErrors(errs)
     if (Object.keys(errs).length) return
-    if (org) {
-      const ok = await confirm({
-        title: 'Start a fresh workspace?',
-        message: `This browser already holds the workspace "${org.name}". Creating a new account will replace all of its data.`,
-        confirmText: 'Create new workspace',
-        danger: true,
-      })
-      if (!ok) return
-    }
     setLoading(true)
-    setTimeout(() => {
-      signup({
+    try {
+      await staffSignup({
         orgName: form.orgName.trim(),
         ownerName: form.ownerName.trim(),
         email: form.email.trim(),
         phone: form.phone.trim(),
         password: form.password,
       })
+      toast.success("Your workspace is ready. Let's add your first hostel!")
+      navigate('/app/dashboard', { replace: true })
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'CONFLICT') setErrors({ email: err.message })
+      else setServerError(errorMessage(err))
+    } finally {
       setLoading(false)
-      toast.success('Your workspace is ready. Let\'s add your first hostel!')
-      navigate('/app/dashboard')
-    }, 300)
+    }
   }
 
-  const perks = ['Free up to 20 beds', 'No credit card required', 'Hosteler portal included']
+  const perks = ['Free up to 20 beds', 'No credit card required', 'Hosteler portal on paid plans']
 
   return (
-    <div className="flex min-h-screen flex-col bg-gradient-to-b from-brand-50 to-slate-50">
+    <div className="flex min-h-[100dvh] flex-col bg-gradient-to-b from-brand-50 to-slate-50">
       <header className="mx-auto flex h-16 w-full max-w-6xl items-center px-4 sm:px-6">
         <Link to="/" className="flex items-center gap-2.5">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-600 text-white">
@@ -99,8 +98,14 @@ export default function Signup() {
           </div>
           <Card className="p-6 sm:p-8">
             <form onSubmit={submit} className="space-y-4" noValidate>
+              {serverError && (
+                <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>{serverError}</span>
+                </div>
+              )}
               <Field label="Hostel / business name" required error={errors.orgName}>
-                <Input value={form.orgName} onChange={set('orgName')} placeholder="e.g. Sunrise Boys Hostel" autoFocus />
+                <Input value={form.orgName} onChange={set('orgName')} placeholder="e.g. Sunrise Hostels" autoFocus />
               </Field>
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Your name" required error={errors.ownerName}>
@@ -114,23 +119,16 @@ export default function Signup() {
                 <Input type="email" value={form.email} onChange={set('email')} placeholder="you@hostel.com" autoComplete="email" />
               </Field>
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Password" required error={errors.password} hint="At least 6 characters">
-                  <Input type="password" value={form.password} onChange={set('password')} autoComplete="new-password" />
+                <Field label="Password" required error={errors.password}>
+                  <PasswordInput value={form.password} onChange={set('password')} autoComplete="new-password" />
                 </Field>
                 <Field label="Confirm password" required error={errors.confirm}>
-                  <Input type="password" value={form.confirm} onChange={set('confirm')} autoComplete="new-password" />
+                  <PasswordInput value={form.confirm} onChange={set('confirm')} autoComplete="new-password" />
                 </Field>
               </div>
+              {form.password && <PasswordRules password={form.password} />}
 
-              <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-800">
-                <Info className="mt-0.5 h-4 w-4 shrink-0" />
-                <span>
-                  Signing up starts a fresh workspace stored in this browser. Any existing workspace or demo data in this browser
-                  will be replaced.
-                </span>
-              </div>
-
-              <Button type="submit" className="w-full" loading={loading}>
+              <Button type="submit" size="lg" className="w-full sm:h-11" loading={loading}>
                 Create account
               </Button>
             </form>

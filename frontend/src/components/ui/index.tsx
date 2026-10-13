@@ -760,6 +760,53 @@ export function Spinner({ className }: { className?: string }) {
   return <Loader2 className={cn('h-6 w-6 animate-spin text-brand-600', className)} />
 }
 
+/** Centered spinner for a loading section/page. */
+export function LoadingState({ label = 'Loading…', className }: { label?: string; className?: string }) {
+  return (
+    <div className={cn('flex flex-col items-center justify-center gap-3 py-16 text-sm text-slate-500', className)}>
+      <Spinner />
+      {label}
+    </div>
+  )
+}
+
+/** Error block with a retry button (pass the query's refetch). */
+export function ErrorState({ error, onRetry, className }: { error: unknown; onRetry?: () => void; className?: string }) {
+  const message = error instanceof Error ? error.message : 'Something went wrong'
+  return (
+    <div className={cn('flex flex-col items-center justify-center px-6 py-14 text-center', className)}>
+      <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-red-50 text-red-500">
+        <AlertTriangle className="h-6 w-6" />
+      </div>
+      <p className="font-semibold text-slate-800">Couldn't load this</p>
+      <p className="mt-1 max-w-sm text-sm text-slate-500">{message}</p>
+      {onRetry && (
+        <Button variant="outline" size="sm" className="mt-4" onClick={onRetry}>
+          Try again
+        </Button>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Renders loading / error states for a React Query result, then `children(data)`.
+ *   <QueryView query={roomsQuery}>{(rooms) => …}</QueryView>
+ */
+export function QueryView<T>({
+  query,
+  children,
+  loading,
+}: {
+  query: { data: T | undefined; isLoading: boolean; error: unknown; refetch: () => unknown }
+  children: (data: T) => ReactNode
+  loading?: ReactNode
+}) {
+  if (query.isLoading) return <>{loading ?? <LoadingState />}</>
+  if (query.error || query.data === undefined) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />
+  return <>{children(query.data)}</>
+}
+
 export function DescriptionList({ items, cols = 2 }: { items: { label: string; value: ReactNode }[]; cols?: 1 | 2 | 3 }) {
   const grid = { 1: 'sm:grid-cols-1', 2: 'sm:grid-cols-2', 3: 'sm:grid-cols-3' }
   return (

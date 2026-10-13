@@ -22,15 +22,16 @@ import type {
   Meal,
   Notice,
   Payment,
+  PaymentClaim,
   Priority,
 } from './types'
+import { notificationsKey } from './notifications'
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
 /* ------------------------------------------------------------------ */
 
 export type AttendanceStatus = 'present' | 'late' | 'leave' | 'absent'
-export type PayMethod = 'upi' | 'card' | 'netbanking'
 
 export interface PortalHome {
   today: string
@@ -50,6 +51,39 @@ export interface PortalHome {
 
 export type PortalInvoice = Invoice & { balance: number; status: NonNullable<Invoice['status']> }
 export type PortalPayment = Payment & { invoiceNumber: string | null; invoiceMonth: string | null }
+
+/** An unpaid bill as returned by GET /portal/payment-info (oldest first). */
+export interface PortalOpenBill {
+  id: ID
+  number: string
+  month: string
+  dueDate: string
+  total: number
+  paidAmount: number
+  balance: number
+  items: Invoice['items']
+}
+
+/** Where / how much to pay: the hostel's UPI details + open bills. */
+export interface PortalPaymentInfo {
+  hostelName: string
+  /** '' when the hostel hasn't set up UPI */
+  upiId: string
+  payeeName: string
+  hasQr: boolean
+  totalDue: number
+  /** sum of reported payments still waiting for staff verification */
+  pendingVerification: number
+  bills: PortalOpenBill[]
+}
+
+export interface PaymentClaimBody {
+  amount: number
+  utr: string
+  paidOn?: string
+  note?: string
+  file?: File | null
+}
 
 export interface MessMenuItem {
   id: ID
@@ -107,6 +141,8 @@ export const portalKeys = {
   photo: ['portal', 'photo'] as const,
   invoices: ['portal', 'invoices'] as const,
   payments: ['portal', 'payments'] as const,
+  paymentInfo: ['portal', 'payment-info'] as const,
+  claims: ['portal', 'payment-claims'] as const,
   mess: ['portal', 'mess'] as const,
   messMenu: ['portal', 'mess', 'menu'] as const,
   optOuts: ['portal', 'mess', 'opt-outs'] as const,
@@ -148,6 +184,21 @@ export function useMyInvoices() {
 export function useMyPayments() {
   return useQuery({ queryKey: portalKeys.payments, queryFn: async () => items(await get<ListResponse<PortalPayment>>('/portal/payments')) })
 }
+
+export function usePaymentInfo() {
+  const enabled = useEnabled()
+  return useQuery({ queryKey: portalKeys.paymentInfo, queryFn: () => get<PortalPaymentInfo>('/portal/payment-info'), enabled })
+}
+
+export function useMyPaymentClaims() {
+  return useQuery({
+    queryKey: portalKeys.claims,
+    queryFn: async () => items(await get<ListResponse<PaymentClaim>>('/portal/payment-claims')),
+  })
+}
+
+export const paymentQrUrl = '/portal/payment-qr'
+export const claimScreenshotUrl = (id: ID) => `/portal/payment-claims/${id}/screenshot`
 
 export function useMessMenu(enabled = true) {
   return useQuery({
@@ -240,19 +291,18 @@ export const documentFileUrl = (id: ID) => `/portal/documents/${id}/file`
 /* Mutations                                                           */
 /* ------------------------------------------------------------------ */
 
-export interface PayBody {
-  invoiceId: ID
-  amount: number
-  method: PayMethod
-  reference?: string
+/** UTR / UPI transaction ID rule — same as the server (6-30 letters or digits, stored upper-case). */
+export const UTR_RE = /^[A-Z0-9]{6,30}$/
+
+export const submitPaymentClaim = ({ file, ...body }: PaymentClaimBody) => {
+  const fields = { amount: body.amount, utr: body.utr.trim().toUpperCase(), paidOn: body.paidOn, note: body.note?.trim() || undefined }
+  return file ? upload<PaymentClaim>('/portal/payment-claims', file, fields) : post<PaymentClaim>('/portal/payment-claims', fields)
 }
 
-export const payInvoice = (body: PayBody) => post<{ payment: Payment; dues: number }>('/portal/pay', body)
-
-export function usePayInvoice() {
-  // errors are shown inside the payment sheet
-  return useApiMutation(payInvoice, {
-    invalidate: [portalKeys.home, portalKeys.invoices, portalKeys.payments],
+/** "I've paid" — report a UPI payment for staff to verify. Errors are shown inside the sheet. */
+export function useSubmitPaymentClaim() {
+  return useApiMutation(submitPaymentClaim, {
+    invalidate: [portalKeys.all, notificationsKey],
     toastErrors: false,
   })
 }

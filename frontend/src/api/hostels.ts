@@ -2,9 +2,9 @@
  * Hostel CRUD (backend/src/modules/hostels/routes.ts). Listing lives in
  * common.ts (useHostels). Owner / manager only.
  */
-import { del, patch, post } from './client'
+import { del, patch, post, upload } from './client'
 import { useApiMutation } from './query'
-import type { Hostel, HostelType, ID } from './types'
+import type { Hostel, HostelCharges, HostelType, ID } from './types'
 
 export interface HostelInput {
   name: string
@@ -14,13 +14,22 @@ export interface HostelInput {
   phone: string
   /** optional hosteler-ID prefix (2-8 letters/digits); blank = auto */
   code?: string
+  /** where hostelers pay rent (required when creating) */
+  upiId: string
+  payeeName: string
+  charges?: HostelCharges
 }
 
 export const hostelsApi = {
   create: (body: HostelInput) => post<Hostel>('/hostels', body),
   update: ({ id, ...body }: Partial<HostelInput> & { id: ID }) => patch<Hostel>(`/hostels/${id}`, body),
   remove: (id: ID) => del<{ ok: true }>(`/hostels/${id}`),
+  /** UPI QR image (≤ 2 MB) */
+  uploadQr: ({ id, file }: { id: ID; file: File }) => upload<Hostel>(`/hostels/${id}/qr`, file, {}, 'put'),
+  removeQr: (id: ID) => del<Hostel>(`/hostels/${id}/qr`),
 }
+
+export const hostelQrUrl = (id: ID) => `/hostels/${id}/qr`
 
 // counts and usage appear in the org, dashboard, reports and room screens
 const INVALIDATE = [['hostels'], ['org'], ['dashboard'], ['reports'], ['rooms']]
@@ -37,4 +46,13 @@ export function useUpdateHostel(onSuccess?: (h: Hostel) => void) {
 
 export function useDeleteHostel() {
   return useApiMutation(hostelsApi.remove, { invalidate: INVALIDATE })
+}
+
+/** Errors are not toasted: the hostel form shows them inline. */
+export function useUploadHostelQr() {
+  return useApiMutation(hostelsApi.uploadQr, { invalidate: [['hostels']], toastErrors: false })
+}
+
+export function useRemoveHostelQr() {
+  return useApiMutation(hostelsApi.removeQr, { invalidate: [['hostels']], toastErrors: false })
 }

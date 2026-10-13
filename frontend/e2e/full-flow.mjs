@@ -118,7 +118,7 @@ try {
   /* 2. Setup through the API with the owner's token               */
   /* ------------------------------------------------------------ */
   await apiCall('PATCH', '/org/plan', { plan: 'pro' }, token)
-  const hostel = await apiCall('POST', '/hostels', { name: 'Sunrise Boys Hostel', type: 'boys', city: 'Indore', address: '12 Vijay Nagar', phone: '9826012345', code: 'SBH' }, token)
+  const hostel = await apiCall('POST', '/hostels', { name: 'Sunrise Boys Hostel', type: 'boys', city: 'Indore', address: '12 Vijay Nagar', phone: '9826012345', code: 'SBH', upiId: 'sunrise.hostel@okhdfc', payeeName: 'Sunrise Hostels', charges: { mess: 3000, electricity: 500, water: 200 } }, token)
   await apiCall('POST', '/rooms/bulk', { hostelId: hostel.id, numbers: ['101', '102', '103'], floor: 1, type: 'ac', sharing: 2, rentPerBed: 6500, amenities: ['AC', 'Wi-Fi'] }, token)
   const vacant = (await apiCall('GET', `/beds/vacant?hostelId=${hostel.id}`, null, token)).items
   const admit = (name, phone, bed) =>
@@ -141,7 +141,7 @@ try {
   /* 3. Open every owner screen                                    */
   /* ------------------------------------------------------------ */
   const ADMIN = ['/app/dashboard', '/app/rooms', '/app/hostelers', `/app/hostelers/${a1.hosteler.id}`, '/app/check-in', `/app/check-out?h=${a1.hosteler.id}`,
-    '/app/gate-log', '/app/documents', '/app/fees', '/app/fees?tab=invoices', '/app/fees?tab=payments', '/app/fees?tab=dues', '/app/fees?tab=deposits',
+    '/app/gate-log', '/app/documents', '/app/fees', '/app/fees?tab=verify', '/app/fees?tab=invoices', '/app/fees?tab=payments', '/app/fees?tab=dues', '/app/fees?tab=deposits',
     '/app/expenses', '/app/mess', '/app/attendance', '/app/attendance?tab=leaves', '/app/complaints', '/app/visitors', '/app/notices', '/app/staff',
     '/app/reports', '/app/settings', '/app/settings?tab=hostels', '/app/settings?tab=team', '/app/settings?tab=billing', '/app/settings?tab=preferences', '/app/settings?tab=data']
 
@@ -243,17 +243,62 @@ try {
   await pp.locator('input[autocomplete="new-password"]').nth(1).fill('Vivaan@2026')
   await pp.getByRole('button', { name: /save & continue/i }).click()
   await pp.waitForURL(/\/portal$/)
-  await pp.goto(`${WEB}/portal/fees`, { waitUntil: 'networkidle' })
-  await pp.getByRole('button', { name: /^Pay now/ }).first().click()
-  await pp.getByPlaceholder('e.g. 412345678901').fill('412345678901')
-  await pp.getByRole('button', { name: /^Pay ₹/ }).click()
-  await pp.getByText('Payment successful').waitFor({ timeout: 15000 })
-  ok('hosteler pays rent from the portal (UI)', true)
+  // the first bill is itemized from the hostel's charges
   const hTok = await pp.evaluate(() => JSON.parse(localStorage.getItem('hostelhub-session') || '{}').state?.session?.token)
-  const myInv = (await apiCall('GET', '/portal/invoices', null, hTok)).items
-  ok('invoice is marked paid on the server', myInv.length > 0 && myInv.every((i) => i.balance === 0), myInv.map((i) => `${i.number}:${i.status}`).join(','))
-  const ownerView = (await apiCall('GET', `/payments?q=${encodeURIComponent('Vivaan')}`, null, token)).items
-  ok('owner sees the portal payment', ownerView.some((p) => p.recordedBy === 'hosteler'))
+  const info = await apiCall('GET', '/portal/payment-info', null, hTok)
+  const keys = info.bills[0]?.items.map((i) => i.key).sort().join(',')
+  ok('first bill is itemized (rent, electricity, water; no mess when not opted)', keys === 'electricity,rent,water', `${keys} = ₹${info.totalDue}`)
+  ok('hosteler sees the hostel UPI ID', info.upiId === 'sunrise.hostel@okhdfc')
+
+  // hosteler pays by UPI outside the app, then reports it
+  await pp.goto(`${WEB}/portal/fees`, { waitUntil: 'networkidle' })
+  await pp.getByRole('button', { name: /^Pay rent/ }).first().click()
+  await pp.getByText('sunrise.hostel@okhdfc').first().waitFor()
+  await pp.getByRole('button', { name: /I've paid/ }).click()
+  await pp.getByLabel(/Amount you paid/).fill(String(info.totalDue))
+  await pp.getByPlaceholder('e.g. 412345678901').fill('412345678901')
+  await pp.getByRole('button', { name: /Send for verification/ }).click()
+  await pp.getByText('Sent to your hostel for verification').waitFor({ timeout: 15000 })
+  ok('hosteler reports a UPI payment (UI)', true)
+  const stillDue = await apiCall('GET', '/portal/payment-info', null, hTok)
+  ok('nothing is marked paid before verification', stillDue.totalDue === info.totalDue && stillDue.pendingVerification === info.totalDue)
+
+  // owner is notified, verifies only part of it in the UI
+  const ownerNotes = await apiCall('GET', '/notifications', null, token)
+  ok('owner gets a "payment submitted" notification', ownerNotes.unreadCount > 0 && ownerNotes.items.some((n) => n.type === 'payment_submitted'))
+  await page.goto(`${WEB}/app/fees?tab=verify`, { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: /^Verify$/ }).first().click()
+  const received = info.totalDue - 1000
+  await page.getByLabel(/Amount received/).fill(String(received))
+  await page.getByRole('button', { name: /^Verify$/ }).last().click()
+  await page.waitForTimeout(1500)
+  const claims = await apiCall('GET', '/payment-claims?status=all', null, token)
+  const claim = claims.items.find((c) => c.utr === '412345678901')
+  ok('owner verifies a partial payment (UI)', claim?.status === 'verified' && claim.receivedAmount === received, `${claim?.status} ₹${claim?.receivedAmount}`)
+
+  const after = await apiCall('GET', '/portal/payment-info', null, hTok)
+  ok('₹1,000 stays due after the partial payment', after.totalDue === 1000, `due ₹${after.totalDue}`)
+  const hNotes = await apiCall('GET', '/portal/notifications', null, hTok)
+  const verified = hNotes.items.find((n) => n.type === 'payment_verified')
+  ok('hosteler is notified with the remaining due', !!verified && /Remaining due: ₹1,000/.test(verified.body), verified?.body)
+
+  // next month's bill shows the carried-over balance
+  const nextMonth = (() => {
+    const d = new Date()
+    d.setDate(1)
+    d.setMonth(d.getMonth() + 1)
+    return d.toISOString().slice(0, 7)
+  })()
+  await apiCall('POST', '/invoices/generate', { month: nextMonth }, token)
+  const nextInfo = await apiCall('GET', '/portal/payment-info', null, hTok)
+  const newBill = nextInfo.bills.find((b) => b.month === nextMonth)
+  ok('next month: previous balance + new bill', nextInfo.bills.length === 2 && nextInfo.totalDue === 1000 + (newBill?.total ?? 0), `₹1,000 + ₹${newBill?.total}`)
+  const detail = await apiCall('GET', `/invoices/${newBill.id}`, null, token)
+  ok('new bill shows the previous balance', detail.previousBalance.amount === 1000)
+  await visit(page, `/print/invoice/${newBill.id}`, 'print (with previous balance)')
+  const billNote = (await apiCall('GET', '/portal/notifications', null, hTok)).items.find((n) => n.type === 'bill_generated')
+  ok('hosteler is notified about the new bill', !!billNote, billNote?.title)
+  for (const pth of ['/portal', '/portal/fees']) await visit(pp, pth, 'hosteler phone (after payments)')
 } catch (e) {
   results.push(false)
   console.log('FAIL  crashed:', e.message)

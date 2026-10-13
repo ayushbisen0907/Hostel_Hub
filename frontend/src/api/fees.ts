@@ -40,6 +40,15 @@ export interface PrintHostel {
   city: string
   phone: string
   code?: string
+  /** where hostelers pay rent */
+  upiId?: string
+  payeeName?: string
+}
+
+/** Unpaid balance of the hosteler's bills older than this one (shown as "previous balance"). */
+export interface PreviousBalance {
+  amount: number
+  invoices: { id: ID; number: string; month: string; balance: number; dueDate: string }[]
 }
 
 export interface PrintOrg {
@@ -63,6 +72,7 @@ export interface FeesHosteler extends HostelerRef {
 export interface InvoiceDetail extends InvoiceWithStatus {
   daysOverdue: number
   payments: Payment[]
+  previousBalance: PreviousBalance
   hosteler: FeesHosteler | null
   hostel: PrintHostel | null
   organization: PrintOrg | null
@@ -342,6 +352,9 @@ export interface PrintContext {
 export interface PrintInvoice extends PrintContext {
   invoice: InvoiceWithStatus
   payments: Payment[]
+  previousBalance: PreviousBalance
+  /** the hostel's UPI details (null if the hostel has none) */
+  payTo: { upiId: string; payeeName: string; hasQr?: boolean } | null
 }
 
 export interface PrintReceipt extends PrintContext {
@@ -351,8 +364,14 @@ export interface PrintReceipt extends PrintContext {
 
 interface PortalCtx {
   organization: { name: string; phone: string; email: string; currencySymbol: string } | null
-  hostel: { id: ID; name: string; address: string; city: string; phone: string } | null
+  hostel: { id: ID; name: string; address: string; city: string; phone: string; upiId?: string; payeeName?: string } | null
   hosteler: { id: ID; name: string; loginId: string; phone: string; bed: string | null } | null
+}
+
+const NO_PREVIOUS: PreviousBalance = { amount: 0, invoices: [] }
+
+function payTo(h: { upiId?: string; payeeName?: string; hasQr?: boolean } | null | undefined) {
+  return h?.upiId ? { upiId: h.upiId, payeeName: h.payeeName ?? '', hasQr: h.hasQr } : null
 }
 
 function staffParty(h: FeesHosteler | null): PrintParty | null {
@@ -376,11 +395,27 @@ export function usePrintInvoice(id: ID | undefined) {
     enabled: !!id && !!kind,
     queryFn: async (): Promise<PrintInvoice> => {
       if (kind === 'hosteler') {
-        const r = await get<PortalCtx & { invoice: InvoiceWithStatus; payments: Payment[] }>(`/portal/invoices/${id}`)
-        return { invoice: r.invoice, payments: r.payments, organization: r.organization, hostel: r.hostel, hosteler: portalParty(r.hosteler) }
+        const r = await get<PortalCtx & { invoice: InvoiceWithStatus; payments: Payment[]; previousBalance?: PreviousBalance }>(`/portal/invoices/${id}`)
+        return {
+          invoice: r.invoice,
+          payments: r.payments,
+          previousBalance: r.previousBalance ?? NO_PREVIOUS,
+          payTo: payTo(r.hostel),
+          organization: r.organization,
+          hostel: r.hostel,
+          hosteler: portalParty(r.hosteler),
+        }
       }
-      const { payments, hosteler, hostel, organization, ...invoice } = await feesApi.invoice(id!)
-      return { invoice, payments, organization, hostel, hosteler: staffParty(hosteler) }
+      const { payments, hosteler, hostel, organization, previousBalance, ...invoice } = await feesApi.invoice(id!)
+      return {
+        invoice,
+        payments,
+        previousBalance: previousBalance ?? NO_PREVIOUS,
+        payTo: payTo(hostel),
+        organization,
+        hostel,
+        hosteler: staffParty(hosteler),
+      }
     },
   })
 }

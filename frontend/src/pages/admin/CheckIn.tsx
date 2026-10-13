@@ -48,6 +48,7 @@ import {
   toast,
 } from '@/components/ui'
 import { cn, formatBytes, formatDate, formatMoney, titleCase, today } from '@/lib/utils'
+import { monthlyBillItems } from '@/lib/charges'
 import {
   AcademicFields,
   DOC_TYPE_LABELS,
@@ -269,6 +270,10 @@ export default function CheckIn() {
   }, [org, depTouched])
 
   const hostel = hostels.find((h) => h.id === hostelId)
+  // mess: the hostel's own charge if set, else the organization default (same rule as the backend)
+  const messCharge = hostel?.charges?.mess && hostel.charges.mess > 0 ? hostel.charges.mess : settings.messMonthlyCharge
+  const billItems = monthlyBillItems({ monthlyRent: Number(rent) || 0, messOpted }, hostel?.charges, settings.messMonthlyCharge)
+  const firstMonth = billItems.reduce((a, i) => a + i.amount, 0)
   const nextLoginId = hostel ? `${hostel.code}-${String(hostel.hostelerSeq + 1).padStart(4, '0')}` : '—'
 
   const vacantQ = useVacantBeds(hostelId || 'all', !!hostelId)
@@ -767,13 +772,35 @@ export default function CheckIn() {
             </Field>
           </div>
           <div className="mt-4 flex flex-col gap-3">
-            <Switch checked={messOpted} onChange={setMessOpted} label={`Opt for mess (${formatMoney(settings.messMonthlyCharge)}/month)`} />
+            <Switch
+              checked={messOpted}
+              onChange={setMessOpted}
+              label={messCharge > 0 ? `Opt for mess (${formatMoney(messCharge)}/month)` : 'Opt for mess (no mess charge set)'}
+            />
             <Switch
               checked={genInvoice && !reserveOnly}
               disabled={reserveOnly}
               onChange={setGenInvoice}
               label={reserveOnly ? 'First invoice is generated at check-in' : 'Generate first month invoice now'}
             />
+          </div>
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-sm font-medium text-slate-800">{reserveOnly ? 'Monthly bill (estimate)' : 'First month’s bill (estimate)'}</p>
+            <ul className="mt-2 space-y-1 text-sm">
+              {billItems.map((it, i) => (
+                <li key={i} className="flex justify-between gap-3 text-slate-600">
+                  <span className="min-w-0 truncate">{it.label}</span>
+                  <span className="tabular-nums text-slate-800">{formatMoney(it.amount)}</span>
+                </li>
+              ))}
+              <li className="flex justify-between gap-3 border-t border-slate-200 pt-1.5 font-semibold text-slate-900">
+                <span>Total per month</span>
+                <span className="tabular-nums">{formatMoney(firstMonth)}</span>
+              </li>
+            </ul>
+            <p className="mt-2 text-xs text-slate-500">
+              Rent{messOpted ? ', mess' : ''} and {hostel?.name ?? 'the hostel'}'s monthly charges (Settings → Hostels). Deposit is collected separately.
+            </p>
           </div>
         </section>
         <section>
@@ -827,7 +854,6 @@ export default function CheckIn() {
       </div>
     )
   } else {
-    const firstMonth = (Number(rent) || 0) + (messOpted ? settings.messMonthlyCharge : 0)
     body = (
       <div className="space-y-5">
         <div className="flex items-center gap-4">
@@ -882,10 +908,16 @@ export default function CheckIn() {
               { label: 'Type', value: reserveOnly ? <Badge tone="amber">Reservation</Badge> : <Badge tone="green">Check in now</Badge> },
               { label: reserveOnly ? 'Expected check-in' : 'Check-in date', value: formatDate(checkInDate) },
               { label: 'Monthly rent', value: formatMoney(Number(rent) || 0) },
-              { label: 'Mess', value: messOpted ? `Yes (${formatMoney(settings.messMonthlyCharge)})` : 'No' },
+              { label: 'Mess', value: messOpted ? `Yes (${formatMoney(messCharge)})` : 'No' },
               { label: 'Security deposit', value: formatMoney(depositNum) },
               { label: 'Collected now', value: collect ? `${formatMoney(Number(depAmount) || 0)} via ${depMode.toUpperCase()}` : 'No' },
-              { label: 'First invoice', value: genInvoice && !reserveOnly ? formatMoney(firstMonth) : 'Not generated' },
+              {
+                label: 'First invoice',
+                value:
+                  genInvoice && !reserveOnly
+                    ? `${formatMoney(firstMonth)} (${billItems.map((i) => `${i.label} ${formatMoney(i.amount)}`).join(' + ')})`
+                    : 'Not generated',
+              },
             ]}
           />
         </ReviewBlock>

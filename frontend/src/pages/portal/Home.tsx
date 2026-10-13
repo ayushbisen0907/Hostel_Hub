@@ -5,12 +5,13 @@ import {
   BellRing,
   CalendarDays,
   CheckCircle2,
+  Clock,
   FileText,
   MessageSquareWarning,
   UtensilsCrossed,
   Wallet,
 } from 'lucide-react'
-import { usePortalHome, type AttendanceStatus } from '@/api/portal'
+import { usePaymentInfo, usePortalHome, type AttendanceStatus } from '@/api/portal'
 import { Badge, Button, Card, EmptyState, LoadingState, ErrorState, StatusBadge } from '@/components/ui'
 import { cn, formatDate } from '@/lib/utils'
 import { MEAL_ICON, MEAL_LABEL, MEAL_TIME, MEAL_TONE, NoticeCard, SectionTitle, WEEKDAYS, useMoney } from './_shared'
@@ -32,6 +33,7 @@ const ATT_DOT: Record<AttendanceStatus | 'none', string> = {
 
 export default function Home() {
   const home = usePortalHome()
+  const payInfo = usePaymentInfo()
   const money = useMoney()
 
   if (home.isLoading) return <LoadingState />
@@ -44,6 +46,7 @@ export default function Home() {
   const weekday = parseISO(todayKey).getDay()
   const dues = h.dues.total
   const overdue = h.dues.overdue
+  const pendingVerification = payInfo.data?.pendingVerification ?? 0
   const notices = h.notices
   const last7 =
     h.last7DaysAttendance?.map((a) => {
@@ -83,18 +86,23 @@ export default function Home() {
               <p className={cn('mt-1 text-sm', overdue ? 'font-medium text-red-600' : 'text-slate-500')}>
                 {overdue ? 'Overdue since ' : 'Next due on '}
                 {formatDate(h.dues.nextDueDate)}
-                {h.dues.pendingInvoices > 1 && ` · ${h.dues.pendingInvoices} invoices`}
+                {h.dues.pendingInvoices > 1 && ` · ${h.dues.pendingInvoices} bills`}
               </p>
             ) : (
               <p className="mt-1 flex items-center gap-1 text-sm text-emerald-600">
                 <CheckCircle2 className="h-4 w-4" /> You're all paid up
               </p>
             )}
+            {pendingVerification > 0 && (
+              <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-sm font-medium text-amber-700">
+                <Clock className="h-4 w-4" /> {money(pendingVerification)} waiting for verification
+              </p>
+            )}
           </div>
           {dues > 0 && (
-            <Link to="/portal/fees">
-              <Button size="lg" className="rounded-xl" icon={<Wallet className="h-5 w-5" />}>
-                Pay now
+            <Link to="/portal/fees" className="w-full sm:w-auto">
+              <Button size="lg" className="w-full rounded-xl" icon={<Wallet className="h-5 w-5" />}>
+                Pay rent
               </Button>
             </Link>
           )}

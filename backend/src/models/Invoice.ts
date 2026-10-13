@@ -1,8 +1,16 @@
 import { Schema, model, type InferSchemaType } from 'mongoose'
 import { baseOptions, orgField, ref } from './_base.js'
 
+/** Bill line categories. 'other' covers custom lines added by staff. */
+export const CHARGE_KEYS = ['rent', 'mess', 'electricity', 'water', 'internet', 'laundry', 'maintenance', 'late_fee', 'other'] as const
+export type ChargeKey = (typeof CHARGE_KEYS)[number]
+
 const itemSchema = new Schema(
-  { label: { type: String, required: true, trim: true }, amount: { type: Number, required: true, min: 0 } },
+  {
+    key: { type: String, enum: CHARGE_KEYS, default: 'other' },
+    label: { type: String, required: true, trim: true },
+    amount: { type: Number, required: true, min: 0 },
+  },
   { _id: false },
 )
 

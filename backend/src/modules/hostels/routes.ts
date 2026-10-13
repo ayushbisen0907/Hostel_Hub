@@ -6,17 +6,24 @@
  *   POST   /api/hostels       code optional (auto-generated, globally unique)
  *   PATCH  /api/hostels/:id   code can't change once hosteler IDs were issued
  *   DELETE /api/hostels/:id   409 while active/reserved hostelers; cascades rooms, beds, mess menu, staff
+ *   PUT    /api/hostels/:id/qr   multipart image: the hostel's UPI QR code (optional; otherwise drawn from upiId)
+ *   GET    /api/hostels/:id/qr   any staff
+ *   DELETE /api/hostels/:id/qr
+ *
+ * Every hostel has its own UPI ID + payee name (required when creating) where
+ * hostelers pay rent, and its own monthly charge heads (all optional).
  */
 import { Router } from 'express'
 import mongoose, { type Types } from 'mongoose'
 import { z } from 'zod'
 import { ah, idParam, parse } from '../../lib/http.js'
-import { conflict, notFound } from '../../lib/errors.js'
+import { badRequest, conflict, notFound } from '../../lib/errors.js'
+import { removeStoredFile, sendStoredFile, upload } from '../../lib/upload.js'
 import { makeHostelCode } from '../../lib/auth.js'
 import { logActivity } from '../../lib/org.js'
 import { withTransaction } from '../../config/db.js'
 import { requireStaff, staffOf } from '../../middleware/auth.js'
-import { Hostel } from '../../models/Hostel.js'
+import { Hostel, UPI_ID_RE } from '../../models/Hostel.js'
 import { Room } from '../../models/Room.js'
 import { Bed } from '../../models/Bed.js'
 import { Hosteler } from '../../models/Hosteler.js'
@@ -30,6 +37,20 @@ const code = z
   .toUpperCase()
   .regex(/^[A-Z0-9]{2,8}$/, 'Code must be 2-8 letters or digits')
 
+const upiId = z.string().trim().regex(UPI_ID_RE, 'Enter a valid UPI ID, e.g. name@okhdfc')
+const charge = z.coerce.number().min(0).max(1_000_000)
+const chargesSchema = z
+  .object({
+    mess: charge.default(0),
+    electricity: charge.default(0),
+    water: charge.default(0),
+    internet: charge.default(0),
+    laundry: charge.default(0),
+    maintenance: charge.default(0),
+    others: z.array(z.object({ label: z.string().trim().min(1).max(60), amount: charge })).max(10).default([]),
+  })
+  .strict()
+
 const fields = {
   name: z.string().trim().min(2).max(120),
   type: z.enum(['boys', 'girls', 'coed']),
@@ -37,7 +58,13 @@ const fields = {
   city: z.string().trim().min(1).max(80),
   phone: z.string().trim().max(20).default(''),
 }
-const createSchema = z.object({ ...fields, code: code.optional().or(z.literal('').transform(() => undefined)) })
+const createSchema = z.object({
+  ...fields,
+  code: code.optional().or(z.literal('').transform(() => undefined)),
+  upiId,
+  payeeName: z.string().trim().min(2, 'Enter the name shown on the UPI account').max(80),
+  charges: chargesSchema.default({}),
+})
 const patchSchema = z
   .object({
     name: fields.name,
@@ -46,6 +73,9 @@ const patchSchema = z
     city: fields.city,
     phone: z.string().trim().max(20),
     code,
+    upiId,
+    payeeName: z.string().trim().min(2).max(80),
+    charges: chargesSchema,
   })
   .partial()
   .strict()
@@ -80,7 +110,7 @@ async function hostelCounts(orgId: string, hostelIds: Types.ObjectId[]) {
 
 async function withCounts(orgId: string, hostels: InstanceType<typeof Hostel>[]) {
   const counts = await hostelCounts(orgId, hostels.map((h) => h._id))
-  return hostels.map((h) => ({ ...h.toJSON(), counts: counts.get(String(h._id))! }))
+  return hostels.map((h) => ({ ...h.toJSON(), hasQr: !!h.qrStorageKey, counts: counts.get(String(h._id))! }))
 }
 
 async function hostelOr404(orgId: string, id: string) {
@@ -143,7 +173,9 @@ router.patch(
       if (await Hostel.exists({ code: body.code, _id: { $ne: hostel._id } }))
         throw conflict(`Hostel code ${body.code} is already taken. Choose another.`)
     }
-    Object.assign(hostel, body)
+    const { charges, ...rest } = body
+    Object.assign(hostel, rest)
+    if (charges) hostel.set('charges', charges)
     await hostel.save()
     res.json((await withCounts(orgId, [hostel]))[0])
   }),
@@ -166,8 +198,63 @@ router.delete(
       await MessMenu.deleteMany(filter, { session })
       await Staff.deleteMany(filter, { session })
       await hostel.deleteOne({ session })
+      if (hostel.qrStorageKey) removeStoredFile(hostel.qrStorageKey)
       await logActivity(orgId, `Hostel "${hostel.name}" deleted`, 'room', null, session)
     })
     res.json({ ok: true })
+  }),
+)
+
+/* ---------------- UPI QR image ---------------- */
+
+const QR_MAX = 2 * 1024 * 1024
+
+router.put(
+  '/:id/qr',
+  requireStaff('hostels'),
+  upload.single('file'),
+  ah(async (req, res) => {
+    const file = req.file
+    try {
+      const { orgId } = staffOf(req)
+      if (!file) throw badRequest('Choose a QR image to upload')
+      if (!file.mimetype.startsWith('image/')) throw badRequest('The QR code must be an image (JPG/PNG/WEBP)')
+      if (file.size > QR_MAX) throw badRequest('The QR image must be 2 MB or smaller')
+      const hostel = await hostelOr404(orgId, idParam(req))
+      const old = hostel.qrStorageKey
+      hostel.qrStorageKey = file.filename
+      hostel.qrMimeType = file.mimetype
+      await hostel.save()
+      if (old) removeStoredFile(old)
+      res.json((await withCounts(orgId, [hostel]))[0])
+    } catch (e) {
+      if (file) removeStoredFile(file.filename)
+      throw e
+    }
+  }),
+)
+
+router.get(
+  '/:id/qr',
+  requireStaff(),
+  ah(async (req, res) => {
+    const { orgId } = staffOf(req)
+    const hostel = await hostelOr404(orgId, idParam(req))
+    if (!hostel.qrStorageKey) throw notFound('QR image')
+    sendStoredFile(res, hostel.qrStorageKey, `${hostel.code}-upi-qr`, hostel.qrMimeType ?? 'image/png')
+  }),
+)
+
+router.delete(
+  '/:id/qr',
+  requireStaff('hostels'),
+  ah(async (req, res) => {
+    const { orgId } = staffOf(req)
+    const hostel = await hostelOr404(orgId, idParam(req))
+    if (hostel.qrStorageKey) removeStoredFile(hostel.qrStorageKey)
+    hostel.set('qrStorageKey', null)
+    hostel.set('qrMimeType', null)
+    await hostel.save()
+    res.json((await withCounts(orgId, [hostel]))[0])
   }),
 )

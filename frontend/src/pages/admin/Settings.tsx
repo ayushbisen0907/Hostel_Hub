@@ -12,6 +12,7 @@ import {
   Pencil,
   Phone,
   Plus,
+  QrCode,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -20,7 +21,8 @@ import {
 import { errorMessage } from '@/api/client'
 import { useHostels, useOrg, useScopeStore } from '@/api/common'
 import { useCan, useStaffSession } from '@/api/session'
-import { useCreateHostel, useDeleteHostel, useUpdateHostel, type HostelInput } from '@/api/hostels'
+import { useDeleteHostel } from '@/api/hostels'
+import { HOSTEL_TYPES, HostelChargeChips, HostelModal } from './_hostelForm'
 import {
   orgApi,
   useChangeOwnPassword,
@@ -36,7 +38,7 @@ import {
   type UserWithPassword,
 } from '@/api/org'
 import { toastError } from '@/api/query'
-import type { Hostel, HostelType, OrgDetails, Plan, Settings as SettingsT, StaffRole, User } from '@/api/types'
+import type { Hostel, OrgDetails, Plan, Settings as SettingsT, StaffRole, User } from '@/api/types'
 import {
   Badge,
   Button,
@@ -60,7 +62,6 @@ import {
   THead,
   TR,
   Tabs,
-  Textarea,
   confirm,
   toast,
   type BadgeTone,
@@ -284,21 +285,6 @@ function ChangePasswordCard() {
 /* Hostels                                                             */
 /* ------------------------------------------------------------------ */
 
-interface HostelForm {
-  name: string
-  type: HostelType
-  address: string
-  city: string
-  phone: string
-  code: string
-}
-const blankHostel: HostelForm = { name: '', type: 'boys', address: '', city: '', phone: '', code: '' }
-const HOSTEL_TYPES: { value: HostelType; label: string }[] = [
-  { value: 'boys', label: 'Boys' },
-  { value: 'girls', label: 'Girls' },
-  { value: 'coed', label: 'Co-ed' },
-]
-
 function HostelsTab() {
   const hostelsQ = useHostels()
   const can = useCan()
@@ -386,7 +372,22 @@ function HostelsTab() {
                             <Phone className="h-4 w-4 shrink-0 text-slate-400" />
                             {h.phone || '—'}
                           </p>
+                          <p className="flex items-start gap-2">
+                            <QrCode className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
+                            {h.upiId ? (
+                              <span className="min-w-0">
+                                <span className="break-all font-mono text-slate-800">{h.upiId}</span>
+                                <span className="block text-xs text-slate-500">
+                                  {h.payeeName}
+                                  {h.hasQr ? ' · QR uploaded' : ''}
+                                </span>
+                              </span>
+                            ) : (
+                              <span className="text-amber-700">No UPI ID set — edit to add one</span>
+                            )}
+                          </p>
                         </div>
+                        <HostelChargeChips charges={h.charges} />
                         <div className="mt-4 grid grid-cols-3 gap-2 rounded-lg bg-slate-50 p-3 text-center">
                           <div>
                             <p className="text-lg font-bold text-slate-900">{c.rooms}</p>
@@ -452,92 +453,6 @@ function HostelsTab() {
         )
       }}
     </QueryView>
-  )
-}
-
-function HostelModal({ editing, onClose }: { editing: Hostel | null; onClose: () => void }) {
-  const [form, setForm] = useState<HostelForm>(
-    editing ? { name: editing.name, type: editing.type, address: editing.address, city: editing.city, phone: editing.phone, code: editing.code } : blankHostel,
-  )
-  const [errors, setErrors] = useState<Partial<Record<keyof HostelForm, string>>>({})
-  const [apiError, setApiError] = useState('')
-  const create = useCreateHostel(onClose)
-  const update = useUpdateHostel(onClose)
-  const pending = create.isPending || update.isPending
-  const codeLocked = !!editing && editing.hostelerSeq > 0
-
-  const save = () => {
-    const e: typeof errors = {}
-    if (form.name.trim().length < 2) e.name = 'Enter a hostel name.'
-    if (!form.city.trim()) e.city = 'Enter the city.'
-    const code = form.code.trim().toUpperCase()
-    if (code && !/^[A-Z0-9]{2,8}$/.test(code)) e.code = '2–8 letters or numbers, e.g. SBH'
-    if (editing && !code) e.code = 'The prefix cannot be empty.'
-    setErrors(e)
-    setApiError('')
-    if (Object.keys(e).length) return
-    const body: HostelInput = { name: form.name.trim(), type: form.type, city: form.city.trim(), address: form.address.trim(), phone: form.phone.trim() }
-    const onError = (err: unknown) => setApiError(errorMessage(err))
-    if (editing) {
-      update.mutate({ id: editing.id, ...body, ...(!codeLocked && code !== editing.code ? { code } : {}) }, { onError })
-    } else {
-      create.mutate({ ...body, ...(code ? { code } : {}) }, { onError })
-    }
-  }
-
-  return (
-    <Modal
-      open
-      onClose={() => !pending && onClose()}
-      title={editing ? 'Edit hostel' : 'Add hostel'}
-      footer={
-        <>
-          <Button variant="outline" onClick={onClose} disabled={pending}>
-            Cancel
-          </Button>
-          <Button onClick={save} loading={pending}>
-            {editing ? 'Save changes' : 'Add hostel'}
-          </Button>
-        </>
-      }
-    >
-      <div className="grid gap-4 sm:grid-cols-2">
-        {apiError && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 sm:col-span-2">{apiError}</p>}
-        <Field label="Hostel name" required error={errors.name} className="sm:col-span-2">
-          <Input value={form.name} maxLength={120} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Sunrise Boys Hostel" autoFocus />
-        </Field>
-        <Field label="Type" required>
-          <Select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value as HostelType })} options={HOSTEL_TYPES} />
-        </Field>
-        <Field label="Phone">
-          <Input value={form.phone} maxLength={20} onChange={(e) => setForm({ ...form, phone: e.target.value })} inputMode="tel" />
-        </Field>
-        <Field label="Address" className="sm:col-span-2">
-          <Textarea rows={2} maxLength={300} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
-        </Field>
-        <Field label="City" required error={errors.city}>
-          <Input value={form.city} maxLength={80} onChange={(e) => setForm({ ...form, city: e.target.value })} />
-        </Field>
-        <Field
-          label="Hosteler ID prefix"
-          error={errors.code}
-          hint={
-            codeLocked
-              ? `Locked: ${editing!.hostelerSeq} IDs already issued (${editing!.code}-0001…)`
-              : `Hosteler IDs will look like ${form.code.trim().toUpperCase() || 'auto'}-0001.${editing ? '' : ' Leave blank to auto-generate.'}`
-          }
-        >
-          <Input
-            value={form.code}
-            maxLength={8}
-            disabled={codeLocked}
-            onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '') })}
-            placeholder="e.g. SBH"
-            className="font-mono uppercase"
-          />
-        </Field>
-      </div>
-    </Modal>
   )
 }
 

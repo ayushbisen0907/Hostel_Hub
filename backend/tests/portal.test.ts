@@ -5,6 +5,7 @@ import { Hosteler } from '../src/models/Hosteler.js'
 import { Hostel } from '../src/models/Hostel.js'
 import { Invoice } from '../src/models/Invoice.js'
 import { Payment } from '../src/models/Payment.js'
+import { PaymentClaim } from '../src/models/PaymentClaim.js'
 import { HDocument } from '../src/models/Document.js'
 import { Complaint, Leave, MealOptOut, MessMenu, Notice } from '../src/models/Operations.js'
 import { clock } from '../src/modules/portal/clock.js'
@@ -161,9 +162,11 @@ describe('portal isolation between hostelers', () => {
     await api().get(`/api/portal/payments/${theirPay._id}`).set(w.hostelerAuth).expect(404)
     await api().get(`/api/portal/documents/${theirDoc._id}/file`).set(w.hostelerAuth).expect(404)
     await api().post(`/api/portal/complaints/${theirComplaint._id}/comments`).set(w.hostelerAuth).send({ text: 'hi' }).expect(404)
-    await api().post('/api/portal/pay').set(w.hostelerAuth).send({ invoiceId: String(theirInv._id), amount: 10, method: 'upi' }).expect(404)
+    const theirClaim = await PaymentClaim.create({ orgId: w.org._id, hostelId: w.hostel._id, hostelerId: w.other.hosteler._id, amount: 100, utr: 'THEIRS123', paidOn: '2026-10-01', screenshotKey: 'nope.png', screenshotMime: 'image/png' })
+    await api().get(`/api/portal/payment-claims/${theirClaim._id}/screenshot`).set(w.hostelerAuth).expect(404)
+    await api().post('/api/portal/pay').set(w.hostelerAuth).send({ invoiceId: String(theirInv._id), amount: 10, method: 'upi' }).expect(404) // route removed
 
-    for (const path of ['invoices', 'payments', 'documents', 'complaints']) {
+    for (const path of ['invoices', 'payments', 'documents', 'complaints', 'payment-claims']) {
       const r = await api().get(`/api/portal/${path}`).set(w.hostelerAuth).expect(200)
       expect(r.body.items).toHaveLength(0)
     }
@@ -190,33 +193,40 @@ describe('portal isolation between hostelers', () => {
 })
 
 describe('portal payments', () => {
-  it('pay flow updates balance, rejects overpay, shows receipt', async () => {
+  it('direct "pay" is gone: hosteler reports a UPI payment, staff verify, balance + receipt update', async () => {
     const w = await makeWorld()
     const inv = await makeInvoice(w, w.hosteler, 6000)
 
-    await api().post('/api/portal/pay').set(w.hostelerAuth).send({ invoiceId: String(inv._id), amount: 6001, method: 'upi' }).expect(400)
-    await api().post('/api/portal/pay').set(w.hostelerAuth).send({ invoiceId: String(inv._id), amount: 0, method: 'upi' }).expect(400)
-    await api().post('/api/portal/pay').set(w.hostelerAuth).send({ invoiceId: String(inv._id), amount: 100, method: 'cash' }).expect(400)
+    const gone = await api().post('/api/portal/pay').set(w.hostelerAuth).send({ invoiceId: String(inv._id), amount: 100, method: 'upi' }).expect(404)
+    expect(gone.body.error.code).toBe('ROUTE_NOT_FOUND')
 
-    const p = await api().post('/api/portal/pay').set(w.hostelerAuth).send({ invoiceId: String(inv._id), amount: 2500, method: 'netbanking' }).expect(201)
-    expect(p.body.payment).toMatchObject({ amount: 2500, mode: 'online', recordedBy: 'hosteler', note: 'Paid via hosteler portal', kind: 'rent' })
-    expect(p.body.payment.reference).toMatch(/^SIM-NETBANKING-/)
-    expect(p.body.dues).toBe(3500)
+    await api().post('/api/portal/payment-claims').set(w.hostelerAuth).send({ amount: 6001, utr: 'UTR0000001' }).expect(400)
+    await api().post('/api/portal/payment-claims').set(w.hostelerAuth).send({ amount: 0, utr: 'UTR0000001' }).expect(400)
+    const c1 = await api().post('/api/portal/payment-claims').set(w.hostelerAuth).send({ amount: 2500, utr: 'utr0000001' }).expect(201)
+    expect(c1.body).toMatchObject({ amount: 2500, utr: 'UTR0000001', status: 'pending', hasScreenshot: false })
 
-    const list = await api().get('/api/portal/invoices').set(w.hostelerAuth).expect(200)
+    // nothing is paid until staff verify
+    let list = await api().get('/api/portal/invoices').set(w.hostelerAuth).expect(200)
+    expect(list.body.items[0]).toMatchObject({ paidAmount: 0, balance: 6000 })
+    const v1 = await api().post(`/api/payment-claims/${c1.body.id}/verify`).set(w.auth).send({ receivedAmount: 2500 }).expect(200)
+    expect(v1.body.remainingDues).toBe(3500)
+    list = await api().get('/api/portal/invoices').set(w.hostelerAuth).expect(200)
     expect(list.body.items[0]).toMatchObject({ paidAmount: 2500, balance: 3500 })
 
-    await api().post('/api/portal/pay').set(w.hostelerAuth).send({ invoiceId: String(inv._id), amount: 3501, method: 'card' }).expect(400)
-    await api().post('/api/portal/pay').set(w.hostelerAuth).send({ invoiceId: String(inv._id), amount: 3500, method: 'card', reference: 'TXN1' }).expect(201)
+    await api().post('/api/portal/payment-claims').set(w.hostelerAuth).send({ amount: 3501, utr: 'UTR0000002' }).expect(400)
+    const c2 = await api().post('/api/portal/payment-claims').set(w.hostelerAuth).send({ amount: 3500, utr: 'UTR0000002' }).expect(201)
+    await api().post(`/api/payment-claims/${c2.body.id}/verify`).set(w.auth).send({ receivedAmount: 3500 }).expect(200)
     const done = await api().get(`/api/portal/invoices/${inv._id}`).set(w.hostelerAuth).expect(200)
     expect(done.body.invoice).toMatchObject({ balance: 0, status: 'paid' })
     expect(done.body.payments).toHaveLength(2)
-    expect(done.body.hostel.name).toBe('Sunrise Boys Hostel')
-    await api().post('/api/portal/pay').set(w.hostelerAuth).send({ invoiceId: String(inv._id), amount: 1, method: 'upi' }).expect(400)
+    expect(done.body.hostel).toMatchObject({ name: 'Sunrise Boys Hostel', upiId: 'sunrise.hostel@okhdfc', payeeName: 'Sunrise Hostels' })
+    await api().post('/api/portal/payment-claims').set(w.hostelerAuth).send({ amount: 1, utr: 'UTR0000003' }).expect(400) // no dues left
 
     const pays = await api().get('/api/portal/payments').set(w.hostelerAuth).expect(200)
     expect(pays.body.items).toHaveLength(2)
-    const rcpt = await api().get(`/api/portal/payments/${p.body.payment.id}`).set(w.hostelerAuth).expect(200)
+    const first = pays.body.items.find((p: { reference: string }) => p.reference === 'UTR0000001')
+    expect(first).toMatchObject({ amount: 2500, mode: 'upi', recordedBy: 'hosteler', kind: 'rent', invoiceNumber: inv.number })
+    const rcpt = await api().get(`/api/portal/payments/${first.id}`).set(w.hostelerAuth).expect(200)
     expect(rcpt.body.payment.receiptNo).toBeTruthy()
     expect(rcpt.body.invoice.number).toBe(inv.number)
     expect(rcpt.body.hosteler.loginId).toBe(w.hosteler.loginId)

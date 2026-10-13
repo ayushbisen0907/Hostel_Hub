@@ -4,6 +4,9 @@ import { todayStr } from '../src/lib/http.js'
 import { Invoice } from '../src/models/Invoice.js'
 import { Payment } from '../src/models/Payment.js'
 import { Hosteler } from '../src/models/Hosteler.js'
+import { Hostel } from '../src/models/Hostel.js'
+import { Organization } from '../src/models/Organization.js'
+import { Notification } from '../src/models/Notification.js'
 
 function addDays(date: string, n: number) {
   const d = new Date(`${date}T00:00:00Z`)
@@ -18,7 +21,7 @@ async function customInvoice(w: Awaited<ReturnType<typeof makeWorld>>, total: nu
   const r = await api()
     .post('/api/invoices')
     .set(w.auth)
-    .send({ hostelerId: String(w.hosteler._id), month: m, items: [{ label: 'Rent', amount: total }], dueDate })
+    .send({ hostelerId: String(w.hosteler._id), month: m, items: [{ key: 'rent', label: 'Rent', amount: total }], dueDate })
     .expect(201)
   return r.body as { id: string; number: string; total: number; status: string; balance: number }
 }
@@ -37,10 +40,14 @@ describe('invoice generation', () => {
 
     const invs = await Invoice.find({ orgId: w.org._id, month: '2026-10' }).lean()
     const a = invs.find((i) => String(i.hostelerId) === String(w.hosteler._id))!
-    expect(a.items.map((i) => i.label)).toEqual(['Room rent – 2026-10', 'Mess charges'])
+    expect(a.items.map((i) => ({ key: i.key, label: i.label, amount: i.amount }))).toEqual([
+      { key: 'rent', label: 'Room rent', amount: 6000 },
+      { key: 'mess', label: 'Mess fees', amount: 3000 }, // org settings fallback (hostel has no mess charge)
+    ])
     expect(a.total).toBe(9000)
     const b = invs.find((i) => String(i.hostelerId) === String(h2._id))!
     expect(b.total).toBe(5500)
+    expect(b.items.map((i) => i.key)).toEqual(['rent']) // no mess: not opted
     expect(new Set(invs.map((i) => i.number)).size).toBe(2)
 
     // h2 checked in Oct 15 -> not billed for September
@@ -133,12 +140,14 @@ describe('invoices CRUD', () => {
     const inv = await customInvoice(w, 6000, addDays(today, -10))
     const r = await api().post(`/api/invoices/${inv.id}/late-fee`).set(w.auth).expect(200)
     expect(r.body).toMatchObject({ lateFee: 500, days: 10, total: 6500, replaced: false })
-    expect(r.body.items.at(-1)).toEqual({ label: 'Late fee (10 days)', amount: 500 })
+    expect(r.body.items.at(-1)).toEqual({ key: 'late_fee', label: 'Late fee (10 days)', amount: 500 })
+    expect(r.body.items[0]).toEqual({ key: 'rent', label: 'Rent', amount: 6000 }) // other lines keep their key
 
     await Invoice.updateOne({ _id: inv.id }, { dueDate: addDays(today, -12) })
     const r2 = await api().post(`/api/invoices/${inv.id}/late-fee`).set(w.auth).expect(200)
     expect(r2.body).toMatchObject({ lateFee: 600, total: 6600, replaced: true })
     expect(r2.body.items.filter((i: { label: string }) => i.label.startsWith('Late fee'))).toHaveLength(1)
+    expect(r2.body.items.map((i: { key: string }) => i.key)).toEqual(['rent', 'late_fee'])
 
     const notDue = await customInvoice(w, 100, addDays(today, 2))
     await api().post(`/api/invoices/${notDue.id}/late-fee`).set(w.auth).expect(400)
@@ -317,5 +326,140 @@ describe('isolation and permissions', () => {
     await api().delete(`/api/payments/${p.body.id}`).set(accountant.auth).expect(200)
     await api().get('/api/fees/summary').set(manager.auth).expect(200)
     await api().delete(`/api/payments/000000000000000000000000`).set(manager.auth).expect(404)
+  })
+})
+
+describe('itemized monthly bills', () => {
+  const lines = (inv: { items: { key?: string | null; label: string; amount: number }[] }) => inv.items.map((i) => ({ key: i.key, label: i.label, amount: i.amount }))
+
+  it('bills rent + mess (opted only) + every configured hostel charge head', async () => {
+    const w = await makeWorld()
+    await Hostel.updateOne(
+      { _id: w.hostel._id },
+      {
+        charges: {
+          mess: 2500,
+          electricity: 400,
+          water: 0,
+          internet: 300,
+          laundry: 0,
+          maintenance: 200,
+          others: [
+            { label: 'Housekeeping', amount: 150 },
+            { label: 'Free gym', amount: 0 },
+          ],
+        },
+      },
+    )
+    const { hosteler: noMess } = await makeHosteler(w.org._id, w.hostel, { bed: w.beds[1]!, name: 'Kabir Jain', messOpted: false, monthlyRent: 5500 })
+    // a hosteler of another hostel without charges (org mess fallback applies)
+    const plain = await makeHostel(w.org._id, 'Plain Stay')
+    const { hosteler: elsewhere } = await makeHosteler(w.org._id, plain, { name: 'Dev Patel', monthlyRent: 4000 })
+
+    const r = await api().post('/api/invoices/generate').set(w.auth).send({ month: '2026-10' }).expect(200)
+    expect(r.body.created).toBe(3)
+    const invs = await Invoice.find({ orgId: w.org._id, month: '2026-10' }).lean()
+    const of = (id: unknown) => invs.find((i) => String(i.hostelerId) === String(id))!
+
+    const a = of(w.hosteler._id)
+    expect(lines(a)).toEqual([
+      { key: 'rent', label: 'Room rent', amount: 6000 },
+      { key: 'mess', label: 'Mess fees', amount: 2500 }, // hostel's mess charge wins over the org setting (3000)
+      { key: 'electricity', label: 'Electricity', amount: 400 },
+      { key: 'internet', label: 'Internet / Wi-Fi', amount: 300 },
+      { key: 'maintenance', label: 'Maintenance', amount: 200 },
+      { key: 'other', label: 'Housekeeping', amount: 150 },
+    ])
+    expect(a.total).toBe(9550)
+    expect(a.dueDate).toBe('2026-10-05')
+
+    const b = of(noMess._id)
+    expect(lines(b).map((l) => l.key)).toEqual(['rent', 'electricity', 'internet', 'maintenance', 'other'])
+    expect(b.total).toBe(5500 + 400 + 300 + 200 + 150)
+
+    const c = of(elsewhere._id)
+    expect(lines(c)).toEqual([
+      { key: 'rent', label: 'Room rent', amount: 4000 },
+      { key: 'mess', label: 'Mess fees', amount: 3000 },
+    ])
+  })
+
+  it('falls back to the org mess charge; no mess line when both are 0', async () => {
+    const w = await makeWorld()
+    await Organization.updateOne({ _id: w.org._id }, { 'settings.messMonthlyCharge': 2800 })
+    await Hostel.updateOne({ _id: w.hostel._id }, { charges: { mess: 0, water: 100 } })
+    await api().post('/api/invoices/generate').set(w.auth).send({ month: '2026-10' }).expect(200)
+    const oct = await Invoice.findOne({ orgId: w.org._id, month: '2026-10' }).lean()
+    expect(lines(oct!)).toEqual([
+      { key: 'rent', label: 'Room rent', amount: 6000 },
+      { key: 'mess', label: 'Mess fees', amount: 2800 },
+      { key: 'water', label: 'Water', amount: 100 },
+    ])
+    expect(oct!.total).toBe(8900)
+
+    await Organization.updateOne({ _id: w.org._id }, { 'settings.messMonthlyCharge': 0 })
+    await api().post('/api/invoices/generate').set(w.auth).send({ month: '2026-11' }).expect(200)
+    const nov = await Invoice.findOne({ orgId: w.org._id, month: '2026-11' }).lean()
+    expect(nov!.items.map((i) => i.key)).toEqual(['rent', 'water'])
+  })
+
+  it('notifies each billed hosteler once (bill_generated)', async () => {
+    const w = await makeWorld()
+    const { hosteler: h2, auth: h2Auth } = await makeHosteler(w.org._id, w.hostel, { bed: w.beds[1]!, name: 'Kabir Jain', messOpted: false, monthlyRent: 5500 })
+    await api().post('/api/invoices/generate').set(w.auth).send({ month: '2026-10' }).expect(200)
+    await api().post('/api/invoices/generate').set(w.auth).send({ month: '2026-10' }).expect(200) // nothing new -> no new notifications
+
+    const notes = await Notification.find({ orgId: w.org._id }).lean()
+    expect(notes).toHaveLength(2)
+    expect(notes.every((n) => n.type === 'bill_generated' && n.recipientKind === 'hosteler' && n.link === '/portal/fees')).toBe(true)
+    expect(new Set(notes.map((n) => String(n.recipientId)))).toEqual(new Set([String(w.hosteler._id), String(h2._id)]))
+
+    const mine = await api().get('/api/portal/notifications').set(w.hostelerAuth).expect(200)
+    expect(mine.body.unreadCount).toBe(1)
+    expect(mine.body.items[0]).toMatchObject({ type: 'bill_generated', title: 'October 2026 bill: ₹9,000' })
+    const inv = await Invoice.findOne({ hostelerId: w.hosteler._id }).lean()
+    expect(mine.body.items[0].body).toContain(inv!.number)
+    const theirs = await api().get('/api/portal/notifications').set(h2Auth).expect(200)
+    expect(theirs.body.items[0].title).toBe('October 2026 bill: ₹5,500')
+    // staff get nothing for bill generation
+    expect((await api().get('/api/notifications').set(w.auth).expect(200)).body).toEqual({ items: [], unreadCount: 0 })
+  })
+})
+
+describe('previous balance on invoice detail', () => {
+  it('lists older unpaid bills of the same hosteler (staff + portal) with the hostel UPI', async () => {
+    const w = await makeWorld()
+    const { hosteler: other } = await makeHosteler(w.org._id, w.hostel, { bed: w.beds[1]!, name: 'Other' })
+    const mk = (hostelerId: unknown, number: string, m: string, total: number, paidAmount = 0, extra: Record<string, unknown> = {}) =>
+      Invoice.create({ orgId: w.org._id, hostelId: w.hostel._id, hostelerId, number, month: m, items: [{ key: 'rent', label: 'Room rent', amount: total }], total, paidAmount, dueDate: `${m}-05`, ...extra })
+    const jul = await mk(w.hosteler._id, 'INV-JUL', '2026-07', 3000, 0, { cancelled: true }) // cancelled: ignored
+    const aug = await mk(w.hosteler._id, 'INV-AUG', '2026-08', 5000, 1000)
+    await mk(w.hosteler._id, 'INV-SEP', '2026-09', 6000, 6000) // fully paid: ignored
+    const sep2 = await mk(w.hosteler._id, 'INV-SEP2', '2026-09', 700) // custom bill, same month
+    const oct = await mk(w.hosteler._id, 'INV-OCT', '2026-10', 7000, 500)
+    await mk(other._id, 'INV-OTHER', '2026-08', 9999) // another hosteler: ignored
+    const nov = await mk(w.hosteler._id, 'INV-NOV', '2026-11', 7000) // newer: not "previous" for Oct
+
+    const staff = await api().get(`/api/invoices/${oct.id}`).set(w.auth).expect(200)
+    expect(staff.body.previousBalance).toEqual({
+      amount: 4000 + 700,
+      invoices: [
+        { id: aug.id, number: 'INV-AUG', month: '2026-08', balance: 4000, dueDate: '2026-08-05' },
+        { id: sep2.id, number: 'INV-SEP2', month: '2026-09', balance: 700, dueDate: '2026-09-05' },
+      ],
+    })
+    expect(staff.body.balance).toBe(6500) // this bill's own balance is separate
+    expect(staff.body.hostel).toMatchObject({ upiId: 'sunrise.hostel@okhdfc', payeeName: 'Sunrise Hostels' })
+
+    const first = await api().get(`/api/invoices/${aug.id}`).set(w.auth).expect(200)
+    expect(first.body.previousBalance).toEqual({ amount: 0, invoices: [] })
+    const last = await api().get(`/api/invoices/${nov.id}`).set(w.auth).expect(200)
+    expect(last.body.previousBalance.amount).toBe(4000 + 700 + 6500)
+    expect(last.body.previousBalance.invoices.map((i: { number: string }) => i.number)).toEqual(['INV-AUG', 'INV-SEP2', 'INV-OCT'])
+
+    const portal = await api().get(`/api/portal/invoices/${oct.id}`).set(w.hostelerAuth).expect(200)
+    expect(portal.body.previousBalance).toEqual(staff.body.previousBalance)
+    expect(portal.body.hostel).toMatchObject({ upiId: 'sunrise.hostel@okhdfc', payeeName: 'Sunrise Hostels' })
+    expect(jul.cancelled).toBe(true)
   })
 })

@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { BedDouble, BellRing, CalendarDays, Home, Lock, LogOut, MessageSquareWarning, UserRound, UtensilsCrossed, Wallet } from 'lucide-react'
 import { logout } from '@/api/auth'
+import { NotificationBell } from '@/components/NotificationBell'
 import { isPlanError, usePortalHome, usePortalMe, useProfilePhoto } from '@/api/portal'
 import { useHostelerSession } from '@/api/session'
 import { Avatar, Button, Card } from '@/components/ui'
@@ -62,6 +63,7 @@ export function PortalLayout() {
               ))}
             </nav>
           )}
+          <NotificationBell />
           {me && <Avatar name={me.name} src={photo} size="sm" />}
           <button title="Log out" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100" onClick={doLogout}>
             <LogOut className="h-5 w-5" />

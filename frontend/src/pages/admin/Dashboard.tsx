@@ -5,6 +5,7 @@ import {
   Activity as ActivityIcon,
   AlertCircle,
   ArrowRight,
+  BadgeCheck,
   BedDouble,
   Building2,
   CalendarClock,
@@ -27,6 +28,7 @@ import {
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { useHostels, useOrg, useScope, useScopeStore } from '@/api/common'
 import { useCan, useStaffSession } from '@/api/session'
+import { usePendingClaimCount } from '@/api/claims'
 import { useDashboard, useDecideLeave, useQuickExpense, useQuickNotice, type DashboardData, type DashboardHosteler } from '@/api/dashboard'
 import { EXPENSE_CATEGORIES, type ExpenseCategory } from '@/api/expenses'
 import type { Activity, Hostel, Meal, PaymentMode, Plan, Priority } from '@/api/types'
@@ -54,7 +56,7 @@ const C_COLLECTED = '#2554eb'
 const C_EXPENSE = '#f59e0b'
 const C_VACANT = '#e2e8f0'
 
-const PAYMENT_MODES: PaymentMode[] = ['cash', 'upi', 'card', 'bank', 'online']
+const PAYMENT_MODES: PaymentMode[] = ['cash', 'upi', 'card', 'bank']
 
 /** Next meal to be served based on the local time of day. */
 function nextMeal(): { meal: Meal; date: string } {
@@ -123,7 +125,7 @@ interface SetupStep {
 function useSetupSteps(counts: { hostels: number; rooms: number; hostelers: number; invoices: number }): SetupStep[] {
   const can = useCan()
   return [
-    { done: counts.hostels > 0, title: 'Add your hostel', text: 'Name, address and type (boys / girls / co-ed).', to: '/app/settings?tab=hostels', cta: 'Add hostel', icon: <Building2 className="h-5 w-5" />, allowed: can('hostels') },
+    { done: counts.hostels > 0, title: 'Add your hostel', text: 'Name, address, type and the UPI ID where rent is paid.', to: '/app/settings?tab=hostels', cta: 'Add hostel', icon: <Building2 className="h-5 w-5" />, allowed: can('hostels') },
     { done: counts.rooms > 0, title: 'Add rooms & beds', text: 'Create rooms in bulk with sharing and rent per bed.', to: '/app/rooms', cta: 'Add rooms', icon: <BedDouble className="h-5 w-5" />, allowed: can('rooms') },
     { done: counts.hostelers > 0, title: 'Check in your first hosteler', text: 'Capture details, allot a bed and collect the deposit.', to: '/app/check-in', cta: 'Check in', icon: <LogIn className="h-5 w-5" />, allowed: can('checkin') },
     { done: counts.invoices > 0, title: 'Generate monthly rent', text: 'Create rent invoices for everyone in one click.', to: '/app/fees', cta: 'Generate rent', icon: <Wallet className="h-5 w-5" />, allowed: can('fees') },
@@ -448,6 +450,7 @@ function OverviewBody({ data, hostels, plan, onPickHostel }: { data: DashboardDa
   const hasAttendance = hasModule(plan, 'attendance')
   const canDecideLeaves = hasAttendance && can('attendance')
   const hasMess = hasModule(plan, 'mess')
+  const pendingPayments = usePendingClaimCount(scope, { enabled: hasModule(plan, 'fees') }).data ?? 0
 
   const chart = useMemo(
     () => data.last6Months.map((m) => ({ month: formatDate(`${m.month}-01`, 'MMM'), Collected: m.collected, Expenses: m.expenses })),
@@ -465,6 +468,25 @@ function OverviewBody({ data, hostels, plan, onPickHostel }: { data: DashboardDa
   return (
     <>
       {!setupDone && <SetupChecklist steps={steps} title="Finish setting up" />}
+
+      {pendingPayments > 0 && (
+        <button
+          type="button"
+          onClick={() => navigate('/app/fees?tab=verify')}
+          className="mb-4 flex w-full items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-left transition hover:bg-amber-100"
+        >
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-700">
+            <BadgeCheck className="h-5 w-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold text-amber-900">
+              {pendingPayments} payment{pendingPayments === 1 ? '' : 's'} to verify
+            </p>
+            <p className="text-sm text-amber-800">Hostelers reported UPI payments. Check your bank and confirm them.</p>
+          </div>
+          <span className="hidden text-sm font-semibold text-amber-800 sm:inline">Verify →</span>
+        </button>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-2 xl:grid-cols-4">

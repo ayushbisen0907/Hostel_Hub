@@ -36,7 +36,6 @@ export const PAYMENT_MODE_OPTIONS: { value: PaymentMode; label: string }[] = [
   { value: 'upi', label: 'UPI' },
   { value: 'card', label: 'Card' },
   { value: 'bank', label: 'Bank transfer' },
-  { value: 'online', label: 'Online' },
 ]
 
 export const GENDER_OPTIONS: SelectOption[] = [

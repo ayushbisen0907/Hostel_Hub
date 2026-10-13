@@ -75,8 +75,25 @@ export interface Hostel {
   phone: string
   code: string
   hostelerSeq: number
+  /** where hostelers pay rent */
+  upiId: string
+  payeeName: string
+  /** an uploaded QR image exists (GET /hostels/:id/qr); otherwise draw one from upiId */
+  hasQr?: boolean
+  charges: HostelCharges
   createdAt: string
   counts?: { rooms: number; beds: number; occupied: number; vacant: number; activeHostelers: number }
+}
+
+/** Monthly charge heads of a hostel (0 = not charged). Mess only applies to hostelers who opted in. */
+export interface HostelCharges {
+  mess: number
+  electricity: number
+  water: number
+  internet: number
+  laundry: number
+  maintenance: number
+  others: { label: string; amount: number }[]
 }
 
 export interface Room {
@@ -140,9 +157,34 @@ export interface Hosteler {
   updatedAt: string
 }
 
+export type ChargeKey = 'rent' | 'mess' | 'electricity' | 'water' | 'internet' | 'laundry' | 'maintenance' | 'late_fee' | 'other'
+
 export interface InvoiceItem {
+  key?: ChargeKey
   label: string
   amount: number
+}
+
+export type PaymentClaimStatus = 'pending' | 'verified' | 'rejected'
+
+/** A hosteler's "I have paid" report, verified by staff (/payment-claims, /portal/payment-claims). */
+export interface PaymentClaim {
+  id: ID
+  hostelId: ID
+  hostelerId: ID
+  amount: number
+  utr: string
+  paidOn: string
+  note: string
+  hasScreenshot: boolean
+  status: PaymentClaimStatus
+  receivedAmount: number | null
+  rejectReason: string
+  reviewedByName: string
+  reviewedAt: string | null
+  paymentIds: ID[]
+  createdAt: string
+  hosteler?: { id: ID; name: string; loginId: string; phone: string; status: HostelerStatus } | null
 }
 
 export type InvoiceStatus = 'paid' | 'partial' | 'unpaid' | 'overdue' | 'cancelled'

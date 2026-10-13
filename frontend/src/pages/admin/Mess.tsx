@@ -437,10 +437,19 @@ function MembersTab() {
   const setMember = useSetMessMember()
   const [q, setQ] = useState('')
   const [filter, setFilter] = useState<'all' | 'on' | 'off'>('all')
-  const charge = settings.messMonthlyCharge
+  const hostelsQ = useHostels()
+  // each hostel's own mess charge if set, else the organization default (same rule as monthly bills)
+  const chargeFor = (hostelId: string) => {
+    const c = hostelsQ.data?.find((x) => x.id === hostelId)?.charges?.mess ?? 0
+    return c > 0 ? c : settings.messMonthlyCharge
+  }
 
   const active = query.data?.items ?? []
   const on = query.data?.members ?? 0
+  const billing = active.filter((h) => h.messOpted).reduce((a, h) => a + chargeFor(h.hostelId), 0)
+  const scopedHostels = scope === 'all' ? (hostelsQ.data ?? []) : (hostelsQ.data ?? []).filter((x) => x.id === scope)
+  const rates = [...new Set((scopedHostels.length ? scopedHostels.map((x) => chargeFor(x.id)) : [settings.messMonthlyCharge]))]
+  const chargeLabel = rates.length === 1 ? formatMoney(rates[0]!) : `${formatMoney(Math.min(...rates))}–${formatMoney(Math.max(...rates))}`
   const s = q.trim().toLowerCase()
   const rows = active
     .filter((h) => (filter === 'all' ? true : filter === 'on' ? h.messOpted : !h.messOpted))
@@ -451,8 +460,14 @@ function MembersTab() {
       <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <StatCard label="Mess members" value={on} icon={<Users className="h-5 w-5" />} hint={`of ${active.length} active hostelers`} />
         <StatCard label="Not opted" value={active.length - on} icon={<UserMinus className="h-5 w-5" />} tone="slate" />
-        <StatCard label="Monthly charge" value={formatMoney(charge)} icon={<Wallet className="h-5 w-5" />} tone="violet" hint="per member · change in Settings" />
-        <StatCard label="Monthly mess billing" value={formatMoney(on * charge)} icon={<PiggyBank className="h-5 w-5" />} tone="green" />
+        <StatCard
+          label="Monthly charge"
+          value={chargeLabel}
+          icon={<Wallet className="h-5 w-5" />}
+          tone="violet"
+          hint={rates.length === 1 ? 'per member · set per hostel in Settings → Hostels' : 'per member · varies by hostel'}
+        />
+        <StatCard label="Monthly mess billing" value={formatMoney(billing)} icon={<PiggyBank className="h-5 w-5" />} tone="green" />
       </div>
 
       <Card>

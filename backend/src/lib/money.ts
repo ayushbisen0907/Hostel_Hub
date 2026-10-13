@@ -4,7 +4,7 @@
  * run them inside a transaction (see withTransaction in config/db.ts).
  */
 import type { ClientSession, Types } from 'mongoose'
-import { Invoice } from '../models/Invoice.js'
+import { Invoice, type ChargeKey } from '../models/Invoice.js'
 import { Payment, PAYMENT_MODES } from '../models/Payment.js'
 import { Hosteler } from '../models/Hosteler.js'
 import { badRequest, conflict, notFound } from './errors.js'
@@ -14,6 +14,7 @@ type Id = string | Types.ObjectId
 export type PaymentMode = (typeof PAYMENT_MODES)[number]
 
 export interface InvoiceItemInput {
+  key?: ChargeKey
   label: string
   amount: number
 }
@@ -119,4 +120,32 @@ export async function deletePayment(orgId: Id, paymentId: Id, session?: ClientSe
 export async function hostelerDues(orgId: Id, hostelerId: Id, session?: ClientSession) {
   const invs = await Invoice.find({ orgId, hostelerId, cancelled: false }).select('total paidAmount').session(session ?? null).lean()
   return invs.reduce((a, i) => a + Math.max(i.total - i.paidAmount, 0), 0)
+}
+
+/**
+ * Applies a received amount to the hosteler's unpaid bills, OLDEST FIRST
+ * (by due date, then month), creating one Payment per bill touched.
+ * Refuses amounts larger than the total outstanding. Use inside a transaction.
+ */
+export async function allocatePayment(
+  orgId: Id,
+  input: Omit<RecordPaymentInput, 'invoiceId' | 'kind'>,
+  session?: ClientSession,
+) {
+  let remaining = Math.round(Number(input.amount))
+  if (!(remaining >= 1)) throw badRequest('Amount must be at least 1')
+  const open = await Invoice.find({ orgId, hostelerId: input.hostelerId, cancelled: false, $expr: { $gt: ['$total', '$paidAmount'] } })
+    .sort({ dueDate: 1, month: 1, createdAt: 1 })
+    .session(session ?? null)
+  const dues = open.reduce((a, i) => a + (i.total - i.paidAmount), 0)
+  if (dues <= 0) throw badRequest('This hosteler has no unpaid bills')
+  if (remaining > dues) throw badRequest(`Amount is more than the total due (₹${dues.toLocaleString('en-IN')})`)
+  const payments = []
+  for (const inv of open) {
+    if (remaining <= 0) break
+    const part = Math.min(remaining, inv.total - inv.paidAmount)
+    payments.push(await recordPayment(orgId, { ...input, invoiceId: inv._id, amount: part }, session))
+    remaining -= part
+  }
+  return { payments, applied: payments.map((p, i) => ({ invoiceId: String(open[i]!._id), number: open[i]!.number, amount: p.amount })) }
 }

@@ -35,9 +35,12 @@ export function staffAuth(u: { _id: unknown; orgId: unknown; role: 'owner' | 'ma
   return { Authorization: `Bearer ${signToken({ kind: 'staff', sub: String(u._id), orgId: String(u.orgId), role: u.role, tv: u.tokenVersion })}` }
 }
 
+/** Every hostel has a UPI ID + payee name (required when created through the API). */
+export const TEST_UPI = { upiId: 'sunrise.hostel@okhdfc', payeeName: 'Sunrise Hostels' }
+
 export async function makeHostel(orgId: mongoose.Types.ObjectId, name = 'Sunrise Boys Hostel') {
   codeCounter++
-  return Hostel.create({ orgId, name, type: 'boys', city: 'Indore', code: `T${codeCounter}${Math.floor(Math.random() * 90 + 10)}` })
+  return Hostel.create({ orgId, name, type: 'boys', city: 'Indore', code: `T${codeCounter}${Math.floor(Math.random() * 90 + 10)}`, ...TEST_UPI })
 }
 
 /** Room with `sharing` empty beds A, B, C… */

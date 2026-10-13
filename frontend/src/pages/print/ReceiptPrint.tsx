@@ -54,7 +54,7 @@ export default function ReceiptPrint() {
     { label: 'Payment mode', value: modeLabel(p.mode) },
     { label: 'Reference', value: p.reference || '—' },
   ]
-  if (p.recordedBy === 'hosteler') rows.push({ label: 'Paid via', value: 'Resident portal' })
+  if (p.recordedBy === 'hosteler') rows.push({ label: 'Paid via', value: 'UPI (reported by the resident, verified by the hostel)' })
 
   return (
     <PrintSheet>

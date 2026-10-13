@@ -1,14 +1,19 @@
 import { useParams } from 'react-router-dom'
 import { Building2 } from 'lucide-react'
 import { ApiError } from '@/api/client'
+import { useHostels } from '@/api/common'
 import { usePrintInvoice } from '@/api/fees'
+import { useSession } from '@/api/session'
 import { Button, LoadingState } from '@/components/ui'
+import { UpiQr } from '@/components/UpiQr'
 import { cn, formatDate, formatMoney, formatMonth } from '@/lib/utils'
 import { PrintMessage, PrintSheet, PrintToolbar, amountInWords, modeLabel } from '@/pages/admin/_fees'
 
 export default function InvoicePrint() {
   const { id } = useParams<{ id: string }>()
   const query = usePrintInvoice(id)
+  const kind = useSession((s) => s.session?.kind)
+  const hostelsQ = useHostels() // staff only: tells whether the hostel uploaded its own QR image
 
   if (query.isLoading)
     return (
@@ -36,10 +41,21 @@ export default function InvoicePrint() {
     )
   }
 
-  const { invoice: inv, payments: invPayments, organization: org, hostel, hosteler: h } = query.data
+  const { invoice: inv, payments: invPayments, organization: org, hostel, hosteler: h, previousBalance: prev, payTo } = query.data
   const paid = inv.paidAmount
   const balance = inv.balance
   const status = inv.status
+  const cancelled = status === 'cancelled'
+  const previous = cancelled ? 0 : prev.amount
+  const totalPayable = (cancelled ? 0 : balance) + previous
+  const qrUrl =
+    kind === 'hosteler'
+      ? payTo?.hasQr === false
+        ? null // no uploaded QR: draw one from the UPI ID
+        : '/portal/payment-qr'
+      : hostelsQ.data?.find((x) => x.id === inv.hostelId)?.hasQr
+        ? `/hostels/${inv.hostelId}/qr`
+        : null
   const stamp =
     status === 'cancelled'
       ? { text: 'CANCELLED', cls: 'border-slate-400 text-slate-400' }
@@ -138,10 +154,29 @@ export default function InvoicePrint() {
               <dt className="text-slate-600">Paid</dt>
               <dd className="tabular-nums text-emerald-700">− {formatMoney(Math.min(paid, inv.total))}</dd>
             </div>
-            <div className="flex justify-between border-t-2 border-slate-900 pt-2 text-base">
-              <dt className="font-bold text-slate-900">Balance due</dt>
-              <dd className={cn('font-bold tabular-nums', balance > 0 ? 'text-red-600' : 'text-slate-900')}>{formatMoney(balance)}</dd>
+            <div className={cn('flex justify-between pt-2', previous > 0 ? 'border-t border-slate-300' : 'border-t-2 border-slate-900 text-base')}>
+              <dt className={previous > 0 ? 'font-medium text-slate-800' : 'font-bold text-slate-900'}>{previous > 0 ? 'This bill due' : 'Balance due'}</dt>
+              <dd className={cn('tabular-nums', previous > 0 ? 'font-semibold text-slate-900' : cn('font-bold', balance > 0 ? 'text-red-600' : 'text-slate-900'))}>
+                {formatMoney(balance)}
+              </dd>
             </div>
+            {previous > 0 && (
+              <>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-slate-600">
+                    Previous balance
+                    <span className="block text-xs text-slate-500">
+                      Unpaid: {prev.invoices.map((x) => `${x.number} (${formatMonth(x.month)})`).join(', ')}
+                    </span>
+                  </dt>
+                  <dd className="tabular-nums text-slate-900">+ {formatMoney(previous)}</dd>
+                </div>
+                <div className="flex justify-between border-t-2 border-slate-900 pt-2 text-base">
+                  <dt className="font-bold text-slate-900">Total payable</dt>
+                  <dd className="font-bold tabular-nums text-red-600">{formatMoney(totalPayable)}</dd>
+                </div>
+              </>
+            )}
           </dl>
         </div>
 
@@ -174,18 +209,41 @@ export default function InvoicePrint() {
           </div>
         )}
 
-        {/* Instructions */}
-        {balance > 0 && (
-          <div className="mt-8 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm print:bg-white">
+        {/* Pay to */}
+        {totalPayable > 0 && (
+          <div className="mt-8 break-inside-avoid rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm print:bg-white">
             <p className="font-semibold text-slate-900">How to pay</p>
-            <ul className="mt-1.5 space-y-1 text-slate-600">
-              <li>
-                • Online: from the resident portal (Fees → Pay now) — or quote invoice{' '}
-                <span className="font-medium text-slate-800">{inv.number}</span> when paying by UPI / bank transfer.
-              </li>
-              <li>• Cash / card at the hostel office between 10:00 AM and 7:00 PM.</li>
-              <li>• Payments after the due date may attract a late fee as per hostel policy.</li>
-            </ul>
+            {payTo ? (
+              <div className="mt-3 flex flex-col gap-4 sm:flex-row sm:items-start print:flex-row">
+                <UpiQr upiId={payTo.upiId} payeeName={payTo.payeeName} amount={totalPayable} note={inv.number} qrUrl={qrUrl} className="h-36 w-36 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                    <dt className="text-slate-500">Pay to</dt>
+                    <dd className="font-semibold text-slate-900">{payTo.payeeName || hostel?.name}</dd>
+                    <dt className="text-slate-500">UPI ID</dt>
+                    <dd className="break-all font-mono font-semibold text-slate-900">{payTo.upiId}</dd>
+                    <dt className="text-slate-500">Amount</dt>
+                    <dd className="font-semibold text-slate-900">{formatMoney(totalPayable)}</dd>
+                  </dl>
+                  <ul className="mt-3 space-y-1 text-slate-600">
+                    <li>• Scan the QR or pay the UPI ID from any UPI app (GPay, PhonePe, Paytm, BHIM…).</li>
+                    <li>
+                      • Then report it in the HostelHub app with the UPI transaction ID (UTR) — the hostel confirms it once it reaches their account. Mention{' '}
+                      <span className="font-medium text-slate-800">{inv.number}</span> in the payment note if you can.
+                    </li>
+                    <li>• Cash can also be paid at the hostel office against a receipt.</li>
+                    <li>• Payments after the due date may attract a late fee as per hostel policy.</li>
+                  </ul>
+                </div>
+              </div>
+            ) : (
+              <ul className="mt-1.5 space-y-1 text-slate-600">
+                <li>
+                  • Pay at the hostel office and quote invoice <span className="font-medium text-slate-800">{inv.number}</span>.
+                </li>
+                <li>• Payments after the due date may attract a late fee as per hostel policy.</li>
+              </ul>
+            )}
           </div>
         )}
 

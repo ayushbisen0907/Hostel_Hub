@@ -32,9 +32,12 @@ import { toApi } from '../../models/_base.js'
 import { Bed } from '../../models/Bed.js'
 import { Hostel } from '../../models/Hostel.js'
 import { Hosteler } from '../../models/Hosteler.js'
-import { Invoice, invoiceStatus, type InvoiceStatus } from '../../models/Invoice.js'
+import { CHARGE_KEYS, Invoice, invoiceStatus, type ChargeKey, type InvoiceStatus } from '../../models/Invoice.js'
+import { monthlyBillItems, previousBalance } from '../../lib/billing.js'
+import { notifyHostelers } from '../../lib/notify.js'
 import { Organization } from '../../models/Organization.js'
 import { Payment, PAYMENT_MODES } from '../../models/Payment.js'
+import { PaymentClaim } from '../../models/PaymentClaim.js'
 import { Room } from '../../models/Room.js'
 
 export const router = Router()
@@ -148,12 +151,12 @@ async function hostelNames(orgId: Types.ObjectId, ids: unknown[]) {
 /** Hostel + organization blocks for printable invoices / receipts. */
 async function hostelAndOrg(orgId: Types.ObjectId, hostelId: unknown) {
   const [hostel, org] = await Promise.all([
-    Hostel.findOne({ _id: hostelId, orgId }).select('name address city phone code').lean(),
+    Hostel.findOne({ _id: hostelId, orgId }).select('name address city phone code upiId payeeName').lean(),
     Organization.findById(orgId).select('name ownerName email phone settings').lean(),
   ])
   return {
     hostel: hostel
-      ? { id: String(hostel._id), name: hostel.name, address: hostel.address, city: hostel.city, phone: hostel.phone, code: hostel.code }
+      ? { id: String(hostel._id), name: hostel.name, address: hostel.address, city: hostel.city, phone: hostel.phone, code: hostel.code, upiId: hostel.upiId, payeeName: hostel.payeeName }
       : null,
     organization: org
       ? {
@@ -180,7 +183,7 @@ async function matchHostelers(orgId: Types.ObjectId, q: string) {
  * exceed the new total — checked inside the same update so a concurrent
  * payment can't slip in between.
  */
-async function applyInvoiceChange(orgId: Types.ObjectId, id: string, set: { items?: { label: string; amount: number }[]; dueDate?: string }) {
+async function applyInvoiceChange(orgId: Types.ObjectId, id: string, set: { items?: { key?: ChargeKey; label: string; amount: number }[]; dueDate?: string }) {
   const $set: Filter = {}
   let guard: Filter = {}
   if (set.items) {
@@ -202,7 +205,7 @@ async function applyInvoiceChange(orgId: Types.ObjectId, id: string, set: { item
 /* Invoices                                                            */
 /* ------------------------------------------------------------------ */
 
-const itemSchema = z.object({ label: z.string().trim().min(1).max(120), amount: money })
+const itemSchema = z.object({ key: z.enum(CHARGE_KEYS).default('other'), label: z.string().trim().min(1).max(120), amount: money })
 const itemsSchema = z.array(itemSchema).min(1, 'Add at least one line item').max(50)
 
 const invoiceListQuery = paginationQuery.extend({
@@ -301,10 +304,27 @@ router.post(
       }).session(session)
       const billed = new Set(billedIds.map(String))
       const targets = eligible.filter((h) => !billed.has(String(h._id)))
+      const hostelDocs = await Hostel.find({ orgId, _id: { $in: [...new Set(targets.map((h) => String(h.hostelId)))] } })
+        .select('charges name')
+        .session(session)
+        .lean()
+      const chargesByHostel = new Map(hostelDocs.map((x) => [String(x._id), x.charges]))
+      const monthLabel = new Date(`${body.month}-01T00:00:00Z`).toLocaleString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' })
       for (const h of targets) {
-        const items = [{ label: `Room rent – ${body.month}`, amount: h.monthlyRent }]
-        if (h.messOpted) items.push({ label: 'Mess charges', amount: settings.messMonthlyCharge })
-        await createInvoice(orgId, { hostelerId: h._id, month: body.month, items, dueDate }, session)
+        const items = monthlyBillItems(h, chargesByHostel.get(String(h.hostelId)), settings.messMonthlyCharge)
+        const inv = await createInvoice(orgId, { hostelerId: h._id, month: body.month, items, dueDate }, session)
+        await notifyHostelers(
+          orgId,
+          [h._id],
+          {
+            type: 'bill_generated',
+            hostelId: h.hostelId,
+            title: `${monthLabel} bill: ₹${inv.total.toLocaleString('en-IN')}`,
+            body: `Your bill ${inv.number} is ready. Due by ${dueDate}. Pay to the hostel's UPI and report the transaction ID in the app.`,
+            link: '/portal/fees',
+          },
+          session,
+        )
       }
       if (targets.length)
         await logActivity(orgId, `${targets.length} invoice${targets.length === 1 ? '' : 's'} generated for ${body.month}`, 'payment', hostelId ?? null, session)
@@ -346,6 +366,7 @@ router.get(
       ...invoiceOut(inv, today),
       daysOverdue: invoiceStatus(inv, today) === 'overdue' ? daysOverdue(inv.dueDate, today) : 0,
       payments: payments.map((p) => toApi(p)),
+      previousBalance: await previousBalance(orgId, inv),
       hosteler: info.get(String(inv.hostelerId)) ?? null,
       ...ho,
     })
@@ -381,11 +402,11 @@ router.post(
     const days = daysOverdue(inv.dueDate, today)
     const fee = days * (settings.lateFeePerDay ?? 0)
     if (fee <= 0) throw badRequest('Set a late fee per day in Settings first')
-    const kept = inv.items.filter((it) => !LATE_FEE_RX.test(it.label))
+    const kept = inv.items.filter((it) => it.key !== 'late_fee' && !LATE_FEE_RX.test(it.label))
     const replaced = kept.length !== inv.items.length
     const items = [
-      ...kept.map((it) => ({ label: it.label, amount: it.amount })),
-      { label: `Late fee (${days} day${days === 1 ? '' : 's'})`, amount: fee },
+      ...kept.map((it) => ({ key: it.key ?? ('other' as const), label: it.label, amount: it.amount })),
+      { key: 'late_fee' as const, label: `Late fee (${days} day${days === 1 ? '' : 's'})`, amount: fee },
     ]
     const updated = await applyInvoiceChange(orgId, id, { items })
     res.json({ ...invoiceOut(updated, today), lateFee: fee, days, replaced })
@@ -532,6 +553,8 @@ router.delete(
     const orgId = oid(staffOf(req).orgId)
     const id = idParam(req)
     const pay = await withTransaction(async (session) => {
+      if (await PaymentClaim.exists({ orgId, paymentIds: id }).session(session))
+        throw conflict("This payment came from a hosteler's verified UPI report and can't be deleted")
       const p = await deletePayment(orgId, id, session)
       await logActivity(orgId, `Receipt ${p.receiptNo} (₹${p.amount.toLocaleString('en-IN')}) deleted`, 'payment', p.hostelId, session)
       return p

@@ -1,249 +1,459 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
-  Building2,
   CheckCircle2,
-  CreditCard,
+  ChevronDown,
+  Clock,
+  Copy,
   Download,
   FileText,
-  Loader2,
+  ImageIcon,
   Receipt,
-  ShieldCheck,
+  Send,
   Smartphone,
+  Store,
   Wallet,
+  X,
+  XCircle,
 } from 'lucide-react'
-import { errorMessage } from '@/api/client'
-import { useMyInvoices, useMyPayments, usePayInvoice, type PayMethod, type PortalInvoice } from '@/api/portal'
-import { useHostelerSession } from '@/api/session'
-import type { Payment, PaymentMode } from '@/api/types'
-import { Button, Card, EmptyState, ErrorState, Field, Input, LoadingState, Modal, Select, StatusBadge, toast } from '@/components/ui'
-import { cn, formatDate, formatMonth, today } from '@/lib/utils'
+import { errorMessage, openFile } from '@/api/client'
+import {
+  UTR_RE,
+  claimScreenshotUrl,
+  paymentQrUrl,
+  useMyInvoices,
+  useMyPaymentClaims,
+  useMyPayments,
+  usePaymentInfo,
+  useSubmitPaymentClaim,
+  type PortalOpenBill,
+  type PortalPaymentInfo,
+} from '@/api/portal'
+import type { PaymentClaim, PaymentMode } from '@/api/types'
+import { UpiQr, upiPayLink } from '@/components/UpiQr'
+import { Badge, Button, Card, EmptyState, ErrorState, Field, Input, LoadingState, Modal, StatusBadge, Textarea, toast } from '@/components/ui'
+import { cn, formatBytes, formatDate, formatMonth, today } from '@/lib/utils'
 import { PortalTitle, SectionTitle, openInNewTab, useMoney } from './_shared'
-
-const BANKS = [
-  'State Bank of India',
-  'HDFC Bank',
-  'ICICI Bank',
-  'Axis Bank',
-  'Kotak Mahindra Bank',
-  'Punjab National Bank',
-  'Bank of Baroda',
-  'Yes Bank',
-]
 
 const MODE_LABEL: Record<PaymentMode, string> = {
   cash: 'Cash',
   upi: 'UPI',
   card: 'Card',
   bank: 'Bank transfer',
-  online: 'Net banking',
+  online: 'Online',
 }
 
-/** Minimum time the "processing" screen is shown, so the step doesn't flash */
-const MIN_PROCESSING_MS = 1200
+/** Same limit as the server (portal uploads ≤ 2 MB, images only). */
+const MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024
 
-/** Deterministic QR-looking grid */
-function FakeQR({ seed }: { seed: string }) {
-  const n = 25
-  const cells = useMemo(() => {
-    let h = 0
-    for (const c of seed) h = (h * 31 + c.charCodeAt(0)) >>> 0
-    const out: boolean[] = []
-    for (let i = 0; i < n * n; i++) {
-      h = (h * 1103515245 + 12345) >>> 0
-      out.push(((h >>> 16) & 1) === 1)
-    }
-    return out
-  }, [seed])
-  const finder = (x: number, y: number) => {
-    const inBox = (ox: number, oy: number) => x >= ox && x < ox + 7 && y >= oy && y < oy + 7
-    return inBox(0, 0) || inBox(n - 7, 0) || inBox(0, n - 7)
+const isPhone = () => typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+
+function copyText(text: string, what: string) {
+  const fail = () => toast.error(`Couldn't copy. Please note down the ${what}.`)
+  if (!navigator.clipboard) return fail()
+  navigator.clipboard.writeText(text).then(() => toast.success(`${what} copied`), fail)
+}
+
+/**
+ * How an amount would be applied to the open bills — oldest first, after the
+ * payments already waiting for verification (the server applies them the same way).
+ */
+function allocate(bills: PortalOpenBill[], pending: number, amount: number) {
+  let skip = pending
+  let left = amount
+  const out: { bill: PortalOpenBill; applied: number; clears: boolean }[] = []
+  for (const b of bills) {
+    let bal = b.balance
+    const s = Math.min(skip, bal)
+    skip -= s
+    bal -= s
+    if (bal <= 0 || left <= 0) continue
+    const applied = Math.min(left, bal)
+    left -= applied
+    out.push({ bill: b, applied, clears: applied >= bal })
   }
+  return out
+}
+
+function billStatus(b: PortalOpenBill): 'overdue' | 'partial' | 'unpaid' {
+  if (b.dueDate < today()) return 'overdue'
+  return b.paidAmount > 0 ? 'partial' : 'unpaid'
+}
+
+/* ------------------------------------------------------------------ */
+/* Bills                                                               */
+/* ------------------------------------------------------------------ */
+
+function BillCard({ bill, previous }: { bill: PortalOpenBill; previous: boolean }) {
+  const money = useMoney()
+  // the current bill starts expanded; previous bills are collapsed to keep phones tidy
+  const [open, setOpen] = useState(!previous)
   return (
-    <svg viewBox={`0 0 ${n} ${n}`} className="h-44 w-44 text-slate-900" shapeRendering="crispEdges" aria-label="UPI QR code">
-      <rect width={n} height={n} fill="white" />
-      {cells.map((on, i) => {
-        const x = i % n
-        const y = Math.floor(i / n)
-        if (finder(x, y) || !on) return null
-        return <rect key={i} x={x} y={y} width={1} height={1} fill="currentColor" />
-      })}
-      {[
-        [0, 0],
-        [n - 7, 0],
-        [0, n - 7],
-      ].map(([x, y]) => (
-        <g key={`${x}-${y}`}>
-          <rect x={x} y={y} width={7} height={7} fill="currentColor" />
-          <rect x={x! + 1} y={y! + 1} width={5} height={5} fill="white" />
-          <rect x={x! + 2} y={y! + 2} width={3} height={3} fill="currentColor" />
-        </g>
-      ))}
-    </svg>
+    <Card className={cn('overflow-hidden', previous && 'border-amber-200')}>
+      <button type="button" onClick={() => setOpen((v) => !v)} className="flex w-full items-start gap-3 p-4 text-left" aria-expanded={open}>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <p className="font-semibold text-slate-900">{formatMonth(bill.month)}</p>
+            {previous ? <Badge tone="amber">Previous balance</Badge> : <Badge tone="blue">Current bill</Badge>}
+            <StatusBadge status={billStatus(bill)} />
+          </div>
+          <p className="mt-0.5 text-xs text-slate-500">
+            {bill.number} · Due {formatDate(bill.dueDate)}
+          </p>
+        </div>
+        <div className="shrink-0 text-right">
+          <p className="text-xs text-slate-500">Balance</p>
+          <p className="font-bold tabular-nums text-slate-900">{money(bill.balance)}</p>
+        </div>
+        <ChevronDown className={cn('mt-1 h-4 w-4 shrink-0 text-slate-400 transition-transform', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <div className="border-t border-slate-100 px-4 pb-3 pt-3">
+          <ul className="space-y-1 text-sm">
+            {bill.items.map((it, i) => (
+              <li key={`${it.key ?? 'item'}-${i}`} className="flex justify-between gap-3 text-slate-600">
+                <span className="truncate">{it.label}</span>
+                <span className="tabular-nums">{money(it.amount)}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-2 space-y-1 border-t border-dashed border-slate-200 pt-2 text-sm">
+            <div className="flex justify-between font-medium text-slate-800">
+              <span>Bill total</span>
+              <span className="tabular-nums">{money(bill.total)}</span>
+            </div>
+            {bill.paidAmount > 0 && (
+              <div className="flex justify-between text-emerald-700">
+                <span>Already paid</span>
+                <span className="tabular-nums">− {money(bill.paidAmount)}</span>
+              </div>
+            )}
+            <div className="flex justify-between font-semibold text-slate-900">
+              <span>Balance</span>
+              <span className="tabular-nums">{money(bill.balance)}</span>
+            </div>
+          </div>
+          <Button variant="ghost" size="sm" className="-ml-2 mt-2" onClick={() => openInNewTab(`/print/invoice/${bill.id}`)} icon={<FileText className="h-4 w-4" />}>
+            View / print bill
+          </Button>
+        </div>
+      )}
+    </Card>
   )
 }
 
-function luhnOk(num: string) {
-  let sum = 0
-  let dbl = false
-  for (let i = num.length - 1; i >= 0; i--) {
-    let d = Number(num[i])
-    if (dbl) {
-      d *= 2
-      if (d > 9) d -= 9
-    }
-    sum += d
-    dbl = !dbl
-  }
-  return sum % 10 === 0
-}
+/* ------------------------------------------------------------------ */
+/* Pay sheet: 1) pay by UPI  2) report it  3) sent                      */
+/* ------------------------------------------------------------------ */
 
-function PayModal({ invoice, onClose }: { invoice: PortalInvoice | null; onClose: () => void }) {
-  const me = useHostelerSession()?.hosteler
-  const pay = usePayInvoice()
+function PaySheet({ info, open, onClose }: { info: PortalPaymentInfo; open: boolean; onClose: () => void }) {
   const money = useMoney()
+  const submit = useSubmitPaymentClaim()
+  const payable = Math.max(info.totalDue - info.pendingVerification, 0)
+  const payee = info.payeeName || info.hostelName
 
-  const [step, setStep] = useState<'form' | 'processing' | 'success'>('form')
-  const [method, setMethod] = useState<PayMethod>('upi')
+  const [step, setStep] = useState<'pay' | 'report' | 'done'>('pay')
   const [amount, setAmount] = useState('')
-  const [upiTxn, setUpiTxn] = useState('')
-  const [cardNo, setCardNo] = useState('')
-  const [cardName, setCardName] = useState('')
-  const [expiry, setExpiry] = useState('')
-  const [cvv, setCvv] = useState('')
-  const [bank, setBank] = useState('')
+  const [utr, setUtr] = useState('')
+  const [paidOn, setPaidOn] = useState(today())
+  const [note, setNote] = useState('')
+  const [file, setFile] = useState<File | null>(null)
+  const [preview, setPreview] = useState<string | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [serverError, setServerError] = useState<string | null>(null)
-  const [result, setResult] = useState<{ payment: Payment; balanceBefore: number } | null>(null)
-  // the invoice being paid, frozen when the sheet opens (the list refetches after paying)
-  const [inv, setInv] = useState<PortalInvoice | null>(null)
+  const [sent, setSent] = useState<PaymentClaim | null>(null)
 
   useEffect(() => {
-    if (invoice) {
-      setInv(invoice)
-      setStep('form')
-      setMethod('upi')
-      setAmount(String(invoice.balance))
-      setUpiTxn('')
-      setCardNo('')
-      setCardName(me?.name ?? '')
-      setExpiry('')
-      setCvv('')
-      setBank('')
-      setErrors({})
-      setServerError(null)
-      setResult(null)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [invoice?.id])
-
-  if (!invoice || !inv) return null
-  const balance = inv.balance
-
-  const validate = () => {
-    const e: Record<string, string> = {}
-    const amt = Number(amount)
-    if (!amount || Number.isNaN(amt) || amt < 1) e.amount = 'Enter an amount of at least 1'
-    else if (amt > balance) e.amount = `Amount can't exceed the balance of ${money(balance)}`
-    else if (!Number.isInteger(amt)) e.amount = 'Enter a whole amount'
-    if (method === 'upi') {
-      if (!/^[A-Za-z0-9]{8,30}$/.test(upiTxn.trim())) e.upiTxn = 'Enter the UPI transaction / reference ID (8–30 letters or digits)'
-    } else if (method === 'card') {
-      const digits = cardNo.replace(/\s/g, '')
-      if (digits.length < 15 || digits.length > 16) e.cardNo = 'Enter a valid 15–16 digit card number'
-      else if (!luhnOk(digits)) e.cardNo = 'This card number looks invalid'
-      if (!cardName.trim()) e.cardName = 'Enter the name on card'
-      const m = /^(\d{2})\/(\d{2})$/.exec(expiry)
-      if (!m) e.expiry = 'Use MM/YY'
-      else {
-        const mm = Number(m[1])
-        const yy = 2000 + Number(m[2])
-        const now = new Date()
-        if (mm < 1 || mm > 12) e.expiry = 'Invalid month'
-        else if (yy < now.getFullYear() || (yy === now.getFullYear() && mm < now.getMonth() + 1)) e.expiry = 'Card has expired'
-      }
-      if (!/^\d{3,4}$/.test(cvv)) e.cvv = '3 or 4 digits'
-    } else if (!bank) e.bank = 'Select your bank'
-    setErrors(e)
-    return Object.keys(e).length === 0
-  }
-
-  const submit = async () => {
-    if (!validate() || pay.isPending) return
+    if (!open) return
+    setStep('pay')
+    setAmount(payable > 0 ? String(payable) : '')
+    setUtr('')
+    setPaidOn(today())
+    setNote('')
+    setFile(null)
+    setErrors({})
     setServerError(null)
-    setStep('processing')
-    const amt = Number(amount)
-    // card / bank details never leave the browser; the (simulated) gateway issues the reference
-    const reference = method === 'upi' ? upiTxn.trim().toUpperCase() : undefined
-    const delay = new Promise((r) => setTimeout(r, MIN_PROCESSING_MS))
+    setSent(null)
+    // reset only when the sheet opens (info refetches after a report is sent)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  useEffect(() => {
+    if (!file) {
+      setPreview(null)
+      return
+    }
+    const u = URL.createObjectURL(file)
+    setPreview(u)
+    return () => URL.revokeObjectURL(u)
+  }, [file])
+
+  const amt = Number(amount)
+  const amountError = (): string | null => {
+    if (!amount.trim() || Number.isNaN(amt) || amt < 1) return 'Enter an amount of at least ₹1'
+    if (!Number.isInteger(amt)) return 'Enter a whole amount (no paise)'
+    if (amt > payable)
+      return info.pendingVerification > 0
+        ? `You can pay up to ${money(payable)} (${money(info.pendingVerification)} is already waiting for verification)`
+        : `Amount can't be more than your total due (${money(payable)})`
+    return null
+  }
+  const amountOk = amountError() === null
+  const plan = useMemo(() => (amountOk ? allocate(info.bills, info.pendingVerification, amt) : []), [amountOk, info, amt])
+  const billNote = plan.length ? `Rent ${plan.map((p) => p.bill.number).join(', ')}` : 'Hostel rent'
+  const upiLink = upiPayLink({ upiId: info.upiId, payeeName: payee, amount: amountOk ? amt : undefined, note: billNote })
+
+  const goReport = () => {
+    const e = amountError()
+    if (e) return setErrors({ amount: e })
+    setErrors({})
+    setStep('report')
+  }
+
+  const pickFile = (f: File | undefined) => {
+    if (!f) return
+    if (!f.type.startsWith('image/')) return setErrors((s) => ({ ...s, file: 'Please choose an image (screenshot or photo)' }))
+    if (f.size > MAX_SCREENSHOT_BYTES) return setErrors((s) => ({ ...s, file: `That image is ${formatBytes(f.size)}. Please use one under 2 MB.` }))
+    setErrors((s) => ({ ...s, file: '' }))
+    setFile(f)
+  }
+
+  const send = async () => {
+    const e: Record<string, string> = {}
+    const ae = amountError()
+    if (ae) e.amount = ae
+    const u = utr.trim().toUpperCase()
+    if (!UTR_RE.test(u)) e.utr = 'Enter the UPI transaction ID / UTR (6-30 letters or digits)'
+    if (!paidOn) e.paidOn = 'Select the payment date'
+    else if (paidOn > today()) e.paidOn = "Payment date can't be in the future"
+    if (note.length > 300) e.note = 'Keep the note under 300 characters'
+    setErrors(e)
+    if (Object.keys(e).length || submit.isPending) return
+    setServerError(null)
     try {
-      const [res] = await Promise.all([pay.mutateAsync({ invoiceId: inv.id, amount: amt, method, reference }), delay])
-      setResult({ payment: res.payment, balanceBefore: balance })
-      setStep('success')
-      toast.success(`Payment of ${money(amt)} successful`)
-    } catch (e) {
-      await delay
-      setServerError(errorMessage(e, 'Payment failed. No money was charged — please try again.'))
-      setStep('form')
+      const claim = await submit.mutateAsync({ amount: amt, utr: u, paidOn, note, file })
+      setSent(claim)
+      setStep('done')
+    } catch (err) {
+      setServerError(errorMessage(err, "Couldn't send your payment report. Please try again."))
     }
   }
 
-  const methods: { id: PayMethod; label: string; icon: typeof Smartphone }[] = [
-    { id: 'upi', label: 'UPI', icon: Smartphone },
-    { id: 'card', label: 'Card', icon: CreditCard },
-    { id: 'netbanking', label: 'Net banking', icon: Building2 },
-  ]
+  if (!open) return null
+
+  const footer =
+    step === 'pay' ? (
+      <>
+        <Button variant="outline" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button onClick={goReport} icon={<CheckCircle2 className="h-4 w-4" />}>
+          I've paid — report it
+        </Button>
+      </>
+    ) : step === 'report' ? (
+      <>
+        <Button variant="outline" onClick={() => setStep('pay')} disabled={submit.isPending}>
+          Back
+        </Button>
+        <Button onClick={() => void send()} loading={submit.isPending} icon={<Send className="h-4 w-4" />}>
+          Send for verification
+        </Button>
+      </>
+    ) : (
+      <Button onClick={onClose}>Done</Button>
+    )
 
   return (
     <Modal
       open
-      onClose={step === 'processing' ? () => undefined : onClose}
-      title={step === 'success' ? 'Payment successful' : `Pay ${inv.number}`}
-      description={step === 'form' ? `${formatMonth(inv.month)} · Balance ${money(balance)}` : undefined}
-      footer={
-        step === 'form' ? (
-          <>
-            <Button variant="outline" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button onClick={() => void submit()} icon={<ShieldCheck className="h-4 w-4" />}>
-              Pay {Number(amount) > 0 ? money(Number(amount)) : ''}
-            </Button>
-          </>
-        ) : step === 'success' ? (
-          <>
-            <Button variant="outline" onClick={onClose}>
-              Done
-            </Button>
-            <Button icon={<Download className="h-4 w-4" />} onClick={() => result && openInNewTab(`/print/receipt/${result.payment.id}`)}>
-              Download receipt
-            </Button>
-          </>
-        ) : undefined
-      }
+      onClose={submit.isPending ? () => undefined : onClose}
+      title={step === 'pay' ? 'Pay rent by UPI' : step === 'report' ? 'Report your payment' : 'Payment reported'}
+      description={step === 'pay' ? 'Step 1 of 2 · Pay from any UPI app' : step === 'report' ? 'Step 2 of 2 · Tell your hostel you paid' : undefined}
+      footer={footer}
     >
-      {step === 'processing' && (
-        <div className="flex flex-col items-center py-12 text-center">
-          <Loader2 className="h-12 w-12 animate-spin text-brand-600" />
-          <p className="mt-4 font-semibold text-slate-900">Processing payment…</p>
-          <p className="mt-1 text-sm text-slate-500">Please don't close this window or press back.</p>
+      {step === 'pay' && (
+        <div className="space-y-5">
+          <Field
+            label="Amount to pay"
+            required
+            error={errors.amount}
+            hint={
+              info.pendingVerification > 0
+                ? `Up to ${money(payable)} · ${money(info.pendingVerification)} already waiting for verification`
+                : `You can also pay part of it (up to ${money(payable)})`
+            }
+          >
+            <div className="relative">
+              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-lg font-semibold text-slate-400">₹</span>
+              <Input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={payable}
+                step={1}
+                value={amount}
+                onChange={(e) => {
+                  setAmount(e.target.value)
+                  if (errors.amount) setErrors((s) => ({ ...s, amount: '' }))
+                }}
+                className="h-12 pl-8 text-lg font-semibold"
+              />
+            </div>
+          </Field>
+
+          {plan.length > 0 && (
+            <div className="rounded-xl bg-slate-50 p-3 text-sm">
+              <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">Goes towards (oldest bill first)</p>
+              <ul className="space-y-1">
+                {plan.map((p) => (
+                  <li key={p.bill.id} className="flex justify-between gap-3 text-slate-700">
+                    <span className="truncate">
+                      {formatMonth(p.bill.month)} · {p.bill.number}
+                      {p.clears ? '' : ' (part)'}
+                    </span>
+                    <span className="font-medium tabular-nums">{money(p.applied)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="flex flex-col items-center rounded-2xl border border-slate-200 bg-slate-50 p-4 text-center">
+            <UpiQr upiId={info.upiId} payeeName={payee} amount={amountOk ? amt : undefined} note={billNote} qrUrl={info.hasQr ? paymentQrUrl : null} />
+            <p className="mt-2 text-xs text-slate-500">
+              {info.hasQr && amountOk ? `Scan with any UPI app and enter ${money(amt)}` : 'Scan with GPay, PhonePe, Paytm or any UPI app'}
+            </p>
+            <div className="mt-3 w-full rounded-xl border border-slate-200 bg-white p-3 text-left">
+              <p className="text-xs text-slate-500">UPI ID</p>
+              <div className="flex items-center gap-2">
+                <p className="min-w-0 flex-1 break-all font-mono text-base font-semibold text-slate-900">{info.upiId}</p>
+                <Button variant="outline" size="sm" onClick={() => copyText(info.upiId, 'UPI ID')} icon={<Copy className="h-3.5 w-3.5" />}>
+                  Copy
+                </Button>
+              </div>
+              {payee && (
+                <p className="mt-1.5 text-xs text-slate-500">
+                  Pays to <span className="font-medium text-slate-700">{payee}</span> — check this name in your UPI app before paying.
+                </p>
+              )}
+            </div>
+            {isPhone() ? (
+              <a href={upiLink} className="mt-3 block w-full">
+                <span className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-brand-600 px-6 text-base font-medium text-white shadow-sm hover:bg-brand-700">
+                  <Smartphone className="h-5 w-5" />
+                  Open UPI app{amountOk ? ` · ${money(amt)}` : ''}
+                </span>
+              </a>
+            ) : (
+              <p className="mt-3 text-xs text-slate-500">On your phone you'll also see an “Open UPI app” button.</p>
+            )}
+          </div>
+
+          <p className="rounded-xl bg-brand-50 px-3 py-2.5 text-sm text-brand-800">
+            After paying, tap <span className="font-semibold">“I've paid — report it”</span> and enter the UPI transaction ID (UTR) from your UPI app.
+          </p>
         </div>
       )}
 
-      {step === 'success' && result && (
-        <div className="flex flex-col items-center py-4 text-center">
-          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50">
-            <CheckCircle2 className="h-10 w-10 text-emerald-500" />
+      {step === 'report' && (
+        <div className="space-y-4">
+          {serverError && (
+            <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{serverError}</span>
+            </div>
+          )}
+          <Field label="Amount you paid" required error={errors.amount}>
+            <div className="relative">
+              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center font-semibold text-slate-400">₹</span>
+              <Input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={payable}
+                step={1}
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                className="pl-7 font-semibold"
+              />
+            </div>
+          </Field>
+          <Field
+            label="UPI transaction ID / UTR"
+            required
+            error={errors.utr}
+            hint="Open the payment in your UPI app — it's the 12-digit UPI Ref No. / UTR / Transaction ID."
+          >
+            <Input
+              value={utr}
+              onChange={(e) => setUtr(e.target.value.replace(/[^A-Za-z0-9]/g, '').toUpperCase())}
+              placeholder="e.g. 412345678901"
+              maxLength={30}
+              autoCapitalize="characters"
+              autoComplete="off"
+              className="font-mono tracking-wide"
+            />
+          </Field>
+          <Field label="Payment date" required error={errors.paidOn}>
+            <Input type="date" value={paidOn} max={today()} onChange={(e) => setPaidOn(e.target.value)} />
+          </Field>
+          <div>
+            <p className="mb-1.5 text-sm font-medium text-slate-700">
+              Screenshot <span className="font-normal text-slate-400">(optional, helps quick verification)</span>
+            </p>
+            {file && preview ? (
+              <div className="flex items-center gap-3 rounded-xl border border-slate-200 p-2">
+                <img src={preview} alt="Payment screenshot preview" className="h-20 w-16 rounded-lg object-cover" />
+                <div className="min-w-0 flex-1 text-sm">
+                  <p className="truncate font-medium text-slate-800">{file.name}</p>
+                  <p className="text-xs text-slate-500">{formatBytes(file.size)}</p>
+                </div>
+                <Button variant="ghost" size="sm" onClick={() => setFile(null)} icon={<X className="h-4 w-4" />}>
+                  Remove
+                </Button>
+              </div>
+            ) : (
+              <label className="flex cursor-pointer items-center gap-3 rounded-xl border-2 border-dashed border-slate-300 px-4 py-4 text-sm text-slate-600 hover:border-brand-400 hover:bg-slate-50">
+                <ImageIcon className="h-5 w-5 text-slate-400" />
+                <span>
+                  Add screenshot
+                  <span className="block text-xs text-slate-400">JPG, PNG, WEBP or HEIC · max 2 MB</span>
+                </span>
+                <input
+                  type="file"
+                  hidden
+                  accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+                  onChange={(e) => {
+                    pickFile(e.target.files?.[0])
+                    e.target.value = ''
+                  }}
+                />
+              </label>
+            )}
+            {errors.file && <p className="mt-1 text-xs text-red-600">{errors.file}</p>}
           </div>
-          <p className="mt-3 text-3xl font-bold text-slate-900">{money(result.payment.amount)}</p>
-          <p className="text-sm text-slate-500">paid towards {inv.number}</p>
+          <Field label="Note for the office (optional)" error={errors.note}>
+            <Textarea rows={2} maxLength={300} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Paid from my father's account" />
+          </Field>
+        </div>
+      )}
+
+      {step === 'done' && sent && (
+        <div className="flex flex-col items-center py-4 text-center">
+          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-amber-50">
+            <Clock className="h-9 w-9 text-amber-500" />
+          </div>
+          <p className="mt-3 text-3xl font-bold text-slate-900">{money(sent.amount)}</p>
+          <p className="mt-1 font-medium text-slate-800">Sent to your hostel for verification</p>
+          <p className="mt-1 max-w-sm text-sm text-slate-500">
+            The office will check the payment and update your bill. You'll get a notification here once it's verified.
+          </p>
           <dl className="mt-5 w-full space-y-2 rounded-xl bg-slate-50 p-4 text-left text-sm">
             {[
-              ['Receipt no.', result.payment.receiptNo],
-              ['Transaction ID', result.payment.reference || '—'],
-              ['Paid via', MODE_LABEL[result.payment.mode]],
-              ['Date', formatDate(result.payment.date)],
-              ['Remaining balance', money(Math.max(result.balanceBefore - result.payment.amount, 0))],
+              ['UTR', sent.utr],
+              ['Paid on', formatDate(sent.paidOn)],
+              ['Screenshot', sent.hasScreenshot ? 'Attached' : 'Not attached'],
             ].map(([k, v]) => (
               <div key={k} className="flex justify-between gap-3">
                 <dt className="text-slate-500">{k}</dt>
@@ -253,242 +463,184 @@ function PayModal({ invoice, onClose }: { invoice: PortalInvoice | null; onClose
           </dl>
         </div>
       )}
-
-      {step === 'form' && (
-        <div className="space-y-5">
-          {serverError && (
-            <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{serverError}</span>
-            </div>
-          )}
-          <Field label="Amount to pay" required error={errors.amount} hint={`You can pay part of the balance (max ${money(balance)}).`}>
-            <Input
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={balance}
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              className="h-12 text-lg font-semibold"
-            />
-          </Field>
-
-          <div>
-            <p className="mb-1.5 text-sm font-medium text-slate-700">Payment method</p>
-            <div className="grid grid-cols-3 gap-2">
-              {methods.map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => {
-                    setMethod(m.id)
-                    setErrors({})
-                  }}
-                  className={cn(
-                    'flex flex-col items-center gap-1.5 rounded-xl border-2 px-2 py-3 text-sm font-medium transition',
-                    method === m.id ? 'border-brand-600 bg-brand-50 text-brand-700' : 'border-slate-200 text-slate-600 hover:border-slate-300',
-                  )}
-                >
-                  <m.icon className="h-5 w-5" />
-                  {m.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {method === 'upi' && (
-            <div className="space-y-4">
-              <div className="flex flex-col items-center rounded-xl border border-slate-200 bg-slate-50 p-4">
-                <div className="rounded-lg bg-white p-2 shadow-sm">
-                  <FakeQR seed={`${inv.id}-${amount}`} />
-                </div>
-                <p className="mt-3 text-xs text-slate-500">Scan with any UPI app or pay to</p>
-                <p className="font-mono text-base font-semibold text-slate-900">hostelhub@upi</p>
-                <button
-                  type="button"
-                  className="mt-1 text-xs font-medium text-brand-600"
-                  onClick={() => {
-                    navigator.clipboard?.writeText('hostelhub@upi').then(
-                      () => toast.info('UPI ID copied'),
-                      () => undefined,
-                    )
-                  }}
-                >
-                  Copy UPI ID
-                </button>
-              </div>
-              <Field label="UPI transaction ID" required error={errors.upiTxn} hint="Find the 12-digit UTR / reference number in your UPI app after paying.">
-                <Input value={upiTxn} onChange={(e) => setUpiTxn(e.target.value.replace(/\s/g, ''))} placeholder="e.g. 412345678901" maxLength={30} />
-              </Field>
-            </div>
-          )}
-
-          {method === 'card' && (
-            <div className="space-y-4">
-              <Field label="Card number" required error={errors.cardNo}>
-                <Input
-                  inputMode="numeric"
-                  autoComplete="cc-number"
-                  placeholder="1234 5678 9012 3456"
-                  value={cardNo}
-                  onChange={(e) => {
-                    const d = e.target.value.replace(/\D/g, '').slice(0, 16)
-                    setCardNo(d.replace(/(.{4})/g, '$1 ').trim())
-                  }}
-                />
-              </Field>
-              <Field label="Name on card" required error={errors.cardName}>
-                <Input autoComplete="cc-name" value={cardName} onChange={(e) => setCardName(e.target.value)} />
-              </Field>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Expiry" required error={errors.expiry}>
-                  <Input
-                    inputMode="numeric"
-                    autoComplete="cc-exp"
-                    placeholder="MM/YY"
-                    value={expiry}
-                    onChange={(e) => {
-                      const d = e.target.value.replace(/\D/g, '').slice(0, 4)
-                      setExpiry(d.length > 2 ? `${d.slice(0, 2)}/${d.slice(2)}` : d)
-                    }}
-                  />
-                </Field>
-                <Field label="CVV" required error={errors.cvv}>
-                  <Input
-                    type="password"
-                    inputMode="numeric"
-                    autoComplete="cc-csc"
-                    placeholder="•••"
-                    value={cvv}
-                    onChange={(e) => setCvv(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                  />
-                </Field>
-              </div>
-            </div>
-          )}
-
-          {method === 'netbanking' && (
-            <Field label="Your bank" required error={errors.bank} hint="You'll be securely redirected to your bank (simulated).">
-              <Select value={bank} onChange={(e) => setBank(e.target.value)} placeholder="Select bank" options={BANKS.map((b) => ({ value: b, label: b }))} />
-            </Field>
-          )}
-
-          <p className="flex items-center gap-1.5 text-xs text-slate-400">
-            <ShieldCheck className="h-3.5 w-3.5" /> Online payments are simulated for now — no real money is charged.
-          </p>
-        </div>
-      )}
     </Modal>
   )
 }
 
+/* ------------------------------------------------------------------ */
+/* Payment reports                                                     */
+/* ------------------------------------------------------------------ */
+
+function ClaimRow({ claim }: { claim: PaymentClaim }) {
+  const money = useMoney()
+  const partial = claim.status === 'verified' && claim.receivedAmount !== null && claim.receivedAmount < claim.amount
+  const viewShot = () => void openFile(claimScreenshotUrl(claim.id)).catch((e: unknown) => toast.error(errorMessage(e, "Couldn't open the screenshot")))
+  const Icon = claim.status === 'verified' ? CheckCircle2 : claim.status === 'rejected' ? XCircle : Clock
+  return (
+    <li className="flex items-start gap-3 px-4 py-3">
+      <div
+        className={cn(
+          'flex h-10 w-10 shrink-0 items-center justify-center rounded-full',
+          claim.status === 'verified' ? 'bg-emerald-50 text-emerald-600' : claim.status === 'rejected' ? 'bg-red-50 text-red-600' : 'bg-amber-50 text-amber-600',
+        )}
+      >
+        <Icon className="h-5 w-5" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <p className="font-medium text-slate-900">{money(claim.amount)}</p>
+          {claim.status === 'pending' && <Badge tone="amber">Waiting for verification</Badge>}
+          {claim.status === 'verified' && <Badge tone={partial ? 'amber' : 'green'}>{partial ? 'Partly verified' : 'Verified'}</Badge>}
+          {claim.status === 'rejected' && <Badge tone="red">Rejected</Badge>}
+        </div>
+        <p className="truncate text-xs text-slate-500">
+          Paid {formatDate(claim.paidOn)} · UTR <span className="font-mono">{claim.utr}</span>
+        </p>
+        {claim.status === 'verified' && claim.receivedAmount !== null && (
+          <p className={cn('mt-0.5 text-xs', partial ? 'font-medium text-amber-700' : 'text-emerald-700')}>
+            {partial
+              ? `${money(claim.receivedAmount)} of ${money(claim.amount)} confirmed by the office`
+              : `${money(claim.receivedAmount)} confirmed${claim.reviewedAt ? ` on ${formatDate(claim.reviewedAt)}` : ''}`}
+          </p>
+        )}
+        {claim.status === 'rejected' && (
+          <p className="mt-0.5 text-xs text-red-700">
+            {claim.rejectReason ? `Reason: ${claim.rejectReason}.` : 'The office could not match this payment.'} Contact the office if you think this is a mistake.
+          </p>
+        )}
+        {claim.note && <p className="mt-0.5 truncate text-xs text-slate-400">Your note: {claim.note}</p>}
+      </div>
+      {claim.hasScreenshot && (
+        <Button variant="ghost" size="sm" onClick={viewShot} icon={<ImageIcon className="h-4 w-4" />} aria-label="View screenshot">
+          <span className="hidden sm:inline">Screenshot</span>
+        </Button>
+      )}
+    </li>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Page                                                                */
+/* ------------------------------------------------------------------ */
+
 export default function Fees() {
+  const infoQ = usePaymentInfo()
+  const claimsQ = useMyPaymentClaims()
   const invoicesQ = useMyInvoices()
   const paymentsQ = useMyPayments()
   const money = useMoney()
-  const [paying, setPaying] = useState<PortalInvoice | null>(null)
+  const [paying, setPaying] = useState(false)
 
-  const year = today().slice(0, 4)
-  const summary = useMemo(() => {
-    const due = (invoicesQ.data ?? []).reduce((a, i) => a + i.balance, 0)
-    const paidThisYear = (paymentsQ.data ?? []).filter((p) => p.date.startsWith(year)).reduce((a, p) => a + p.amount, 0)
-    return { due, paidThisYear }
-  }, [invoicesQ.data, paymentsQ.data, year])
-
-  const invoices = invoicesQ.data ?? []
+  const info = infoQ.data
+  const bills = info?.bills ?? []
+  const payable = info ? Math.max(info.totalDue - info.pendingVerification, 0) : 0
+  const upiReady = !!info?.upiId
+  const paidBills = (invoicesQ.data ?? []).filter((i) => i.balance <= 0)
+  const claims = claimsQ.data ?? []
   const payments = paymentsQ.data ?? []
 
   return (
     <div className="pb-4">
-      <PortalTitle title="Fees & payments" subtitle="View invoices, pay online and download receipts." />
+      <PortalTitle title="Fees & payments" subtitle="Pay rent by UPI and track your bills and receipts." />
 
-      <div className="grid grid-cols-2 gap-3">
-        <Card className={cn('p-4', summary.due > 0 ? 'border-red-100 bg-red-50/40' : 'border-emerald-100 bg-emerald-50/40')}>
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Total due</p>
-          <p className={cn('mt-1 text-2xl font-bold', summary.due > 0 ? 'text-red-600' : 'text-emerald-600')}>
-            {invoicesQ.data ? money(summary.due) : '—'}
-          </p>
-        </Card>
-        <Card className="p-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Paid in {year}</p>
-          <p className="mt-1 text-2xl font-bold text-slate-900">{paymentsQ.data ? money(summary.paidThisYear) : '—'}</p>
-        </Card>
-      </div>
-
-      <SectionTitle>Invoices</SectionTitle>
-      {invoicesQ.isLoading ? (
+      {/* Summary */}
+      {infoQ.isLoading ? (
         <LoadingState />
-      ) : invoicesQ.error ? (
+      ) : !info ? (
         <Card>
-          <ErrorState error={invoicesQ.error} onRetry={() => void invoicesQ.refetch()} />
-        </Card>
-      ) : invoices.length === 0 ? (
-        <Card>
-          <EmptyState icon={<FileText className="h-5 w-5" />} title="No invoices yet" description="Your monthly rent invoices will show up here." />
+          <ErrorState error={infoQ.error} onRetry={() => void infoQ.refetch()} />
         </Card>
       ) : (
-        <div className="space-y-3">
-          {invoices.map((inv) => {
-            const bal = inv.balance
-            const paid = inv.paidAmount
-            return (
-              <Card key={inv.id} className="p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="font-semibold text-slate-900">{formatMonth(inv.month)}</p>
-                    <p className="text-xs text-slate-500">
-                      {inv.number} · Due {formatDate(inv.dueDate)}
-                    </p>
-                  </div>
-                  <StatusBadge status={inv.status} />
-                </div>
-                <ul className="mt-3 space-y-1 text-sm">
-                  {inv.items.map((it, i) => (
-                    <li key={i} className="flex justify-between gap-3 text-slate-600">
-                      <span className="truncate">{it.label}</span>
-                      <span>{money(it.amount)}</span>
-                    </li>
-                  ))}
-                </ul>
-                <div className="mt-3 flex flex-wrap items-end justify-between gap-3 border-t border-slate-100 pt-3">
-                  <div className="text-sm">
-                    <p className="text-slate-500">
-                      Total <span className="font-medium text-slate-800">{money(inv.total)}</span>
-                      {paid > 0 && !inv.cancelled && (
-                        <>
-                          {' '}
-                          · Paid <span className="font-medium text-emerald-600">{money(paid)}</span>
-                        </>
-                      )}
-                    </p>
-                    {bal > 0 && <p className="mt-0.5 font-semibold text-slate-900">Balance {money(bal)}</p>}
-                  </div>
-                  <div className="flex gap-2">
-                    <Button variant="outline" size="md" onClick={() => openInNewTab(`/print/invoice/${inv.id}`)} icon={<FileText className="h-4 w-4" />}>
-                      View
-                    </Button>
-                    {bal > 0 && (
-                      <Button size="md" onClick={() => setPaying(inv)} icon={<Wallet className="h-4 w-4" />}>
-                        Pay now
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              </Card>
-            )
-          })}
-        </div>
+        <Card className={cn('p-5', info.totalDue > 0 ? '' : 'border-emerald-100 bg-emerald-50/40')}>
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-slate-500">Total due</p>
+              <p className={cn('mt-1 text-3xl font-bold', info.totalDue > 0 ? 'text-slate-900' : 'text-emerald-600')}>{money(info.totalDue)}</p>
+              {info.totalDue > 0 ? (
+                <p className="mt-1 text-sm text-slate-500">
+                  {bills.length > 1 ? `${bills.length} bills · previous balance + current bill` : '1 bill'}
+                  {bills[0] && bills[0].dueDate < today() && (
+                    <span className="font-medium text-red-600"> · overdue since {formatDate(bills[0].dueDate)}</span>
+                  )}
+                </p>
+              ) : (
+                <p className="mt-1 flex items-center gap-1 text-sm text-emerald-600">
+                  <CheckCircle2 className="h-4 w-4" /> You're all paid up
+                </p>
+              )}
+              {info.pendingVerification > 0 && (
+                <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1 text-sm font-medium text-amber-700">
+                  <Clock className="h-4 w-4" /> {money(info.pendingVerification)} waiting for verification
+                </p>
+              )}
+            </div>
+            {upiReady && payable > 0 && (
+              <Button size="lg" className="w-full rounded-xl sm:w-auto" onClick={() => setPaying(true)} icon={<Wallet className="h-5 w-5" />}>
+                Pay rent
+              </Button>
+            )}
+          </div>
+          {info.totalDue > 0 && !upiReady && (
+            <div className="mt-4 flex items-start gap-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
+              <Store className="mt-0.5 h-5 w-5 shrink-0 text-slate-400" />
+              <p>
+                <span className="font-medium text-slate-800">Your hostel hasn't set up UPI payments yet — pay at the office.</span> Your bill will be
+                updated once the office records the payment.
+              </p>
+            </div>
+          )}
+          {upiReady && info.totalDue > 0 && payable <= 0 && (
+            <p className="mt-3 text-sm text-slate-500">You've reported everything that's due. We'll let you know once the office verifies it.</p>
+          )}
+        </Card>
       )}
 
-      <SectionTitle>Payment history</SectionTitle>
+      {/* Open bills */}
+      {bills.length > 0 && (
+        <>
+          <SectionTitle>Bills to pay</SectionTitle>
+          <div className="space-y-3">
+            {bills.map((b, i) => (
+              <BillCard key={b.id} bill={b} previous={i < bills.length - 1} />
+            ))}
+            {bills.length > 1 && (
+              <div className="flex justify-between rounded-xl bg-slate-900 px-4 py-3 text-white">
+                <span className="text-sm">Total due</span>
+                <span className="font-bold tabular-nums">{money(info?.totalDue ?? 0)}</span>
+              </div>
+            )}
+            <p className="text-xs text-slate-500">Payments are applied to the oldest bill first.</p>
+          </div>
+        </>
+      )}
+
+      {/* Payment reports */}
+      <SectionTitle>My payment reports</SectionTitle>
+      <Card>
+        {claimsQ.isLoading ? (
+          <LoadingState />
+        ) : claimsQ.error ? (
+          <ErrorState error={claimsQ.error} onRetry={() => void claimsQ.refetch()} />
+        ) : claims.length === 0 ? (
+          <EmptyState icon={<Send className="h-5 w-5" />} title="No payments reported yet" description="After paying by UPI, report it here so the office can verify it." />
+        ) : (
+          <ul className="divide-y divide-slate-100">
+            {claims.map((c) => (
+              <ClaimRow key={c.id} claim={c} />
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      {/* Receipts */}
+      <SectionTitle>Receipts</SectionTitle>
       <Card>
         {paymentsQ.isLoading ? (
           <LoadingState />
         ) : paymentsQ.error ? (
           <ErrorState error={paymentsQ.error} onRetry={() => void paymentsQ.refetch()} />
         ) : payments.length === 0 ? (
-          <EmptyState icon={<Receipt className="h-5 w-5" />} title="No payments yet" />
+          <EmptyState icon={<Receipt className="h-5 w-5" />} title="No receipts yet" description="Receipts appear once the office confirms a payment." />
         ) : (
           <ul className="divide-y divide-slate-100">
             {payments.map((p) => (
@@ -500,7 +652,7 @@ export default function Fees() {
                   <p className="font-medium text-slate-900">{money(p.amount)}</p>
                   <p className="truncate text-xs text-slate-500">
                     {formatDate(p.date)} · {MODE_LABEL[p.mode]} · {p.receiptNo}
-                    {p.invoiceNumber ? ` · ${p.invoiceNumber}` : p.note ? ` · ${p.note}` : ''}
+                    {p.invoiceMonth ? ` · ${formatMonth(p.invoiceMonth)}` : p.note ? ` · ${p.note}` : ''}
                   </p>
                 </div>
                 <Button variant="ghost" size="sm" onClick={() => openInNewTab(`/print/receipt/${p.id}`)} icon={<Download className="h-4 w-4" />}>
@@ -512,7 +664,36 @@ export default function Fees() {
         )}
       </Card>
 
-      <PayModal invoice={paying} onClose={() => setPaying(null)} />
+      {/* Paid bills */}
+      <SectionTitle>Paid bills</SectionTitle>
+      <Card>
+        {invoicesQ.isLoading ? (
+          <LoadingState />
+        ) : invoicesQ.error ? (
+          <ErrorState error={invoicesQ.error} onRetry={() => void invoicesQ.refetch()} />
+        ) : paidBills.length === 0 ? (
+          <EmptyState icon={<FileText className="h-5 w-5" />} title="No paid bills yet" />
+        ) : (
+          <ul className="divide-y divide-slate-100">
+            {paidBills.map((inv) => (
+              <li key={inv.id} className="flex items-center gap-3 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-slate-900">{formatMonth(inv.month)}</p>
+                  <p className="truncate text-xs text-slate-500">
+                    {inv.number} · {money(inv.total)}
+                  </p>
+                </div>
+                <StatusBadge status={inv.status} />
+                <Button variant="ghost" size="sm" onClick={() => openInNewTab(`/print/invoice/${inv.id}`)} icon={<FileText className="h-4 w-4" />}>
+                  View
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      {info && upiReady && <PaySheet info={info} open={paying} onClose={() => setPaying(false)} />}
     </div>
   )
 }

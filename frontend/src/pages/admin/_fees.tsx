@@ -28,6 +28,9 @@ export const PAYMENT_MODES: { value: PaymentMode; label: string }[] = [
   { value: 'online', label: 'Online' },
 ]
 
+/** Modes staff can record (the old in-app "online" gateway is gone; it stays above for history and filters). */
+export const RECORD_MODES = PAYMENT_MODES.filter((m) => m.value !== 'online')
+
 export function modeLabel(m: PaymentMode): string {
   return PAYMENT_MODES.find((x) => x.value === m)?.label ?? m
 }
@@ -607,7 +610,7 @@ export function RecordPaymentModal({
             <Input type="date" value={date} max={today()} onChange={(e) => setDate(e.target.value)} />
           </Field>
           <Field label="Mode" required>
-            <Select value={mode} onChange={(e) => setMode(e.target.value as PaymentMode)} options={PAYMENT_MODES} />
+            <Select value={mode} onChange={(e) => setMode(e.target.value as PaymentMode)} options={RECORD_MODES} />
           </Field>
           <Field label="Reference" hint="UTR / cheque / transaction id">
             <Input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Optional" maxLength={100} />

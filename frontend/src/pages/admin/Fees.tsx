@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   AlertTriangle,
+  BadgeCheck,
   Ban,
   Banknote,
   BellRing,
@@ -26,7 +27,8 @@ import {
 import type { UseQueryResult } from '@tanstack/react-query'
 import { useHostelName, useHostels, useScope, useSettings } from '@/api/common'
 import { toastError } from '@/api/query'
-import type { ID, InvoiceItem, InvoiceStatus, Payment, PaymentMode } from '@/api/types'
+import type { ChargeKey, ID, InvoiceItem, InvoiceStatus, Payment, PaymentMode } from '@/api/types'
+import { CHARGE_KEY_LABELS, CHARGE_KEY_OPTIONS, configuredCharges, guessKey, monthlyBillItems } from '@/lib/charges'
 import {
   feesApi,
   fetchAllPages,
@@ -91,9 +93,11 @@ import {
   useDebounced,
   whatsappUrl,
 } from './_fees'
+import { VerifyTab } from './_verify'
+import { usePendingClaimCount } from '@/api/claims'
 
-type TabKey = 'invoices' | 'payments' | 'dues' | 'deposits'
-const TAB_KEYS: TabKey[] = ['invoices', 'payments', 'dues', 'deposits']
+type TabKey = 'verify' | 'invoices' | 'payments' | 'dues' | 'deposits'
+const TAB_KEYS: TabKey[] = ['verify', 'invoices', 'payments', 'dues', 'deposits']
 const PAGE_SIZE = 50
 
 interface PayTarget {
@@ -132,6 +136,8 @@ export default function Fees() {
 
   const summaryQ = useFeesSummary(month, scope)
   const duesQ = useDues(scope)
+  const pendingQ = usePendingClaimCount(scope)
+  const pending = pendingQ.data ?? 0
   const s = summaryQ.data
   const rate = s?.collectionRate ?? 0
   const rateTone = rate >= 80 ? 'green' : rate >= 50 ? 'amber' : 'red'
@@ -157,6 +163,23 @@ export default function Fees() {
           </>
         }
       />
+
+      {pending > 0 && tab !== 'verify' && (
+        <button
+          type="button"
+          onClick={() => setTab('verify')}
+          className="mb-4 flex w-full items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-left transition hover:bg-amber-100"
+        >
+          <BadgeCheck className="h-5 w-5 shrink-0 text-amber-600" />
+          <span className="flex-1 text-sm text-amber-900">
+            <strong className="font-semibold">
+              {pending} UPI payment{pending === 1 ? '' : 's'} waiting for verification.
+            </strong>{' '}
+            Check your bank and confirm them so hostelers' bills are updated.
+          </span>
+          <span className="hidden text-sm font-semibold text-amber-800 sm:inline">Review →</span>
+        </button>
+      )}
 
       {/* Overview */}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -227,6 +250,7 @@ export default function Fees() {
         value={tab}
         onChange={setTab}
         tabs={[
+          { value: 'verify', label: 'Verify payments', count: pending || undefined },
           { value: 'invoices', label: 'Invoices' },
           { value: 'payments', label: 'Payments' },
           { value: 'dues', label: 'Dues', count: duesQ.data?.totals.hostelers },
@@ -235,6 +259,7 @@ export default function Fees() {
       />
 
       <div className="mt-4">
+        {tab === 'verify' && <VerifyTab pendingCount={pending} />}
         {tab === 'invoices' && (
           <InvoicesTab
             onPay={(inv) => setPayTarget({ hostelerId: inv.hostelerId, invoiceId: inv.id })}
@@ -531,12 +556,15 @@ function InvoicesTab({
 
 interface DraftItem {
   key: number
+  cat: ChargeKey
   label: string
   amount: string
 }
 
 let draftKey = 0
-const toDraft = (items: InvoiceItem[]): DraftItem[] => items.map((i) => ({ key: ++draftKey, label: i.label, amount: String(i.amount) }))
+const toDraft = (items: InvoiceItem[]): DraftItem[] =>
+  items.map((i) => ({ key: ++draftKey, cat: i.key ?? guessKey(i.label), label: i.label, amount: String(i.amount) }))
+const blankDraft = (cat: ChargeKey = 'other', label = ''): DraftItem => ({ key: ++draftKey, cat, label, amount: '' })
 
 function ItemsEditor({ items, onChange }: { items: DraftItem[]; onChange: (v: DraftItem[]) => void }) {
   const total = sum(items, (i) => Number(i.amount) || 0)
@@ -545,12 +573,24 @@ function ItemsEditor({ items, onChange }: { items: DraftItem[]; onChange: (v: Dr
     <div>
       <div className="space-y-2">
         {items.map((it) => (
-          <div key={it.key} className="flex items-center gap-2">
+          <div key={it.key} className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-100 p-2 sm:flex-nowrap sm:border-0 sm:p-0">
+            <Select
+              value={it.cat}
+              aria-label="Category"
+              options={CHARGE_KEY_OPTIONS}
+              onChange={(e) => {
+                const cat = e.target.value as ChargeKey
+                // fill / follow the description while it is blank or still the old category's name
+                const auto = !it.label.trim() || it.label === CHARGE_KEY_LABELS[it.cat]
+                update(it.key, { cat, ...(auto && cat !== 'other' ? { label: CHARGE_KEY_LABELS[cat] } : {}) })
+              }}
+              className="w-full sm:w-40 sm:shrink-0"
+            />
             <Input
               value={it.label}
               onChange={(e) => update(it.key, { label: e.target.value })}
               placeholder="Description"
-              className="flex-1"
+              className="min-w-0 flex-1"
               maxLength={120}
             />
             <Input
@@ -569,7 +609,7 @@ function ItemsEditor({ items, onChange }: { items: DraftItem[]; onChange: (v: Dr
         ))}
       </div>
       <div className="mt-3 flex items-center justify-between">
-        <Button size="sm" variant="ghost" icon={<Plus className="h-4 w-4" />} onClick={() => onChange([...items, { key: ++draftKey, label: '', amount: '' }])}>
+        <Button size="sm" variant="ghost" icon={<Plus className="h-4 w-4" />} onClick={() => onChange([...items, blankDraft()])}>
           Add item
         </Button>
         <p className="text-sm text-slate-600">
@@ -588,7 +628,7 @@ function parseItems(items: DraftItem[]): { items: InvoiceItem[]; error?: string 
     if (!it.label.trim()) return { items: [], error: 'Every item needs a description' }
     if (!Number.isFinite(amt) || it.amount === '') return { items: [], error: `Enter an amount for "${it.label}"` }
     if (amt < 0) return { items: [], error: `"${it.label}" can't be negative` }
-    out.push({ label: it.label.trim(), amount: amt })
+    out.push({ key: it.cat, label: it.label.trim(), amount: amt })
   }
   if (!out.length) return { items: [], error: 'Add at least one line item' }
   if (sum(out, (i) => i.amount) <= 0) return { items: [], error: 'Invoice total must be greater than zero' }
@@ -671,6 +711,7 @@ function GenerateModal({ open, onClose, initialMonth }: { open: boolean; onClose
   const [result, setResult] = useState<GenerateResult | null>(null)
   const [wasOpen, setWasOpen] = useState(false)
   const generate = useGenerateInvoices((r) => setResult(r))
+  const selectedHostel = hostelId === 'all' ? null : (hostels.data ?? []).find((h) => h.id === hostelId)
 
   if (open && !wasOpen) {
     setWasOpen(true)
@@ -752,9 +793,25 @@ function GenerateModal({ open, onClose, initialMonth }: { open: boolean; onClose
         </div>
         <ul className="space-y-1.5 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
           <li>
-            • Each active hosteler gets an invoice for their room rent
-            {settings.messMonthlyCharge ? `, plus mess charges (${formatMoney(settings.messMonthlyCharge)}) for mess members` : ''}.
+            • Each active hosteler gets an itemised bill: room rent, mess fees for mess members, and the monthly charges set for their hostel
+            (electricity, water, internet…) in Settings → Hostels.
+            {settings.messMonthlyCharge
+              ? ` Hostels without their own mess charge use the default ${formatMoney(settings.messMonthlyCharge)}.`
+              : ''}
           </li>
+          {selectedHostel && (
+            <li>
+              • {selectedHostel.name}:{' '}
+              {configuredCharges(selectedHostel.charges).length
+                ? configuredCharges(selectedHostel.charges)
+                    .map((c) => `${c.label} ${formatMoney(c.amount)}`)
+                    .join(', ')
+                : 'room rent only (no extra charges set)'}
+              .
+            </li>
+          )}
+          <li>• Unpaid amounts from earlier bills are not copied in — they show as "previous balance" on the bill.</li>
+          <li>• Hostelers are notified and pay to their hostel's UPI ID, then report the payment for you to verify.</li>
           <li>
             • Due date: {month ? formatDate(dueDateFor(month, settings.rentDueDay)) : '—'} (day {settings.rentDueDay} of the month, set in
             Settings).
@@ -772,6 +829,7 @@ function GenerateModal({ open, onClose, initialMonth }: { open: boolean; onClose
 
 function CustomInvoiceModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const settings = useSettings()
+  const hostelsQ = useHostels()
   const [hosteler, setHosteler] = useState<HostelerListItem | null>(null)
   const [month, setMonth] = useState(currentMonth())
   const [dueDate, setDueDate] = useState(dueDateFor(currentMonth(), settings.rentDueDay))
@@ -785,7 +843,7 @@ function CustomInvoiceModal({ open, onClose }: { open: boolean; onClose: () => v
     setHosteler(null)
     setMonth(currentMonth())
     setDueDate(dueDateFor(currentMonth(), settings.rentDueDay))
-    setItems([{ key: ++draftKey, label: '', amount: '' }])
+    setItems([blankDraft()])
     setError('')
   }
   if (!open && wasOpen) setWasOpen(false)
@@ -795,13 +853,13 @@ function CustomInvoiceModal({ open, onClose }: { open: boolean; onClose: () => v
     setError('')
     const blank = items.every((i) => !i.label.trim() && !i.amount)
     if (h && blank && month) {
-      const base: InvoiceItem[] = [{ label: `Room rent – ${month}`, amount: h.monthlyRent }]
-      if (h.messOpted && settings.messMonthlyCharge) base.push({ label: 'Mess charges', amount: settings.messMonthlyCharge })
-      setItems(toDraft(base))
+      // same lines as the monthly bill: rent, mess (if opted) and the hostel's charges
+      const charges = hostelsQ.data?.find((x) => x.id === h.hostelId)?.charges
+      setItems(toDraft(monthlyBillItems(h, charges, settings.messMonthlyCharge)))
     }
   }
 
-  const quickAdd = (label: string) => setItems((cur) => [...cur.filter((i) => i.label.trim() || i.amount), { key: ++draftKey, label, amount: '' }])
+  const quickAdd = (label: string) => setItems((cur) => [...cur.filter((i) => i.label.trim() || i.amount), blankDraft(guessKey(label), label)])
 
   const save = () => {
     if (!hosteler) return setError('Choose a hosteler')
@@ -826,7 +884,7 @@ function CustomInvoiceModal({ open, onClose }: { open: boolean; onClose: () => v
       onClose={onClose}
       size="lg"
       title="Create custom invoice"
-      description="Bill rent or a one-off charge such as electricity, laundry or damages"
+      description="Bill rent or a one-off charge such as electricity, laundry or damages. Picking a hosteler fills in their usual monthly lines."
       footer={
         <>
           <Button variant="outline" onClick={onClose} disabled={create.isPending}>
@@ -1059,6 +1117,8 @@ function PaymentsTab() {
         </Card>
         {PAYMENT_MODES.map((m) => {
           const amount = data?.totals.byMode[m.value] ?? 0
+          // "online" only exists on payments from the old in-app gateway
+          if (m.value === 'online' && !amount) return null
           return (
             <Card key={m.value} className="p-4">
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{m.label}</p>
@@ -1133,7 +1193,7 @@ function PaymentsTab() {
                   <TR key={p.id}>
                     <TD className="font-medium text-slate-900">
                       {p.receiptNo}
-                      {p.recordedBy === 'hosteler' && <p className="text-xs font-normal text-slate-500">via portal</p>}
+                      {p.recordedBy === 'hosteler' && <p className="text-xs font-normal text-slate-500">UPI · verified claim</p>}
                     </TD>
                     <TD className="whitespace-nowrap">{formatDate(p.date)}</TD>
                     <TD>

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { api, makeHostel, makeHosteler, makeOrg, makeRoom, makeStaffUser, makeWorld } from './helpers.js'
 import { Bed } from '../src/models/Bed.js'
 import { Hosteler } from '../src/models/Hosteler.js'
+import { Hostel } from '../src/models/Hostel.js'
 import { Invoice } from '../src/models/Invoice.js'
 import { Payment } from '../src/models/Payment.js'
 import { Room } from '../src/models/Room.js'
@@ -347,5 +348,34 @@ describe('profile photo (staff)', () => {
       .expect(404)
     expect(fs.readdirSync(uploadRoot).length).toBe(before)
     await api().get(`/api/hostelers/${w.hosteler._id}/photo`).set(w.hostelerAuth).expect(403)
+  })
+})
+
+describe('first bill at check-in', () => {
+  it('is itemized like a monthly bill (hostel charge heads, mess only if opted)', async () => {
+    const w = await makeWorld()
+    await Hostel.updateOne({ _id: w.hostel._id }, { charges: { mess: 2000, electricity: 350, laundry: 250, others: [{ label: 'Housekeeping', amount: 100 }] } })
+    const r = await api().post('/api/hostelers').set(w.auth).send(admission(w.hostel._id, w.beds[1]!._id)).expect(201)
+    const [inv] = await Invoice.find({ hostelerId: r.body.hosteler.id }).lean()
+    expect(inv!.items.map((i) => ({ key: i.key, label: i.label, amount: i.amount }))).toEqual([
+      { key: 'rent', label: 'Room rent', amount: 6000 },
+      { key: 'mess', label: 'Mess fees', amount: 2000 },
+      { key: 'electricity', label: 'Electricity', amount: 350 },
+      { key: 'laundry', label: 'Laundry', amount: 250 },
+      { key: 'other', label: 'Housekeeping', amount: 100 },
+    ])
+    expect(inv).toMatchObject({ month: '2026-10', total: 8700, dueDate: '2026-10-01' })
+    expect(r.body.hosteler.dues).toBe(8700)
+
+    const room2 = await makeRoom(w.org._id, w.hostel._id, '102', 1)
+    const r2 = await api().post('/api/hostelers').set(w.auth).send(admission(w.hostel._id, room2.beds[0]!._id, { name: 'No Mess', messOpted: false })).expect(201)
+    const [inv2] = await Invoice.find({ hostelerId: r2.body.hosteler.id }).lean()
+    expect(inv2!.items.map((i) => i.key)).toEqual(['rent', 'electricity', 'laundry', 'other'])
+    expect(inv2!.total).toBe(6700)
+
+    // no first bill when not asked for
+    const room3 = await makeRoom(w.org._id, w.hostel._id, '103', 1)
+    const r3 = await api().post('/api/hostelers').set(w.auth).send(admission(w.hostel._id, room3.beds[0]!._id, { name: 'Later', generateFirstInvoice: false })).expect(201)
+    expect(await Invoice.countDocuments({ hostelerId: r3.body.hosteler.id })).toBe(0)
   })
 })

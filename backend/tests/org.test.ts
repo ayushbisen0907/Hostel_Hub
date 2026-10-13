@@ -36,7 +36,7 @@ describe('organization', () => {
 
   it('plan change refuses a downgrade below the bed count', async () => {
     const { org, auth } = await makeOrg({ plan: 'pro' })
-    const hostel = (await api().post('/api/hostels').set(auth).send({ name: 'Big Hostel', type: 'boys', city: 'Pune' }).expect(201)).body
+    const hostel = (await api().post('/api/hostels').set(auth).send({ name: 'Big Hostel', type: 'boys', city: 'Pune', upiId: 'big@ybl', payeeName: 'Big Hostel' }).expect(201)).body
     await makeRoom(org._id, hostel.id, '101', 20)
     await makeRoom(org._id, hostel.id, '102', 2)
     const r = await api().patch('/api/org/plan').set(auth).send({ plan: 'free' }).expect(409)

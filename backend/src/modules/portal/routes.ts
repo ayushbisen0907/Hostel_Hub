@@ -12,7 +12,11 @@
  *   GET    /profile/photo
  *   GET    /invoices, /invoices/:id
  *   GET    /payments, /payments/:id
- *   POST   /pay                        simulated online payment
+ *   GET    /payment-info               hostel UPI ID / payee / hasQr + unpaid bills (oldest first)
+ *   GET    /payment-qr                 the hostel's uploaded QR image
+ *   GET    /payment-claims, POST /payment-claims (multipart: amount, utr, paidOn?, note?, file?)
+ *   GET    /payment-claims/:id/screenshot
+ *   GET    /notifications, POST /notifications/:id/read, POST /notifications/read-all
  *   GET    /mess/menu                  (plan: mess)
  *   GET    /mess/opt-outs?from&to      (plan: mess)
  *   POST   /mess/opt-outs              { date, meal }  (plan: mess)
@@ -25,14 +29,17 @@
  *   GET    /attendance?month=          (plan: attendance)
  *   GET    /gate-logs
  */
-import crypto from 'node:crypto'
 import { Router, type Request } from 'express'
 import { z } from 'zod'
 import { withTransaction } from '../../config/db.js'
 import { hostelerOf, requireHosteler } from '../../middleware/auth.js'
 import { AppError, badRequest, conflict, notFound, unauthorized } from '../../lib/errors.js'
-import { ah, dateStr, idParam, monthOf, monthStr, objectId, parse, todayStr } from '../../lib/http.js'
-import { hostelerDues, recordPayment } from '../../lib/money.js'
+import { ah, dateStr, idParam, monthOf, monthStr, parse, todayStr } from '../../lib/http.js'
+import { hostelerDues } from '../../lib/money.js'
+import { previousBalance } from '../../lib/billing.js'
+import { notifyStaff } from '../../lib/notify.js'
+import { notificationHandlers } from '../notifications/routes.js'
+import { PaymentClaim } from '../../models/PaymentClaim.js'
 import { logActivity } from '../../lib/org.js'
 import { hasModule, requirePlan, type Plan } from '../../lib/plans.js'
 import { removeStoredFile, sendStoredFile, upload } from '../../lib/upload.js'
@@ -122,10 +129,12 @@ async function printContext(orgId: string, hostelerId: string) {
     Hosteler.findById(hostelerId).select('name loginId phone hostelId roomId bedId').lean(),
   ])
   if (!h) throw unauthorized()
-  const hostel = await Hostel.findById(h.hostelId).select('name address city phone').lean()
+  const hostel = await Hostel.findById(h.hostelId).select('name address city phone upiId payeeName qrStorageKey').lean()
   return {
     organization: org ? { name: org.name, phone: org.phone, email: org.email, currencySymbol: org.settings?.currencySymbol ?? '₹' } : null,
-    hostel: hostel ? { id: String(hostel._id), name: hostel.name, address: hostel.address, city: hostel.city, phone: hostel.phone } : null,
+    hostel: hostel
+      ? { id: String(hostel._id), name: hostel.name, address: hostel.address, city: hostel.city, phone: hostel.phone, upiId: hostel.upiId, payeeName: hostel.payeeName, hasQr: !!hostel.qrStorageKey }
+      : null,
     hosteler: { id: String(h._id), name: h.name, loginId: h.loginId, phone: h.phone, bed: await bedLabelOf(h.roomId, h.bedId) },
   }
 }
@@ -324,6 +333,7 @@ router.get(
     res.json({
       invoice: toApi(withBalance(inv, today())),
       payments: payments.map((p) => toApi(p)),
+      previousBalance: await previousBalance(orgId, inv),
       ...(await printContext(orgId, hostelerId)),
     })
   }),
@@ -361,56 +371,154 @@ router.get(
   }),
 )
 
-const METHOD_TO_MODE = { upi: 'upi', card: 'card', netbanking: 'online' } as const
+/* ---------------- Paying rent: UPI to the hostel, then report it ---------------- */
 
-const paySchema = z.object({
-  invoiceId: objectId,
-  amount: z.coerce.number().int('Amount must be a whole number').min(1, 'Amount must be at least 1'),
-  method: z.enum(['upi', 'card', 'netbanking']),
-  reference: z.string().trim().max(80).optional(),
-})
-
-router.post(
-  '/pay',
+/** Where to pay: the hostel's UPI ID / payee name / QR, plus what is due (oldest first). */
+router.get(
+  '/payment-info',
   ah(async (req, res) => {
-    const body = parse(paySchema, req.body)
-    const { hostelerId, orgId } = hostelerOf(req)
-
-    const inv = await Invoice.findOne({ _id: body.invoiceId, orgId, hostelerId }).lean()
-    if (!inv) throw notFound('Invoice')
-    if (inv.cancelled) throw badRequest('This invoice was cancelled')
-    const balance = Math.max(inv.total - inv.paidAmount, 0)
-    if (balance <= 0) throw badRequest('This invoice is already paid')
-    if (body.amount > balance) throw badRequest(`Amount can't be more than the balance (₹${balance})`)
-
-    // TODO(payments): replace this simulated gateway with Razorpay —
-    //   1. create an order here (POST /v1/orders) and return it to the client,
-    //   2. the client completes checkout,
-    //   3. a /pay/verify endpoint (or webhook) checks razorpay_signature
-    //      (HMAC-SHA256 of order_id|payment_id with the key secret) and only
-    //      then calls recordPayment below with the gateway payment id as reference.
-    const reference = body.reference || `SIM-${body.method.toUpperCase()}-${crypto.randomBytes(6).toString('hex').toUpperCase()}`
-
-    // recordPayment re-checks the balance atomically (409 on a concurrent overpay)
-    const payment = await withTransaction((session) =>
-      recordPayment(
-        orgId,
-        {
-          hostelerId,
-          invoiceId: inv._id,
-          amount: body.amount,
-          mode: METHOD_TO_MODE[body.method],
-          reference,
-          date: today(),
-          note: 'Paid via hosteler portal',
-          recordedBy: 'hosteler',
-        },
-        session,
-      ),
-    )
-    res.status(201).json({ payment: payment.toJSON(), dues: await hostelerDues(orgId, hostelerId) })
+    const { hostelerId, orgId, hostelId } = hostelerOf(req)
+    const hostel = await Hostel.findOne({ _id: hostelId, orgId }).select('name upiId payeeName qrStorageKey').lean()
+    const open = await Invoice.find({ orgId, hostelerId, cancelled: false, $expr: { $gt: ['$total', '$paidAmount'] } })
+      .sort({ dueDate: 1, month: 1 })
+      .lean()
+    const pending = await PaymentClaim.find({ orgId, hostelerId, status: 'pending' }).select('amount').lean()
+    res.json({
+      hostelName: hostel?.name ?? '',
+      upiId: hostel?.upiId ?? '',
+      payeeName: hostel?.payeeName ?? '',
+      hasQr: !!hostel?.qrStorageKey,
+      totalDue: open.reduce((a, i) => a + (i.total - i.paidAmount), 0),
+      pendingVerification: pending.reduce((a, c) => a + c.amount, 0),
+      bills: open.map((i) => ({
+        id: String(i._id),
+        number: i.number,
+        month: i.month,
+        dueDate: i.dueDate,
+        total: i.total,
+        paidAmount: i.paidAmount,
+        balance: i.total - i.paidAmount,
+        items: i.items,
+      })),
+    })
   }),
 )
+
+router.get(
+  '/payment-qr',
+  ah(async (req, res) => {
+    const { orgId, hostelId } = hostelerOf(req)
+    const hostel = await Hostel.findOne({ _id: hostelId, orgId }).lean()
+    if (!hostel?.qrStorageKey) throw notFound('QR image')
+    sendStoredFile(res, hostel.qrStorageKey, `${hostel.code}-upi-qr`, hostel.qrMimeType ?? 'image/png')
+  }),
+)
+
+router.get(
+  '/payment-claims',
+  ah(async (req, res) => {
+    const { hostelerId, orgId } = hostelerOf(req)
+    const items = await PaymentClaim.find({ orgId, hostelerId }).sort({ createdAt: -1 }).limit(50).lean()
+    res.json({
+      items: items.map((c) => ({ ...toApi(c, ['screenshotKey', 'screenshotMime', 'reviewedBy']), hasScreenshot: !!c.screenshotKey })),
+    })
+  }),
+)
+
+const claimSchema = z.object({
+  amount: z.coerce.number().int('Amount must be a whole number').min(1, 'Amount must be at least 1'),
+  utr: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z0-9]{6,30}$/, 'Enter the UPI transaction ID / UTR (6-30 letters or digits)'),
+  paidOn: dateStr.optional(),
+  note: z.string().trim().max(300).default(''),
+})
+
+/**
+ * "I have paid": amount + UTR (+ optional screenshot, multipart field "file").
+ * Nothing is marked paid until hostel staff verify it.
+ */
+router.post(
+  '/payment-claims',
+  upload.single('file'),
+  ah(async (req, res) => {
+    const file = req.file
+    try {
+      const { hostelerId, orgId, hostelId } = hostelerOf(req)
+      const body = parse(claimSchema, req.body)
+      if (file) checkUpload(file, { imageOnly: true })
+      const t = today()
+      const paidOn = body.paidOn ?? t
+      if (paidOn > t) throw badRequest("Payment date can't be in the future")
+      const dues = await hostelerDues(orgId, hostelerId)
+      const pending = (await PaymentClaim.find({ orgId, hostelerId, status: 'pending' }).select('amount').lean()).reduce((a, c) => a + c.amount, 0)
+      if (dues <= 0) throw badRequest('You have no unpaid bills')
+      if (body.amount + pending > dues)
+        throw badRequest(
+          pending
+            ? `You already reported ₹${pending.toLocaleString('en-IN')} that is waiting for verification. Total due is ₹${dues.toLocaleString('en-IN')}.`
+            : `Amount can't be more than your total due (₹${dues.toLocaleString('en-IN')})`,
+        )
+      const me = await Hosteler.findById(hostelerId).select('name loginId').lean()
+      const claim = await withTransaction(async (session) => {
+        if (await PaymentClaim.exists({ orgId, utr: body.utr, status: { $in: ['pending', 'verified'] } }).session(session))
+          throw conflict('This transaction ID was already submitted')
+        const [c] = await PaymentClaim.create(
+          [
+            {
+              orgId,
+              hostelId,
+              hostelerId,
+              amount: body.amount,
+              utr: body.utr,
+              paidOn,
+              note: body.note,
+              screenshotKey: file?.filename ?? null,
+              screenshotMime: file?.mimetype ?? null,
+            },
+          ],
+          { session },
+        )
+        await notifyStaff(
+          orgId,
+          {
+            type: 'payment_submitted',
+            hostelId,
+            title: `${me?.name ?? 'A hosteler'} paid ₹${body.amount.toLocaleString('en-IN')}`,
+            body: `${me?.loginId ?? ''} reported a UPI payment (UTR ${body.utr}). Check your bank/UPI app and verify it.`,
+            link: '/app/fees?tab=verify',
+          },
+          undefined,
+          session,
+        )
+        return c!
+      })
+      res.status(201).json({ ...toApi(claim.toObject(), ['screenshotKey', 'screenshotMime', 'reviewedBy']), hasScreenshot: !!claim.screenshotKey })
+    } catch (e) {
+      if (file) removeStoredFile(file.filename)
+      throw e
+    }
+  }),
+)
+
+router.get(
+  '/payment-claims/:id/screenshot',
+  ah(async (req, res) => {
+    const { hostelerId, orgId } = hostelerOf(req)
+    const c = await PaymentClaim.findOne({ _id: idParam(req), orgId, hostelerId }).lean()
+    if (!c?.screenshotKey) throw notFound('Screenshot')
+    sendStoredFile(res, c.screenshotKey, `payment-${c.utr}`, c.screenshotMime ?? 'image/png')
+  }),
+)
+
+/* ---------------- Notifications ---------------- */
+
+const notes = notificationHandlers((req) => ({ kind: 'hosteler', id: hostelerOf(req).hostelerId }))
+router.get('/notifications', notes.list)
+router.post('/notifications/read-all', notes.readAll)
+router.post('/notifications/:id/read', notes.read)
 
 /* ------------------------------------------------------------------ */
 /* Mess (Pro plan)                                                     */

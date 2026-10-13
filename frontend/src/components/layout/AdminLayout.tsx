@@ -3,7 +3,6 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-do
 import {
   BarChart3,
   BedDouble,
-  Bell,
   Building2,
   ClipboardCheck,
   DoorOpen,
@@ -25,7 +24,9 @@ import {
   X,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
+import { NotificationBell } from '@/components/NotificationBell'
 import { get } from '@/api/client'
+import { usePendingClaimCount } from '@/api/claims'
 import { logout } from '@/api/auth'
 import { useHostels, useOrg, useScope, useScopeStore } from '@/api/common'
 import { roleCan, useStaffSession, type StaffModule } from '@/api/session'
@@ -102,8 +103,15 @@ function usePendingCounts() {
     enabled: roleCan(role, 'attendance') && hasModule(plan, 'attendance'),
     refetchInterval: 60_000,
   })
+  // UPI payments reported by hostelers, waiting for staff to verify (all hostels)
+  const claims = usePendingClaimCount('all', { enabled: hasModule(plan, 'fees') })
   const openComplaints = (complaints.data?.open ?? 0) + (complaints.data?.inProgress ?? 0)
-  return { openComplaints, newComplaints: complaints.data?.open ?? 0, pendingLeaves: leaves.data?.items.length ?? 0 }
+  return {
+    openComplaints,
+    newComplaints: complaints.data?.open ?? 0,
+    pendingLeaves: leaves.data?.items.length ?? 0,
+    pendingPayments: claims.data ?? 0,
+  }
 }
 
 function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
@@ -111,8 +119,8 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { data: org } = useOrg()
   const plan = org?.plan ?? staff?.organization.plan
   const role = staff?.user.role
-  const { openComplaints, pendingLeaves } = usePendingCounts()
-  const badges: Record<string, number> = { '/app/complaints': openComplaints, '/app/attendance': pendingLeaves }
+  const { openComplaints, pendingLeaves, pendingPayments } = usePendingCounts()
+  const badges: Record<string, number> = { '/app/complaints': openComplaints, '/app/attendance': pendingLeaves, '/app/fees': pendingPayments }
   // modules the role can't use are hidden; plan-locked ones show a lock
   const visible = (item: NavItem) => !item.module || item.module === 'portal' || roleCan(role, item.module as StaffModule)
 
@@ -181,7 +189,6 @@ export function AdminLayout() {
   const { data: hostels = [] } = useHostels()
   const current = useScope()
   const setCurrent = useScopeStore((s) => s.setHostelId)
-  const { pendingLeaves, newComplaints: openComplaints } = usePendingCounts()
   const navigate = useNavigate()
   const location = useLocation()
   const [userMenu, setUserMenu] = useState(false)
@@ -219,16 +226,7 @@ export function AdminLayout() {
             />
           </div>
           <div className="flex-1" />
-          <button
-            className="relative rounded-lg p-2 text-slate-600 hover:bg-slate-100"
-            title="Pending items"
-            onClick={() => navigate(pendingLeaves ? '/app/attendance?tab=leaves' : '/app/complaints')}
-          >
-            <Bell className="h-5 w-5" />
-            {pendingLeaves + openComplaints > 0 && (
-              <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-red-500" />
-            )}
-          </button>
+          <NotificationBell />
           <div className="relative">
             <button className="flex items-center gap-2 rounded-lg p-1 hover:bg-slate-100" onClick={() => setUserMenu((v) => !v)}>
               <Avatar name={user?.name ?? 'User'} size="sm" />

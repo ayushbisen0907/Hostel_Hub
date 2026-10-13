@@ -26,6 +26,7 @@ import { formatLoginId, generateTempPassword, hashPassword } from '../../lib/aut
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../lib/errors.js'
 import { ah, dateStr, escapeRegex, idParam, money, objectId, paginate, paginationQuery, parse, phone, todayStr } from '../../lib/http.js'
 import { createInvoice, recordPayment } from '../../lib/money.js'
+import { monthlyBillItems } from '../../lib/billing.js'
 import { assertHostel, getSettings, hostelScope, logActivity } from '../../lib/org.js'
 import { requirePlan } from '../../lib/plans.js'
 import { removeStoredFile, sendStoredFile, upload } from '../../lib/upload.js'
@@ -357,8 +358,8 @@ router.post(
       }
       if (generateFirstInvoice && !reserveOnly) {
         const month = hosteler.checkInDate.slice(0, 7)
-        const items = [{ label: `Room rent – ${month}`, amount: hosteler.monthlyRent }]
-        if (hosteler.messOpted) items.push({ label: 'Mess charges', amount: settings.messMonthlyCharge })
+        const hostelDoc = await Hostel.findById(hosteler.hostelId).select('charges').session(session).lean()
+        const items = monthlyBillItems(hosteler, hostelDoc?.charges, settings.messMonthlyCharge)
         await createInvoice(orgId, { hostelerId: hosteler._id, month, items, dueDate: hosteler.checkInDate }, session)
       }
       if (!reserveOnly) await gateLog(hosteler, 'in', 'Check-in', session)

@@ -199,6 +199,9 @@ router.delete(
     const d = await HDocument.findOneAndDelete({ _id: idParam(req), orgId })
     if (!d) throw notFound('Document')
     removeStoredFile(d.storageKey)
+    // deleting the last profile photo clears the hosteler's photo
+    if (d.type === 'photo' && !(await HDocument.exists({ orgId, hostelerId: d.hostelerId, type: 'photo' })))
+      await Hosteler.updateOne({ _id: d.hostelerId, orgId }, { $set: { photoUrl: null } })
     res.status(204).end()
   }),
 )

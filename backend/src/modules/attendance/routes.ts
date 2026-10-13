@@ -3,6 +3,7 @@
  * full path and its own middleware.
  *
  *   GET  /api/attendance?date=&hostelId=                roster of active hostelers + status + approved-leave flag
+ *                                                       (+ phone and guardian contact for absentee messages)
  *   PUT  /api/attendance                                { hostelerId, date, status } upsert (no future dates)
  *   POST /api/attendance/mark-all-present               { date, hostelId? } only unmarked; approved leave -> 'leave'
  *   GET  /api/attendance/register?month=&hostelId=      per hosteler: date -> status, totals, percentage
@@ -46,7 +47,9 @@ router.get(
     const q = parse(z.object({ date: dateStr.optional() }), req.query)
     const date = q.date ?? todayStr()
     const scope = hostelScope(req.query)
-    const hs = await Hosteler.find({ orgId, ...scope, status: 'active' }).select('name loginId hostelId roomId').sort({ name: 1 }).lean()
+    const hs = await Hosteler.find({ orgId, ...scope, status: 'active' }).select('name loginId phone guardianName guardianRelation guardianPhone hostelId roomId')
+      .sort({ name: 1 })
+      .lean()
     const [records, leaveIds, rooms] = await Promise.all([
       Attendance.find({ orgId, ...scope, date }).select('hostelerId status').lean(),
       onLeaveIds(orgId, date, scope),
@@ -60,6 +63,10 @@ router.get(
       hostelId: String(h.hostelId),
       roomId: h.roomId ? String(h.roomId) : null,
       roomNumber: h.roomId ? (rooms.get(String(h.roomId)) ?? null) : null,
+      phone: h.phone ?? '',
+      guardianName: h.guardianName ?? '',
+      guardianRelation: h.guardianRelation ?? '',
+      guardianPhone: h.guardianPhone ?? '',
       status: status.get(String(h._id)) ?? null,
       onApprovedLeave: leaveIds.has(String(h._id)),
     }))
@@ -208,7 +215,13 @@ async function withNames(orgId: string, leaves: { hostelerId: unknown; _id: unkn
   const info = await hostelerInfo(orgId, leaves.map((l) => String(l.hostelerId)))
   return leaves.map((l) => {
     const h = info.get(String(l.hostelerId))
-    return { ...toApi(l), hostelerName: h?.name ?? '', loginId: h?.loginId ?? '', roomNumber: h?.roomNumber ?? null }
+    return {
+      ...toApi(l),
+      hostelerName: h?.name ?? '',
+      loginId: h?.loginId ?? '',
+      hostelerPhone: h?.phone ?? '',
+      roomNumber: h?.roomNumber ?? null,
+    }
   })
 }
 

@@ -3,6 +3,8 @@
  *
  *   GET    /api/complaints?status&category&priority&q&hostelId   newest first, with hosteler name & room
  *   GET    /api/complaints/stats?hostelId                         open, inProgress, resolvedThisMonth, avgResolutionHours
+ *   GET    /api/complaints/assignees?hostelId                     staff directory entries a complaint can be assigned to
+ *                                                                 (any complaints role, so wardens can assign without the staff module)
  *   GET    /api/complaints/:id
  *   POST   /api/complaints                                        staff-created
  *   PATCH  /api/complaints/:id                                    { status, priority, assignedStaffId, title, description }
@@ -55,6 +57,7 @@ async function decorate<T extends ComplaintLean>(orgId: string, list: T[]) {
       ...rest,
       comments: (comments ?? []).map(({ _id, ...cm }) => ({ id: String(_id), ...cm })),
       hostelerName: h?.name ?? null,
+      hostelerPhone: h?.phone ?? null,
       roomNumber: (c.roomId ? rooms.get(String(c.roomId)) : undefined) ?? h?.roomNumber ?? null,
       assignedStaffName: c.assignedStaffId ? (staffName.get(String(c.assignedStaffId)) ?? null) : null,
     }
@@ -115,6 +118,20 @@ router.get(
       resolvedThisMonth,
       resolvedTotal: resolved.length,
       avgResolutionHours: avgMs === null ? null : Math.round((avgMs / 3_600_000) * 10) / 10,
+    })
+  }),
+)
+
+router.get(
+  '/assignees',
+  ah(async (req, res) => {
+    const { orgId } = staffOf(req)
+    const q = parse(z.object({ includeInactive: z.enum(['true', 'false']).optional() }), req.query)
+    const filter: Record<string, unknown> = { orgId, ...hostelScope(req.query) }
+    if (q.includeInactive !== 'true') filter.active = true
+    const list = await Staff.find(filter).select('name role hostelId active').sort({ name: 1 }).lean()
+    res.json({
+      items: list.map((s) => ({ id: String(s._id), name: s.name, role: s.role, hostelId: String(s.hostelId), active: s.active })),
     })
   }),
 )

@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from 'react'
-import { endOfMonth, format, startOfMonth } from 'date-fns'
+import { useRef, useState } from 'react'
+import { format } from 'date-fns'
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -10,14 +10,30 @@ import {
   Eye,
   FileText,
   KeyRound,
+  Loader2,
   Pencil,
   ShieldCheck,
   Upload,
 } from 'lucide-react'
-import { useStore } from '@/store'
+import { ApiError, downloadFile, errorMessage, openFile } from '@/api/client'
+import { hostelerSetPassword } from '@/api/auth'
+import {
+  documentFileUrl,
+  useDocumentBlobUrl,
+  useMyAttendance,
+  useMyDocuments,
+  useMyGateLogs,
+  usePortalHome,
+  useProfilePhoto,
+  useUpdateProfile,
+  useUploadDocument,
+  useUploadPhoto,
+  type AttendanceStatus,
+} from '@/api/portal'
+import { useHostelerSession } from '@/api/session'
+import type { DocumentType, HDocument } from '@/api/types'
 import { checkPasswordStrength } from '@/lib/auth'
 import { PasswordRules } from '@/components/PasswordRules'
-import { bedLabel, useCurrentHosteler } from '@/store/selectors'
 import {
   Avatar,
   Badge,
@@ -26,20 +42,23 @@ import {
   CardHeader,
   DescriptionList,
   EmptyState,
+  ErrorState,
   Field,
   FileDrop,
   Input,
+  LoadingState,
   Modal,
   Select,
   Textarea,
   toast,
   PasswordInput,
 } from '@/components/ui'
-import { cn, fileToDataUrl, formatBytes, formatDate, formatDateTime, titleCase, today } from '@/lib/utils'
-import type { AttendanceStatus, DocumentType, HDocument } from '@/types'
+import { cn, currentMonth, formatBytes, formatDate, formatDateTime, titleCase, today } from '@/lib/utils'
 import { NotLoggedIn, PortalTitle, SectionTitle, useMoney, useScrollToHash } from './_shared'
 
+/** Same limits as the server (backend/src/modules/portal/routes.ts) */
 const MAX_BYTES = 2 * 1024 * 1024
+const PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic']
 
 const DOC_TYPES: { value: DocumentType; label: string }[] = [
   { value: 'aadhaar', label: 'Aadhaar card' },
@@ -56,20 +75,21 @@ const DOC_LABEL = new Map(DOC_TYPES.map((d) => [d.value, d.label]))
 
 async function openDoc(doc: HDocument, download: boolean) {
   try {
-    const blob = await (await fetch(doc.dataUrl)).blob()
-    const url = URL.createObjectURL(blob)
-    if (download) {
-      const a = document.createElement('a')
-      a.href = url
-      a.download = doc.fileName
-      a.click()
-    } else {
-      window.open(url, '_blank', 'noopener')
-    }
-    setTimeout(() => URL.revokeObjectURL(url), 60_000)
-  } catch {
-    toast.error('Could not open this file')
+    if (download) await downloadFile(documentFileUrl(doc.id), doc.fileName)
+    else await openFile(documentFileUrl(doc.id))
+  } catch (e) {
+    toast.error(errorMessage(e, 'Could not open this file'))
   }
+}
+
+function DocThumb({ doc }: { doc: HDocument }) {
+  const isImage = doc.mimeType.startsWith('image/')
+  const src = useDocumentBlobUrl(doc.id, isImage)
+  return (
+    <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-slate-100 text-slate-500">
+      {isImage && src ? <img src={src} alt="" className="h-full w-full object-cover" /> : <FileText className="h-5 w-5" />}
+    </div>
+  )
 }
 
 const ATT_META: Record<AttendanceStatus, { label: string; tone: string }> = {
@@ -80,18 +100,23 @@ const ATT_META: Record<AttendanceStatus, { label: string; tone: string }> = {
 }
 
 export default function Profile() {
-  const me = useCurrentHosteler()
-  const hostels = useStore((s) => s.hostels)
-  const rooms = useStore((s) => s.rooms)
-  const beds = useStore((s) => s.beds)
-  const documents = useStore((s) => s.documents)
-  const gateLogs = useStore((s) => s.gateLogs)
-  const attendance = useStore((s) => s.attendance)
-  const updateHosteler = useStore((s) => s.updateHosteler)
-  const changeHostelerPassword = useStore((s) => s.changeHostelerPassword)
-  const addDocument = useStore((s) => s.addDocument)
+  const session = useHostelerSession()
+  const me = session?.hosteler
+  const hostel = session?.hostel
+  const home = usePortalHome()
+  const photo = useProfilePhoto(me)
   const money = useMoney()
   useScrollToHash()
+
+  const attendanceOn = home.data?.features.attendance === true
+  const month = currentMonth()
+  const docsQ = useMyDocuments()
+  const gateQ = useMyGateLogs()
+  const attQ = useMyAttendance(month, attendanceOn)
+
+  const updateProfile = useUpdateProfile()
+  const uploadPhoto = useUploadPhoto()
+  const uploadDoc = useUploadDocument()
 
   const photoRef = useRef<HTMLInputElement>(null)
   const [editOpen, setEditOpen] = useState(false)
@@ -99,40 +124,20 @@ export default function Profile() {
   const [formErr, setFormErr] = useState<Record<string, string>>({})
 
   const [docType, setDocType] = useState<DocumentType>('aadhaar')
-  const [uploading, setUploading] = useState(false)
 
   const [pin, setPin] = useState({ current: '', next: '', confirm: '' })
   const [pinErr, setPinErr] = useState<Record<string, string>>({})
+  const [savingPin, setSavingPin] = useState(false)
 
-  const data = useMemo(() => {
-    if (!me) return null
-    const myDocs = documents.filter((d) => d.hostelerId === me.id).sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))
-    const myGate = gateLogs.filter((g) => g.hostelerId === me.id).sort((a, b) => b.time.localeCompare(a.time)).slice(0, 10)
-    const start = format(startOfMonth(new Date()), 'yyyy-MM-dd')
-    const end = format(endOfMonth(new Date()), 'yyyy-MM-dd')
-    const monthAtt = attendance.filter((a) => a.hostelerId === me.id && a.date >= start && a.date <= end)
-    const counts: Record<AttendanceStatus, number> = { present: 0, late: 0, leave: 0, absent: 0 }
-    for (const a of monthAtt) counts[a.status]++
-    const marked = monthAtt.length
-    const rate = marked ? Math.round(((counts.present + counts.late) / marked) * 100) : null
-    return { myDocs, myGate, counts, marked, rate }
-  }, [me, documents, gateLogs, attendance])
+  if (!me) return <NotLoggedIn />
 
-  if (!me || !data) return <NotLoggedIn />
+  const bed = home.data?.bed ?? (me.roomId ? '—' : 'No bed assigned')
 
-  const hostel = hostels.find((h) => h.id === me.hostelId)
-
-  const onPhoto = async (file: File | undefined) => {
+  const onPhoto = (file: File | undefined) => {
     if (!file) return
-    if (!file.type.startsWith('image/')) return toast.error('Please choose an image file')
+    if (!PHOTO_TYPES.includes(file.type)) return toast.error('Photo must be a JPG, PNG, WEBP or HEIC image')
     if (file.size > MAX_BYTES) return toast.error('Photo must be 2 MB or smaller')
-    try {
-      const url = await fileToDataUrl(file)
-      updateHosteler(me.id, { photo: url })
-      toast.success('Profile photo updated')
-    } catch {
-      toast.error('Could not read the image')
-    }
+    uploadPhoto.mutate(file)
   }
 
   const openEdit = () => {
@@ -144,62 +149,70 @@ export default function Profile() {
   const saveEdit = () => {
     const e: Record<string, string> = {}
     if (form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) e.email = 'Enter a valid email'
+    else if (form.email.trim().length > 120) e.email = 'Email is too long'
     const gp = form.guardianPhone.replace(/\D/g, '')
     if (gp.length < 10 || gp.length > 13) e.guardianPhone = 'Enter a valid phone number'
     if (!form.permanentAddress.trim()) e.permanentAddress = 'Address is required'
+    else if (form.permanentAddress.trim().length > 500) e.permanentAddress = 'Keep the address under 500 characters'
     setFormErr(e)
     if (Object.keys(e).length) return
-    updateHosteler(me.id, {
-      email: form.email.trim(),
-      permanentAddress: form.permanentAddress.trim(),
-      guardianPhone: form.guardianPhone.trim(),
-    })
-    toast.success('Details updated')
-    setEditOpen(false)
+    updateProfile.mutate(
+      {
+        email: form.email.trim(),
+        permanentAddress: form.permanentAddress.trim(),
+        guardianPhone: form.guardianPhone.trim(),
+      },
+      {
+        onSuccess: () => setEditOpen(false),
+        onError: (err) => {
+          // VALIDATION_ERROR details: [{ path, message }]
+          const details = err instanceof ApiError && Array.isArray(err.details) ? (err.details as { path?: string; message?: string }[]) : []
+          const first = details[0]
+          if (first?.path && ['email', 'permanentAddress', 'guardianPhone'].includes(first.path))
+            setFormErr({ [first.path]: first.message ?? 'Invalid value' })
+          else toast.error(errorMessage(err, 'Could not save your details'))
+        },
+      },
+    )
   }
 
-  const onDocFiles = async (files: File[]) => {
+  const onDocFiles = (files: File[]) => {
     const file = files[0]
     if (!file) return
     if (file.size > MAX_BYTES) return toast.error(`${file.name} is larger than 2 MB`)
     const okType = file.type.startsWith('image/') || file.type === 'application/pdf'
     if (!okType) return toast.error('Upload an image or PDF')
-    setUploading(true)
-    try {
-      const dataUrl = await fileToDataUrl(file)
-      addDocument({
-        hostelerId: me.id,
-        type: docType,
-        fileName: file.name,
-        mimeType: file.type,
-        size: file.size,
-        dataUrl,
-        verified: false,
-        expiryDate: null,
-      })
-      toast.success(`${DOC_LABEL.get(docType)} uploaded — pending verification`)
-    } catch {
-      toast.error('Upload failed')
-    } finally {
-      setUploading(false)
-    }
+    uploadDoc.mutate(
+      { file, type: docType },
+      { onSuccess: () => toast.success(`${DOC_LABEL.get(docType)} uploaded — pending verification`) },
+    )
   }
 
-  const changePassword = () => {
+  const changePassword = async () => {
     const e: Record<string, string> = {}
     if (!pin.current) e.current = 'Enter your current password'
     if (!checkPasswordStrength(pin.next).ok) e.next = 'At least 8 characters with a letter and a number'
+    else if (pin.next === pin.current) e.next = 'New password must be different'
     if (pin.confirm !== pin.next) e.confirm = "Passwords don't match"
     setPinErr(e)
     if (Object.keys(e).length) return
-    const res = changeHostelerPassword(me.id, pin.current, pin.next)
-    if (!res.ok) {
-      setPinErr(/current/i.test(res.error ?? '') ? { current: res.error! } : { next: res.error ?? 'Could not change password' })
-      return
+    setSavingPin(true)
+    try {
+      await hostelerSetPassword(pin.current, pin.next)
+      setPin({ current: '', next: '', confirm: '' })
+      toast.success('Password changed')
+    } catch (err) {
+      const msg = errorMessage(err, 'Could not change password')
+      setPinErr(/current|incorrect/i.test(msg) ? { current: msg } : { next: msg })
+    } finally {
+      setSavingPin(false)
     }
-    setPin({ current: '', next: '', confirm: '' })
-    toast.success('Password changed')
   }
+
+  const att = attQ.data
+  const rate = att && att.summary.total ? Math.round(((att.summary.present + att.summary.late) / att.summary.total) * 100) : null
+  const docs = docsQ.data ?? []
+  const gate = (gateQ.data ?? []).slice(0, 10)
 
   return (
     <div className="pb-4">
@@ -211,23 +224,24 @@ export default function Profile() {
         <div className="-mt-10 flex flex-col items-center px-4 pb-5 text-center">
           <div className="relative">
             <div className="rounded-full ring-4 ring-white">
-              <Avatar name={me.name} src={me.photo} size="xl" />
+              <Avatar name={me.name} src={photo} size="xl" />
             </div>
             <button
               type="button"
               onClick={() => photoRef.current?.click()}
-              className="absolute -bottom-1 -right-1 flex h-9 w-9 items-center justify-center rounded-full border-2 border-white bg-brand-600 text-white shadow"
+              disabled={uploadPhoto.isPending}
+              className="absolute -bottom-1 -right-1 flex h-9 w-9 items-center justify-center rounded-full border-2 border-white bg-brand-600 text-white shadow disabled:opacity-70"
               aria-label="Change photo"
             >
-              <Camera className="h-4 w-4" />
+              {uploadPhoto.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
             </button>
             <input
               ref={photoRef}
               type="file"
-              accept="image/*"
+              accept="image/jpeg,image/png,image/webp,image/heic"
               hidden
               onChange={(e) => {
-                void onPhoto(e.target.files?.[0])
+                onPhoto(e.target.files?.[0])
                 e.target.value = ''
               }}
             />
@@ -238,8 +252,8 @@ export default function Profile() {
             {me.institution && ` · ${me.institution}`}
           </p>
           <div className="mt-3 flex flex-wrap justify-center gap-2">
-            <Badge tone="blue">{bedLabel({ rooms, beds }, me.bedId)}</Badge>
-            <Badge tone={me.status === 'active' ? 'green' : 'amber'}>{titleCase(me.status)}</Badge>
+            <Badge tone="blue">{bed}</Badge>
+            <Badge tone={me.status === 'active' ? 'green' : 'amber'}>{titleCase(me.status.replace(/_/g, ' '))}</Badge>
           </div>
         </div>
         <div className="grid grid-cols-3 divide-x divide-slate-100 border-t border-slate-100 text-center">
@@ -273,7 +287,7 @@ export default function Profile() {
             items={[
               { label: 'Phone', value: me.phone },
               { label: 'Email', value: me.email },
-              { label: 'Date of birth', value: formatDate(me.dob) },
+              { label: 'Date of birth', value: me.dob ? formatDate(me.dob) : '' },
               { label: 'Gender', value: titleCase(me.gender) },
               { label: 'Blood group', value: me.bloodGroup },
               { label: me.occupation === 'working' ? 'Designation' : 'Course', value: me.course },
@@ -314,7 +328,7 @@ export default function Profile() {
               cols={1}
               items={[
                 { label: 'Hostel', value: hostel ? `${hostel.name}${hostel.city ? `, ${hostel.city}` : ''}` : '' },
-                { label: 'Room & bed', value: bedLabel({ rooms, beds }, me.bedId) },
+                { label: 'Room & bed', value: bed },
                 { label: 'Check-in date', value: formatDate(me.checkInDate) },
                 { label: 'Expected check-out', value: me.expectedCheckOut ? formatDate(me.expectedCheckOut) : 'Not set' },
                 { label: 'Mess', value: me.messOpted ? 'Enrolled' : 'Not enrolled' },
@@ -327,19 +341,17 @@ export default function Profile() {
       {/* Documents */}
       <SectionTitle id="documents">My documents</SectionTitle>
       <Card>
-        {data.myDocs.length === 0 ? (
+        {docsQ.isLoading ? (
+          <LoadingState className="py-10" />
+        ) : docsQ.error ? (
+          <ErrorState error={docsQ.error} onRetry={() => void docsQ.refetch()} />
+        ) : docs.length === 0 ? (
           <EmptyState icon={<FileText className="h-5 w-5" />} title="No documents yet" description="Upload your ID and other documents below." />
         ) : (
           <ul className="divide-y divide-slate-100">
-            {data.myDocs.map((d) => (
+            {docs.map((d) => (
               <li key={d.id} className="flex items-center gap-3 px-4 py-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-slate-100 text-slate-500">
-                  {d.mimeType.startsWith('image/') ? (
-                    <img src={d.dataUrl} alt="" className="h-full w-full object-cover" />
-                  ) : (
-                    <FileText className="h-5 w-5" />
-                  )}
-                </div>
+                <DocThumb doc={d} />
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-1.5">
                     <p className="font-medium text-slate-900">{DOC_LABEL.get(d.type) ?? titleCase(d.type)}</p>
@@ -354,7 +366,7 @@ export default function Profile() {
                     )}
                   </div>
                   <p className="truncate text-xs text-slate-500">
-                    {d.fileName} · {formatBytes(d.size)} · {formatDate(d.uploadedAt)}
+                    {d.fileName} · {formatBytes(d.size)} · {formatDate(d.createdAt)}
                     {d.expiryDate && ` · Expires ${formatDate(d.expiryDate)}`}
                   </p>
                 </div>
@@ -375,60 +387,74 @@ export default function Profile() {
             <Upload className="h-4 w-4" /> Upload a document
           </p>
           <Select value={docType} onChange={(e) => setDocType(e.target.value as DocumentType)} options={DOC_TYPES} className="h-11" />
-          {uploading ? (
-            <div className="flex items-center justify-center rounded-xl border-2 border-dashed border-brand-300 py-8 text-sm text-brand-600">
-              Uploading…
+          {uploadDoc.isPending ? (
+            <div className="flex items-center justify-center gap-2 rounded-xl border-2 border-dashed border-brand-300 py-8 text-sm text-brand-600">
+              <Loader2 className="h-4 w-4 animate-spin" /> Uploading…
             </div>
           ) : (
-            <FileDrop onFiles={(f) => void onDocFiles(f)} accept="image/*,application/pdf" label="Tap to choose a file" hint="Image or PDF, up to 2 MB" />
+            <FileDrop onFiles={onDocFiles} accept="image/*,application/pdf" label="Tap to choose a file" hint="Image or PDF, up to 2 MB" />
           )}
         </div>
       </Card>
 
       {/* Attendance & gate */}
-      <div className="grid grid-cols-1 gap-x-4 md:grid-cols-2">
-        <div>
-          <SectionTitle>Attendance · {format(new Date(), 'MMMM')}</SectionTitle>
-          <Card className="p-4">
-            <div className="flex items-center gap-4">
-              <div className="relative flex h-20 w-20 shrink-0 items-center justify-center">
-                <svg viewBox="0 0 36 36" className="h-20 w-20 -rotate-90">
-                  <circle cx="18" cy="18" r="15.9" fill="none" strokeWidth="3.5" className="stroke-slate-100" />
-                  <circle
-                    cx="18"
-                    cy="18"
-                    r="15.9"
-                    fill="none"
-                    strokeWidth="3.5"
-                    strokeLinecap="round"
-                    strokeDasharray={`${data.rate ?? 0} 100`}
-                    className="stroke-emerald-500"
-                  />
-                </svg>
-                <span className="absolute text-lg font-bold text-slate-900">{data.rate === null ? '—' : `${data.rate}%`}</span>
-              </div>
-              <div className="grid flex-1 grid-cols-2 gap-2">
-                {(Object.keys(ATT_META) as AttendanceStatus[]).map((s) => (
-                  <div key={s} className={cn('rounded-lg px-2.5 py-1.5', ATT_META[s].tone)}>
-                    <p className="text-lg font-bold leading-tight">{data.counts[s]}</p>
-                    <p className="text-[11px]">{ATT_META[s].label}</p>
+      <div className={cn('grid grid-cols-1 gap-x-4', attendanceOn && 'md:grid-cols-2')}>
+        {attendanceOn && (
+          <div>
+            <SectionTitle>Attendance · {format(new Date(), 'MMMM')}</SectionTitle>
+            <Card className="p-4">
+              {attQ.isLoading ? (
+                <LoadingState className="py-6" />
+              ) : attQ.error || !att ? (
+                <ErrorState error={attQ.error} onRetry={() => void attQ.refetch()} className="py-6" />
+              ) : (
+                <>
+                  <div className="flex items-center gap-4">
+                    <div className="relative flex h-20 w-20 shrink-0 items-center justify-center">
+                      <svg viewBox="0 0 36 36" className="h-20 w-20 -rotate-90">
+                        <circle cx="18" cy="18" r="15.9" fill="none" strokeWidth="3.5" className="stroke-slate-100" />
+                        <circle
+                          cx="18"
+                          cy="18"
+                          r="15.9"
+                          fill="none"
+                          strokeWidth="3.5"
+                          strokeLinecap="round"
+                          strokeDasharray={`${rate ?? 0} 100`}
+                          className="stroke-emerald-500"
+                        />
+                      </svg>
+                      <span className="absolute text-lg font-bold text-slate-900">{rate === null ? '—' : `${rate}%`}</span>
+                    </div>
+                    <div className="grid flex-1 grid-cols-2 gap-2">
+                      {(Object.keys(ATT_META) as AttendanceStatus[]).map((s) => (
+                        <div key={s} className={cn('rounded-lg px-2.5 py-1.5', ATT_META[s].tone)}>
+                          <p className="text-lg font-bold leading-tight">{att.summary[s]}</p>
+                          <p className="text-[11px]">{ATT_META[s].label}</p>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                ))}
-              </div>
-            </div>
-            <p className="mt-3 text-xs text-slate-500">
-              {data.marked} day{data.marked === 1 ? '' : 's'} marked this month (as of {formatDate(today(), 'dd MMM')}).
-            </p>
-          </Card>
-        </div>
+                  <p className="mt-3 text-xs text-slate-500">
+                    {att.summary.total} day{att.summary.total === 1 ? '' : 's'} marked this month (as of {formatDate(today(), 'dd MMM')}).
+                  </p>
+                </>
+              )}
+            </Card>
+          </div>
+        )}
         <div>
           <SectionTitle>Gate log · last 10</SectionTitle>
           <Card>
-            {data.myGate.length === 0 ? (
+            {gateQ.isLoading ? (
+              <LoadingState className="py-6" />
+            ) : gateQ.error ? (
+              <ErrorState error={gateQ.error} onRetry={() => void gateQ.refetch()} className="py-6" />
+            ) : gate.length === 0 ? (
               <EmptyState title="No gate entries yet" />
             ) : (
               <ul className="divide-y divide-slate-100">
-                {data.myGate.map((g) => (
+                {gate.map((g) => (
                   <li key={g.id} className="flex items-center gap-3 px-4 py-2.5">
                     <span
                       className={cn(
@@ -481,7 +507,13 @@ export default function Profile() {
             <PasswordRules password={pin.next} />
           </div>
         )}
-        <Button className="mt-4 w-full rounded-xl sm:w-auto" size="lg" onClick={changePassword} icon={<ShieldCheck className="h-4 w-4" />}>
+        <Button
+          className="mt-4 w-full rounded-xl sm:w-auto"
+          size="lg"
+          onClick={() => void changePassword()}
+          loading={savingPin}
+          icon={<ShieldCheck className="h-4 w-4" />}
+        >
           Update password
         </Button>
         <p className="mt-3 text-xs text-slate-500">Forgot your password? Ask the hostel office to reset it.</p>
@@ -497,7 +529,9 @@ export default function Profile() {
             <Button variant="outline" onClick={() => setEditOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={saveEdit}>Save</Button>
+            <Button onClick={saveEdit} loading={updateProfile.isPending}>
+              Save
+            </Button>
           </>
         }
       >

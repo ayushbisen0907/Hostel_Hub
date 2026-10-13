@@ -73,6 +73,7 @@ describe('mess', () => {
     expect(mem.body.items).toHaveLength(2)
     expect(mem.body.members).toBe(1)
     expect(mem.body.items[0].roomNumber).toBe('101')
+    expect(mem.body.items[0].phone).toBe('9876543210')
 
     await api().post('/api/mess/opt-outs').set(w.auth).send({ hostelerId: String(nm.hosteler._id), date: today, meal: 'lunch' }).expect(400)
     await api().patch(`/api/mess/members/${nm.hosteler._id}`).set(w.auth).send({ messOpted: true }).expect(200)
@@ -89,6 +90,14 @@ describe('mess', () => {
     expect(fb.body.averages.lunch).toEqual({ average: 4.5, count: 2 })
     expect(fb.body.averages.dinner).toEqual({ average: 2, count: 1 })
     expect(fb.body.averages.breakfast.average).toBeNull()
+    expect(fb.body.overall).toEqual({ average: 3.7, count: 3 })
+    expect(fb.body.distribution).toEqual({ 1: 0, 2: 1, 3: 0, 4: 1, 5: 1 })
+    const low = await api().get('/api/mess/feedback?rating=low').set(w.auth).expect(200)
+    expect(low.body.items).toHaveLength(1)
+    expect(low.body.items[0].rating).toBe(2)
+    const high = await api().get('/api/mess/feedback?rating=high&meal=lunch').set(w.auth).expect(200)
+    expect(high.body.total).toBe(2)
+    await api().get('/api/mess/feedback?rating=meh').set(w.auth).expect(400)
 
     const st = await api().get(`/api/mess/stats?month=${today.slice(0, 7)}`).set(w.auth).expect(200)
     expect(st.body.optOuts).toBe(1)

@@ -1,70 +1,62 @@
-# HostelHub – Hostel Management SaaS (Frontend)
+# HostelHub – Frontend
 
-A fully functional frontend for a hostel / PG management SaaS. There is no backend yet: all data is stored in the browser (IndexedDB), so everything you create, edit or delete is saved and survives a page refresh.
+React website for HostelHub: the owner/staff panel and the mobile-friendly hosteler portal. All data comes from the [HostelHub API](../backend) through **axios** + **TanStack Query**.
 
-## Run it
+## Run
+
+Start the backend first (see `../backend/README.md`), then:
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173
+npm run dev        # http://localhost:5173  (requests to /api are proxied to http://localhost:4000)
 npm run build      # production build
-npm test           # smoke tests (renders every screen + core flows)
+npm test           # full end-to-end check (see below)
 ```
 
-## Demo logins
+Optional `.env` (see `.env.example`):
 
-| Who | Where | Credentials |
+| Variable | Default | Purpose |
 |---|---|---|
-| Hostel owner | `/login` | `demo@hostelhub.in` / `demo123` (or click **Try live demo** on the home page) |
-| Hosteler (resident) | `/portal/login` | mobile `9876543210`, PIN `1234` (load demo data first) |
+| `VITE_API_URL` | `/api` | API base URL. Set to your deployed API in production, e.g. `https://api.example.com/api` |
+| `API_PROXY_TARGET` | `http://localhost:4000` | Where the dev server forwards `/api` |
 
-Signing up creates a fresh, empty workspace in this browser. **Settings → Data** lets you load the demo, reset, or export/import a JSON backup.
+## Getting started
 
-## Modules
+1. **Sign up** at `/signup`. This creates your organization and owner account.
+2. **Settings → Hostels**: add a hostel. Its ID prefix (e.g. `SBH`) is used for Hosteler IDs.
+3. **Rooms & Beds**: add rooms.
+4. **Check-in**: admit a hosteler. You get their **Hosteler ID** and a **temporary password**, shown once, with a "Send on WhatsApp" button.
+5. The hosteler logs in at `/portal/login`, is asked to set their own password, and then sees only their own data: dues and payments, mess, complaints, leave and profile.
+6. **Settings → Team**: give managers, wardens or accountants their own logins (each role sees only its modules).
 
-**Owner / staff panel (`/app`)**
-- Dashboard: occupancy, collections, dues, mess headcount, charts, pending approvals, activity
-- Rooms & beds: floor-wise bed grid, bulk room creation, AC/non-AC, sharing, maintenance
-- Hostelers: list, full profile, bed transfer, portal PIN, WhatsApp/call
-- Check-in: 6-step admission wizard (details → guardian → documents → bed → rent & deposit → confirm), reservations
-- Check-out: dues and deposit settlement, deductions, checklist, printable summary
-- Gate log: in/out register, late entries after curfew, who is outside
-- Documents: upload, preview, verify, expiry tracking, missing-document alerts
-- Fees & payments: monthly rent generation, custom invoices, late fees, partial payments, receipts, dues, deposits, WhatsApp reminders, printable invoices and receipts (amount in words)
-- Expenses: categories, charts, CSV
-- Mess: today's headcount (after opt-outs and leaves), weekly menu editor, members, opt-outs, feedback ratings
-- Attendance & leave: daily roll call, monthly register, guardian alerts, leave approvals
-- Complaints: Kanban board, staff assignment, comments
-- Visitors, notices, staff (with salary payouts)
-- Reports: P&L, collection %, occupancy, dues aging, expense breakdown (CSV + print)
-- Settings: profile, hostels, plans & billing (Free / Basic / Pro, per-bed pricing, module gating), preferences, backup
+## How it talks to the API
 
-**Hosteler portal (`/portal`, mobile-first)**
-- Home with dues, today's menu, notices, attendance
-- Pay rent (simulated UPI / card / net banking) and download receipts
-- Skip meals (with cut-off times), rate meals
-- Raise and track complaints, apply for leave, notices
-- Profile, documents upload, change PIN
+```
+src/api/
+  client.ts    axios instance: base URL, Bearer token, error -> ApiError, 401 -> logout,
+               403 PASSWORD_CHANGE_REQUIRED -> set-password, protected file helpers
+  session.ts   who is logged in (staff or hosteler), role permissions
+  query.ts     React Query client + useApiMutation (invalidate + toasts)
+  common.ts    org, settings, hostels, top-bar hostel switcher
+  auth.ts      login / signup / set-password / logout
+  <module>.ts  typed endpoints + hooks per area (rooms, hostelers, fees, mess, portal, …)
+```
+
+Query keys start with the resource name (`['hostelers', params]`), and mutations invalidate by prefix so every list stays fresh.
+
+## Tests
+
+`npm test` runs `e2e/full-flow.mjs`. It starts an **in-memory MongoDB**, the real backend and this app, then drives Chromium through the whole product:
+
+- signup
+- every owner screen at desktop and phone width, checking for page errors, failed API calls and horizontal overflow
+- a check-in through the wizard
+- hosteler first login with the temporary password, then a forced password change
+- every portal screen
+- a rent payment from the portal
+
+It never touches your Atlas database.
 
 ## Tech
 
-React 18 · TypeScript · Vite · Tailwind CSS · Zustand (persisted to IndexedDB) · React Router · Recharts · date-fns · lucide-react
-
-## Code map
-
-```
-src/
-  types/          data model
-  store/          zustand store (all actions), selectors, demo seed data
-  components/ui/  UI kit (buttons, forms, tables, modals, toasts, confirm)
-  components/layout/  admin sidebar layout, portal layout
-  lib/            utils, plans (pricing + module gating)
-  pages/auth      landing, login, signup, hosteler login
-  pages/admin     owner/staff modules
-  pages/portal    hosteler portal
-  pages/print     printable invoice & receipt
-```
-
-## Connecting a real backend later
-
-Every read and write goes through `src/store/index.ts`. To add a backend (e.g. Supabase/Node), replace those actions with API calls one module at a time. The screens don't need to change.
+React 18 · TypeScript · Vite · Tailwind CSS · TanStack Query · axios · Zustand (session only) · React Router · Recharts · date-fns · lucide-react

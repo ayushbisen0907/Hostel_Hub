@@ -6,7 +6,7 @@
  * client. Records of other hostelers are reported as 404, never 403, so ids
  * can't be probed.
  *
- *   GET    /home
+ *   GET    /home                       dashboard + { today, currencySymbol, features: { mess, attendance } }
  *   PATCH  /profile                    { email?, permanentAddress?, guardianPhone? }
  *   POST   /profile/photo              multipart "file" (image ≤ 2 MB)
  *   GET    /profile/photo
@@ -101,11 +101,6 @@ async function loadMe(req: Request) {
   return me
 }
 
-async function orgPlan(orgId: string): Promise<Plan> {
-  const org = await Organization.findById(orgId).select('plan').lean()
-  return (org?.plan ?? 'free') as Plan
-}
-
 async function bedLabelOf(roomId: unknown, bedId: unknown): Promise<string | null> {
   if (!roomId) return null
   const [room, bed] = await Promise.all([
@@ -168,7 +163,8 @@ router.get(
     const me = await Hosteler.findOne({ _id: hostelerId, orgId }).lean()
     if (!me) throw unauthorized()
     const t = today()
-    const plan = await orgPlan(orgId)
+    const org = await Organization.findById(orgId).select('plan settings.currencySymbol').lean()
+    const plan = (org?.plan ?? 'free') as Plan
     const hasMess = hasModule(plan, 'mess')
     const hasAttendance = hasModule(plan, 'attendance')
     const last7 = Array.from({ length: 7 }, (_, i) => addDays(t, i - 6))
@@ -189,6 +185,9 @@ router.get(
     const total = pending.reduce((a, i) => a + (i.total - i.paidAmount), 0)
 
     res.json({
+      today: t,
+      currencySymbol: org?.settings?.currencySymbol ?? '₹',
+      features: { mess: hasMess, attendance: hasAttendance },
       hosteler: toApi(me, HOSTELER_HIDDEN),
       bed,
       hostel: hostel ? { id: String(hostel._id), name: hostel.name, phone: hostel.phone } : null,

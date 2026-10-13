@@ -9,23 +9,26 @@
  *   POST   /:id/transfer          move to another vacant bed
  *   POST   /:id/check-out         settlement, frees bed, closes portal account
  *   POST   /:id/reset-password    new temporary password (returned once)
+ *   POST   /:id/photo             multipart "file" (image ≤ 2 MB) -> profile photo (a 'photo' document)
+ *   GET    /:id/photo             the latest 'photo' document (image)
  *   DELETE /:id                   owner / manager only; cascades
  *
  * Note: operations inside a transaction run sequentially (a session must not
  * run concurrent operations).
  */
+import path from 'node:path'
 import { Router } from 'express'
 import mongoose, { type ClientSession, type Types } from 'mongoose'
 import { z } from 'zod'
 import { withTransaction } from '../../config/db.js'
 import { requireStaff, staffOf } from '../../middleware/auth.js'
 import { formatLoginId, generateTempPassword, hashPassword } from '../../lib/auth.js'
-import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js'
+import { AppError, badRequest, conflict, forbidden, notFound } from '../../lib/errors.js'
 import { ah, dateStr, escapeRegex, idParam, money, objectId, paginate, paginationQuery, parse, phone, todayStr } from '../../lib/http.js'
 import { createInvoice, recordPayment } from '../../lib/money.js'
 import { assertHostel, getSettings, hostelScope, logActivity } from '../../lib/org.js'
 import { requirePlan } from '../../lib/plans.js'
-import { removeStoredFile } from '../../lib/upload.js'
+import { removeStoredFile, sendStoredFile, upload } from '../../lib/upload.js'
 import { toApi } from '../../models/_base.js'
 import { Bed } from '../../models/Bed.js'
 import { HDocument } from '../../models/Document.js'
@@ -551,6 +554,80 @@ router.post(
     await h.save()
     await logActivity(orgId, `Portal password reset for ${h.name}`, 'general', h.hostelId)
     res.json({ loginId: h.loginId, tempPassword })
+  }),
+)
+
+/* ------------------------------------------------------------------ */
+/* Profile photo (kept as a 'photo' document, like the portal does)    */
+/* ------------------------------------------------------------------ */
+
+const PHOTO_MAX_BYTES = 2 * 1024 * 1024
+const PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic']
+export const staffPhotoUrl = (id: string | Types.ObjectId) => `/api/hostelers/${String(id)}/photo`
+
+router.post(
+  '/:id/photo',
+  requireStaff('hostelers'),
+  requirePlan('hostelers'),
+  upload.single('file'),
+  ah(async (req, res) => {
+    const file = req.file
+    let replaced: string[] = []
+    try {
+      const { orgId } = staffOf(req)
+      const id = idParam(req)
+      if (!file) throw badRequest('Choose a photo to upload (field "file")')
+      if (file.size > PHOTO_MAX_BYTES) throw new AppError(413, 'Photo must be 2 MB or smaller', 'FILE_TOO_LARGE')
+      if (!PHOTO_TYPES.includes(file.mimetype)) throw badRequest('Photo must be a JPG, PNG, WEBP or HEIC image')
+      await withTransaction(async (session) => {
+        const h = await loadHosteler(orgId, id, session)
+        const old = await HDocument.find({ orgId, hostelerId: h._id, type: 'photo' }).select('storageKey').session(session).lean()
+        replaced = old.map((d) => d.storageKey)
+        if (old.length) await HDocument.deleteMany({ _id: { $in: old.map((d) => d._id) } }, { session })
+        await HDocument.create(
+          [
+            {
+              orgId,
+              hostelId: h.hostelId,
+              hostelerId: h._id,
+              type: 'photo',
+              fileName: path.basename(file.originalname).slice(0, 200) || 'photo',
+              mimeType: file.mimetype,
+              size: file.size,
+              storageKey: file.filename,
+              uploadedBy: 'staff',
+              verified: false,
+            },
+          ],
+          { session },
+        )
+        h.photoUrl = staffPhotoUrl(h._id)
+        await h.save({ session })
+      })
+    } catch (e) {
+      if (file) removeStoredFile(file.filename)
+      throw e
+    }
+    // remove replaced files only after the transaction committed
+    for (const k of replaced) removeStoredFile(k)
+    const id = idParam(req)
+    res.status(201).json({ hosteler: await decorateOne(staffOf(req).orgId, id), photoUrl: staffPhotoUrl(id) })
+  }),
+)
+
+router.get(
+  '/:id/photo',
+  requireStaff('hostelers'),
+  requirePlan('hostelers'),
+  ah(async (req, res) => {
+    const { orgId } = staffOf(req)
+    const id = idParam(req)
+    const doc = await HDocument.findOne({ orgId, hostelerId: id, type: 'photo', mimeType: { $in: PHOTO_TYPES } })
+      .sort({ createdAt: -1, _id: -1 })
+      .lean()
+    if (!doc) throw notFound('Photo')
+    res.setHeader('Cache-Control', 'private, no-cache')
+    sendStoredFile(res, doc.storageKey, doc.fileName, doc.mimeType)
   }),
 )
 

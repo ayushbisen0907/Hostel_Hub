@@ -58,6 +58,8 @@ describe('portal access control', () => {
     const basic = await makeWorld({ plan: 'basic' })
     const home = await api().get('/api/portal/home').set(basic.hostelerAuth).expect(200)
     expect(home.body.todayMenu).toBeNull()
+    expect(home.body.last7DaysAttendance).toBeNull()
+    expect(home.body.features).toEqual({ mess: false, attendance: false })
     await api().get('/api/portal/mess/menu').set(basic.hostelerAuth).expect(402)
     await api().get('/api/portal/leaves').set(basic.hostelerAuth).expect(402)
     await api().get('/api/portal/attendance').set(basic.hostelerAuth).expect(402)
@@ -93,6 +95,7 @@ describe('portal home & profile', () => {
     expect(r.body.todayMenu).toHaveLength(4)
     expect(r.body.todayMenu[1]).toMatchObject({ meal: 'lunch', items: 'Dal, rice', skipped: false })
     expect(r.body.last7DaysAttendance).toHaveLength(7)
+    expect(r.body).toMatchObject({ today: '2026-10-12', currencySymbol: '₹', features: { mess: true, attendance: true } })
 
     const notices = await api().get('/api/portal/notices').set(w.hostelerAuth).expect(200)
     expect(notices.body.items).toHaveLength(2)

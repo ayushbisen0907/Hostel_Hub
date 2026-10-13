@@ -2,14 +2,16 @@
  * Visitors (Basic & Pro)
  *
  *   GET  /api/visitors?from&to&q&inside=true&hostelId&page&limit   newest first, paginated
+ *   GET  /api/visitors/stats?hostelId                               inside now, today, this month, average visit minutes
  *   POST /api/visitors                                              { hostelerId, name, phone, relation, purpose, idProof }
  *   POST /api/visitors/:id/check-out                                409 if already checked out
  */
 import { Router } from 'express'
+import { Types } from 'mongoose'
 import { z } from 'zod'
 import { requireStaff, staffOf } from '../../middleware/auth.js'
-import { conflict, notFound } from '../../lib/errors.js'
-import { ah, dateStr, escapeRegex, idParam, objectId, paginate, paginationQuery, parse } from '../../lib/http.js'
+import { badRequest, conflict, notFound } from '../../lib/errors.js'
+import { ah, dateStr, escapeRegex, idParam, objectId, paginate, paginationQuery, parse, todayStr } from '../../lib/http.js'
 import { hostelScope } from '../../lib/org.js'
 import { requirePlan } from '../../lib/plans.js'
 import { toApi } from '../../models/_base.js'
@@ -70,6 +72,35 @@ router.get(
       Visitor.countDocuments(filter),
     ])
     res.json(paginate(await decorate(orgId, list), total, q.page, q.limit))
+  }),
+)
+
+router.get(
+  '/stats',
+  ah(async (req, res) => {
+    const { orgId } = staffOf(req)
+    const scope = { orgId, ...hostelScope(req.query) }
+    if (scope.hostelId && !Types.ObjectId.isValid(scope.hostelId)) throw badRequest('Invalid hostelId')
+    const hostelOid = scope.hostelId ? new Types.ObjectId(scope.hostelId) : null
+    const today = todayStr()
+    const month = today.slice(0, 7)
+    const [inside, todayCount, monthCount, durations] = await Promise.all([
+      Visitor.countDocuments({ ...scope, outTime: null }),
+      Visitor.countDocuments({ ...scope, inTime: { $gte: dayStart(today), $lte: dayEnd(today) } }),
+      Visitor.countDocuments({ ...scope, inTime: { $gte: dayStart(`${month}-01`), $lte: dayEnd(today) } }),
+      Visitor.aggregate<{ avg: number; n: number }>([
+        { $match: { orgId: new Types.ObjectId(orgId), ...(hostelOid ? { hostelId: hostelOid } : {}), outTime: { $ne: null } } },
+        { $group: { _id: null, avg: { $avg: { $subtract: ['$outTime', '$inTime'] } }, n: { $sum: 1 } } },
+      ]),
+    ])
+    const d = durations[0]
+    res.json({
+      inside,
+      today: todayCount,
+      thisMonth: monthCount,
+      completed: d?.n ?? 0,
+      avgDurationMinutes: d ? Math.round(d.avg / 60_000) : null,
+    })
   }),
 )
 

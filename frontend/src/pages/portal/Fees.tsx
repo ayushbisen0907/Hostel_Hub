@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  AlertTriangle,
   Building2,
   CheckCircle2,
   CreditCard,
@@ -11,16 +12,13 @@ import {
   Smartphone,
   Wallet,
 } from 'lucide-react'
-import { useStore } from '@/store'
-import { invoiceBalance, invoicePaid, invoiceStatus, useCurrentHosteler } from '@/store/selectors'
-import { Button, Card, EmptyState, Field, Input, Modal, Select, StatusBadge, toast } from '@/components/ui'
+import { errorMessage } from '@/api/client'
+import { useMyInvoices, useMyPayments, usePayInvoice, type PayMethod, type PortalInvoice } from '@/api/portal'
+import { useHostelerSession } from '@/api/session'
+import type { Payment, PaymentMode } from '@/api/types'
+import { Button, Card, EmptyState, ErrorState, Field, Input, LoadingState, Modal, Select, StatusBadge, toast } from '@/components/ui'
 import { cn, formatDate, formatMonth, today } from '@/lib/utils'
-import type { Invoice, Payment, PaymentMode } from '@/types'
-import { NotLoggedIn, PortalTitle, SectionTitle, openInNewTab, useMoney } from './_shared'
-
-type Method = 'upi' | 'card' | 'netbanking'
-
-const METHOD_MODE: Record<Method, PaymentMode> = { upi: 'upi', card: 'card', netbanking: 'online' }
+import { PortalTitle, SectionTitle, openInNewTab, useMoney } from './_shared'
 
 const BANKS = [
   'State Bank of India',
@@ -41,10 +39,8 @@ const MODE_LABEL: Record<PaymentMode, string> = {
   online: 'Net banking',
 }
 
-function genTxnId(prefix: string) {
-  const rand = Array.from({ length: 10 }, () => Math.floor(Math.random() * 10)).join('')
-  return `${prefix}${Date.now().toString().slice(-4)}${rand}`
-}
+/** Minimum time the "processing" screen is shown, so the step doesn't flash */
+const MIN_PROCESSING_MS = 1200
 
 /** Deterministic QR-looking grid */
 function FakeQR({ seed }: { seed: string }) {
@@ -102,15 +98,13 @@ function luhnOk(num: string) {
   return sum % 10 === 0
 }
 
-function PayModal({ invoice, onClose }: { invoice: Invoice | null; onClose: () => void }) {
-  const me = useCurrentHosteler()
-  const payments = useStore((s) => s.payments)
-  const recordPayment = useStore((s) => s.recordPayment)
+function PayModal({ invoice, onClose }: { invoice: PortalInvoice | null; onClose: () => void }) {
+  const me = useHostelerSession()?.hosteler
+  const pay = usePayInvoice()
   const money = useMoney()
 
-  const balance = invoice ? invoiceBalance({ payments }, invoice) : 0
   const [step, setStep] = useState<'form' | 'processing' | 'success'>('form')
-  const [method, setMethod] = useState<Method>('upi')
+  const [method, setMethod] = useState<PayMethod>('upi')
   const [amount, setAmount] = useState('')
   const [upiTxn, setUpiTxn] = useState('')
   const [cardNo, setCardNo] = useState('')
@@ -119,13 +113,17 @@ function PayModal({ invoice, onClose }: { invoice: Invoice | null; onClose: () =
   const [cvv, setCvv] = useState('')
   const [bank, setBank] = useState('')
   const [errors, setErrors] = useState<Record<string, string>>({})
-  const [result, setResult] = useState<Payment | null>(null)
+  const [serverError, setServerError] = useState<string | null>(null)
+  const [result, setResult] = useState<{ payment: Payment; balanceBefore: number } | null>(null)
+  // the invoice being paid, frozen when the sheet opens (the list refetches after paying)
+  const [inv, setInv] = useState<PortalInvoice | null>(null)
 
   useEffect(() => {
     if (invoice) {
+      setInv(invoice)
       setStep('form')
       setMethod('upi')
-      setAmount(String(invoiceBalance({ payments: useStore.getState().payments }, invoice)))
+      setAmount(String(invoice.balance))
       setUpiTxn('')
       setCardNo('')
       setCardName(me?.name ?? '')
@@ -133,12 +131,14 @@ function PayModal({ invoice, onClose }: { invoice: Invoice | null; onClose: () =
       setCvv('')
       setBank('')
       setErrors({})
+      setServerError(null)
       setResult(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [invoice?.id])
 
-  if (!invoice || !me) return null
+  if (!invoice || !inv) return null
+  const balance = inv.balance
 
   const validate = () => {
     const e: Record<string, string> = {}
@@ -168,33 +168,27 @@ function PayModal({ invoice, onClose }: { invoice: Invoice | null; onClose: () =
     return Object.keys(e).length === 0
   }
 
-  const pay = () => {
-    if (!validate()) return
+  const submit = async () => {
+    if (!validate() || pay.isPending) return
+    setServerError(null)
     setStep('processing')
     const amt = Number(amount)
-    const reference =
-      method === 'upi'
-        ? upiTxn.trim().toUpperCase()
-        : method === 'card'
-          ? `${genTxnId('CRD')} · xx${cardNo.replace(/\s/g, '').slice(-4)}`
-          : `${genTxnId('NB')} · ${bank}`
-    setTimeout(() => {
-      const p = recordPayment({
-        invoiceId: invoice.id,
-        hostelerId: me.id,
-        amount: amt,
-        mode: METHOD_MODE[method],
-        reference,
-        date: today(),
-        note: 'Paid via hosteler portal',
-      })
-      setResult(p)
+    // card / bank details never leave the browser; the (simulated) gateway issues the reference
+    const reference = method === 'upi' ? upiTxn.trim().toUpperCase() : undefined
+    const delay = new Promise((r) => setTimeout(r, MIN_PROCESSING_MS))
+    try {
+      const [res] = await Promise.all([pay.mutateAsync({ invoiceId: inv.id, amount: amt, method, reference }), delay])
+      setResult({ payment: res.payment, balanceBefore: balance })
       setStep('success')
       toast.success(`Payment of ${money(amt)} successful`)
-    }, 1500)
+    } catch (e) {
+      await delay
+      setServerError(errorMessage(e, 'Payment failed. No money was charged — please try again.'))
+      setStep('form')
+    }
   }
 
-  const methods: { id: Method; label: string; icon: typeof Smartphone }[] = [
+  const methods: { id: PayMethod; label: string; icon: typeof Smartphone }[] = [
     { id: 'upi', label: 'UPI', icon: Smartphone },
     { id: 'card', label: 'Card', icon: CreditCard },
     { id: 'netbanking', label: 'Net banking', icon: Building2 },
@@ -204,15 +198,15 @@ function PayModal({ invoice, onClose }: { invoice: Invoice | null; onClose: () =
     <Modal
       open
       onClose={step === 'processing' ? () => undefined : onClose}
-      title={step === 'success' ? 'Payment successful' : `Pay ${invoice.number}`}
-      description={step === 'form' ? `${formatMonth(invoice.month)} · Balance ${money(balance)}` : undefined}
+      title={step === 'success' ? 'Payment successful' : `Pay ${inv.number}`}
+      description={step === 'form' ? `${formatMonth(inv.month)} · Balance ${money(balance)}` : undefined}
       footer={
         step === 'form' ? (
           <>
             <Button variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={pay} icon={<ShieldCheck className="h-4 w-4" />}>
+            <Button onClick={() => void submit()} icon={<ShieldCheck className="h-4 w-4" />}>
               Pay {Number(amount) > 0 ? money(Number(amount)) : ''}
             </Button>
           </>
@@ -221,7 +215,7 @@ function PayModal({ invoice, onClose }: { invoice: Invoice | null; onClose: () =
             <Button variant="outline" onClick={onClose}>
               Done
             </Button>
-            <Button icon={<Download className="h-4 w-4" />} onClick={() => result && openInNewTab(`/print/receipt/${result.id}`)}>
+            <Button icon={<Download className="h-4 w-4" />} onClick={() => result && openInNewTab(`/print/receipt/${result.payment.id}`)}>
               Download receipt
             </Button>
           </>
@@ -241,15 +235,15 @@ function PayModal({ invoice, onClose }: { invoice: Invoice | null; onClose: () =
           <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50">
             <CheckCircle2 className="h-10 w-10 text-emerald-500" />
           </div>
-          <p className="mt-3 text-3xl font-bold text-slate-900">{money(result.amount)}</p>
-          <p className="text-sm text-slate-500">paid towards {invoice.number}</p>
+          <p className="mt-3 text-3xl font-bold text-slate-900">{money(result.payment.amount)}</p>
+          <p className="text-sm text-slate-500">paid towards {inv.number}</p>
           <dl className="mt-5 w-full space-y-2 rounded-xl bg-slate-50 p-4 text-left text-sm">
             {[
-              ['Receipt no.', result.receiptNo],
-              ['Transaction ID', result.reference],
-              ['Paid via', MODE_LABEL[result.mode]],
-              ['Date', formatDate(result.date)],
-              ['Remaining balance', money(invoiceBalance({ payments }, invoice))],
+              ['Receipt no.', result.payment.receiptNo],
+              ['Transaction ID', result.payment.reference || '—'],
+              ['Paid via', MODE_LABEL[result.payment.mode]],
+              ['Date', formatDate(result.payment.date)],
+              ['Remaining balance', money(Math.max(result.balanceBefore - result.payment.amount, 0))],
             ].map(([k, v]) => (
               <div key={k} className="flex justify-between gap-3">
                 <dt className="text-slate-500">{k}</dt>
@@ -262,6 +256,12 @@ function PayModal({ invoice, onClose }: { invoice: Invoice | null; onClose: () =
 
       {step === 'form' && (
         <div className="space-y-5">
+          {serverError && (
+            <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{serverError}</span>
+            </div>
+          )}
           <Field label="Amount to pay" required error={errors.amount} hint={`You can pay part of the balance (max ${money(balance)}).`}>
             <Input
               type="number"
@@ -301,7 +301,7 @@ function PayModal({ invoice, onClose }: { invoice: Invoice | null; onClose: () =
             <div className="space-y-4">
               <div className="flex flex-col items-center rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <div className="rounded-lg bg-white p-2 shadow-sm">
-                  <FakeQR seed={`${invoice.id}-${amount}`} />
+                  <FakeQR seed={`${inv.id}-${amount}`} />
                 </div>
                 <p className="mt-3 text-xs text-slate-500">Scan with any UPI app or pay to</p>
                 <p className="font-mono text-base font-semibold text-slate-900">hostelhub@upi</p>
@@ -319,7 +319,7 @@ function PayModal({ invoice, onClose }: { invoice: Invoice | null; onClose: () =
                 </button>
               </div>
               <Field label="UPI transaction ID" required error={errors.upiTxn} hint="Find the 12-digit UTR / reference number in your UPI app after paying.">
-                <Input value={upiTxn} onChange={(e) => setUpiTxn(e.target.value.replace(/\s/g, ''))} placeholder="e.g. 412345678901" />
+                <Input value={upiTxn} onChange={(e) => setUpiTxn(e.target.value.replace(/\s/g, ''))} placeholder="e.g. 412345678901" maxLength={30} />
               </Field>
             </div>
           )}
@@ -375,7 +375,7 @@ function PayModal({ invoice, onClose }: { invoice: Invoice | null; onClose: () =
           )}
 
           <p className="flex items-center gap-1.5 text-xs text-slate-400">
-            <ShieldCheck className="h-3.5 w-3.5" /> Payments are secured with 256-bit encryption. (Demo — no real money is charged.)
+            <ShieldCheck className="h-3.5 w-3.5" /> Online payments are simulated for now — no real money is charged.
           </p>
         </div>
       )}
@@ -384,52 +384,54 @@ function PayModal({ invoice, onClose }: { invoice: Invoice | null; onClose: () =
 }
 
 export default function Fees() {
-  const me = useCurrentHosteler()
-  const invoices = useStore((s) => s.invoices)
-  const payments = useStore((s) => s.payments)
+  const invoicesQ = useMyInvoices()
+  const paymentsQ = useMyPayments()
   const money = useMoney()
-  const [paying, setPaying] = useState<Invoice | null>(null)
+  const [paying, setPaying] = useState<PortalInvoice | null>(null)
 
-  const data = useMemo(() => {
-    if (!me) return null
-    const mine = invoices.filter((i) => i.hostelerId === me.id).sort((a, b) => b.month.localeCompare(a.month) || b.createdAt.localeCompare(a.createdAt))
-    const myPayments = payments.filter((p) => p.hostelerId === me.id).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))
-    const year = today().slice(0, 4)
-    const paidThisYear = myPayments.filter((p) => p.date.startsWith(year)).reduce((a, p) => a + p.amount, 0)
-    const due = mine.reduce((a, i) => a + invoiceBalance({ payments }, i), 0)
-    return { mine, myPayments, paidThisYear, due, year }
-  }, [me, invoices, payments])
+  const year = today().slice(0, 4)
+  const summary = useMemo(() => {
+    const due = (invoicesQ.data ?? []).reduce((a, i) => a + i.balance, 0)
+    const paidThisYear = (paymentsQ.data ?? []).filter((p) => p.date.startsWith(year)).reduce((a, p) => a + p.amount, 0)
+    return { due, paidThisYear }
+  }, [invoicesQ.data, paymentsQ.data, year])
 
-  if (!me || !data) return <NotLoggedIn />
-
-  const invNumber = new Map(invoices.map((i) => [i.id, i.number]))
+  const invoices = invoicesQ.data ?? []
+  const payments = paymentsQ.data ?? []
 
   return (
     <div className="pb-4">
       <PortalTitle title="Fees & payments" subtitle="View invoices, pay online and download receipts." />
 
       <div className="grid grid-cols-2 gap-3">
-        <Card className={cn('p-4', data.due > 0 ? 'border-red-100 bg-red-50/40' : 'border-emerald-100 bg-emerald-50/40')}>
+        <Card className={cn('p-4', summary.due > 0 ? 'border-red-100 bg-red-50/40' : 'border-emerald-100 bg-emerald-50/40')}>
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Total due</p>
-          <p className={cn('mt-1 text-2xl font-bold', data.due > 0 ? 'text-red-600' : 'text-emerald-600')}>{money(data.due)}</p>
+          <p className={cn('mt-1 text-2xl font-bold', summary.due > 0 ? 'text-red-600' : 'text-emerald-600')}>
+            {invoicesQ.data ? money(summary.due) : '—'}
+          </p>
         </Card>
         <Card className="p-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Paid in {data.year}</p>
-          <p className="mt-1 text-2xl font-bold text-slate-900">{money(data.paidThisYear)}</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Paid in {year}</p>
+          <p className="mt-1 text-2xl font-bold text-slate-900">{paymentsQ.data ? money(summary.paidThisYear) : '—'}</p>
         </Card>
       </div>
 
       <SectionTitle>Invoices</SectionTitle>
-      {data.mine.length === 0 ? (
+      {invoicesQ.isLoading ? (
+        <LoadingState />
+      ) : invoicesQ.error ? (
+        <Card>
+          <ErrorState error={invoicesQ.error} onRetry={() => void invoicesQ.refetch()} />
+        </Card>
+      ) : invoices.length === 0 ? (
         <Card>
           <EmptyState icon={<FileText className="h-5 w-5" />} title="No invoices yet" description="Your monthly rent invoices will show up here." />
         </Card>
       ) : (
         <div className="space-y-3">
-          {data.mine.map((inv) => {
-            const status = invoiceStatus({ payments }, inv)
-            const bal = invoiceBalance({ payments }, inv)
-            const paid = invoicePaid({ payments }, inv.id)
+          {invoices.map((inv) => {
+            const bal = inv.balance
+            const paid = inv.paidAmount
             return (
               <Card key={inv.id} className="p-4">
                 <div className="flex items-start justify-between gap-3">
@@ -439,7 +441,7 @@ export default function Fees() {
                       {inv.number} · Due {formatDate(inv.dueDate)}
                     </p>
                   </div>
-                  <StatusBadge status={status} />
+                  <StatusBadge status={inv.status} />
                 </div>
                 <ul className="mt-3 space-y-1 text-sm">
                   {inv.items.map((it, i) => (
@@ -481,11 +483,15 @@ export default function Fees() {
 
       <SectionTitle>Payment history</SectionTitle>
       <Card>
-        {data.myPayments.length === 0 ? (
+        {paymentsQ.isLoading ? (
+          <LoadingState />
+        ) : paymentsQ.error ? (
+          <ErrorState error={paymentsQ.error} onRetry={() => void paymentsQ.refetch()} />
+        ) : payments.length === 0 ? (
           <EmptyState icon={<Receipt className="h-5 w-5" />} title="No payments yet" />
         ) : (
           <ul className="divide-y divide-slate-100">
-            {data.myPayments.map((p) => (
+            {payments.map((p) => (
               <li key={p.id} className="flex items-center gap-3 px-4 py-3">
                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
                   <Receipt className="h-5 w-5" />
@@ -494,7 +500,7 @@ export default function Fees() {
                   <p className="font-medium text-slate-900">{money(p.amount)}</p>
                   <p className="truncate text-xs text-slate-500">
                     {formatDate(p.date)} · {MODE_LABEL[p.mode]} · {p.receiptNo}
-                    {p.invoiceId && invNumber.get(p.invoiceId) ? ` · ${invNumber.get(p.invoiceId)}` : p.note ? ` · ${p.note}` : ''}
+                    {p.invoiceNumber ? ` · ${p.invoiceNumber}` : p.note ? ` · ${p.note}` : ''}
                   </p>
                 </div>
                 <Button variant="ghost" size="sm" onClick={() => openInNewTab(`/print/receipt/${p.id}`)} icon={<Download className="h-4 w-4" />}>

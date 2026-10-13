@@ -13,7 +13,15 @@ describe('attendance', () => {
     const hid = String(w.hostel._id)
     const roster = await api().get(`/api/attendance?date=${today}&hostelId=${hid}`).set(w.auth).expect(200)
     expect(roster.body.items).toHaveLength(1)
-    expect(roster.body.items[0]).toMatchObject({ name: 'Aarav Sharma', status: null, onApprovedLeave: false, roomNumber: '101' })
+    expect(roster.body.items[0]).toMatchObject({
+      name: 'Aarav Sharma',
+      status: null,
+      onApprovedLeave: false,
+      roomNumber: '101',
+      phone: '9876543210',
+      guardianName: 'Ramesh',
+      guardianPhone: '9876500000',
+    })
 
     const hId = String(w.hosteler._id)
     const m = await api().put('/api/attendance').set(w.auth).send({ hostelerId: hId, date: today, status: 'late' }).expect(200)

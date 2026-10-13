@@ -45,9 +45,28 @@ describe('visitors', () => {
     expect(list.body.items[0].name).toBe('Suresh')
   })
 
+  it('stats: inside now, today, this month, average visit', async () => {
+    const w = await makeWorld({ plan: 'basic' })
+    const now = Date.now()
+    await Visitor.create([
+      { orgId: w.org._id, hostelId: w.hostel._id, hostelerId: w.hosteler._id, name: 'Inside', inTime: new Date(now - 10 * 60_000) },
+      { orgId: w.org._id, hostelId: w.hostel._id, hostelerId: w.hosteler._id, name: 'Done', inTime: new Date(now - 90 * 60_000), outTime: new Date(now - 30 * 60_000) },
+      { orgId: w.org._id, hostelId: w.hostel._id, hostelerId: w.hosteler._id, name: 'Old', inTime: new Date('2020-01-01T10:00:00'), outTime: new Date('2020-01-01T10:30:00') },
+    ])
+    const st = await api().get(`/api/visitors/stats?hostelId=${w.hostel._id}`).set(w.auth).expect(200)
+    expect(st.body).toMatchObject({ inside: 1, completed: 2, avgDurationMinutes: 45 })
+    expect(st.body.today).toBeGreaterThanOrEqual(1)
+    expect(st.body.thisMonth).toBeGreaterThanOrEqual(st.body.today)
+    await api().get('/api/visitors/stats?hostelId=nope').set(w.auth).expect(400)
+    const other = await makeOrg()
+    const o = await api().get('/api/visitors/stats').set(other.auth).expect(200)
+    expect(o.body).toMatchObject({ inside: 0, today: 0, thisMonth: 0, completed: 0, avgDurationMinutes: null })
+  })
+
   it('plan gating and isolation', async () => {
     const free = await makeWorld({ plan: 'free' })
     await api().get('/api/visitors').set(free.auth).expect(402)
+    await api().get('/api/visitors/stats').set(free.auth).expect(402)
 
     const w = await makeWorld()
     const v = await Visitor.create({ orgId: w.org._id, hostelId: w.hostel._id, hostelerId: w.hosteler._id, name: 'Guest' })

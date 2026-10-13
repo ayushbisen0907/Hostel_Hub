@@ -6,7 +6,8 @@ import { Hosteler } from '../src/models/Hosteler.js'
 import { Hostel } from '../src/models/Hostel.js'
 import { Invoice } from '../src/models/Invoice.js'
 import { Payment } from '../src/models/Payment.js'
-import { Activity, Complaint, Expense, Leave } from '../src/models/Operations.js'
+import { Room } from '../src/models/Room.js'
+import { Activity, Complaint, Expense, Leave, MealOptOut } from '../src/models/Operations.js'
 import { lastMonths } from '../src/modules/dashboard/routes.js'
 
 type Id = mongoose.Types.ObjectId
@@ -71,6 +72,30 @@ describe('dashboard', () => {
     expect(d.last6Months).toHaveLength(6)
     expect(d.last6Months[5]).toEqual({ month: w.cur, collected: 4000, expenses: 1500 })
     expect(d.last6Months[4]).toEqual({ month: w.prev, collected: 6000, expenses: 3000 })
+  })
+
+  it('reports high-priority complaints, maintenance beds, setup progress, mess headcount and bed labels', async () => {
+    const w = await moneyWorld()
+    const o = w.org._id
+    await Complaint.create({ orgId: o, hostelId: w.hostel._id, category: 'plumbing', title: 'Flood', priority: 'high' })
+    await Complaint.create({ orgId: o, hostelId: w.hostel._id, category: 'plumbing', title: 'Drip', priority: 'low' })
+    const { room } = await makeRoom(o, w.hostel._id, '202', 3)
+    await Room.updateOne({ _id: room._id }, { status: 'maintenance' })
+    const { hosteler: eater } = await makeHosteler(o, (await Hostel.findById(w.hostel._id))!, { name: 'Eater', messOpted: true })
+    const date = daysFromNow(1)
+    await MealOptOut.create({ orgId: o, hostelId: w.hostel._id, hostelerId: eater._id, date, meal: 'lunch' })
+
+    const r = await api().get('/api/dashboard').query({ meal: 'lunch', date }).set(w.auth).expect(200)
+    expect(r.body.openComplaints).toBe(2)
+    expect(r.body.highPriorityComplaints).toBe(1)
+    expect(r.body.maintenanceBeds).toBe(3)
+    expect(r.body.occupancy.total).toBe(2) // maintenance beds excluded
+    expect(r.body.setup).toEqual({ rooms: 2, hostelers: 2, invoices: 3 })
+    expect(r.body.mess).toEqual({ meal: 'lunch', date, members: 2, expected: 1 })
+    expect(r.body.topDues[0]).toMatchObject({ roomNumber: '101', bedLabel: 'A' })
+    const d = await api().get('/api/dashboard').set(w.auth).expect(200)
+    expect(['breakfast', 'lunch', 'snacks', 'dinner']).toContain(d.body.mess.meal)
+    await api().get('/api/dashboard').query({ meal: 'brunch' }).set(w.auth).expect(400)
   })
 
   it('scopes by hostel and isolates organizations', async () => {

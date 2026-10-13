@@ -1,8 +1,17 @@
-import { useMemo, useState, type ReactNode } from 'react'
-import { endOfMonth, format, parseISO } from 'date-fns'
-import { BadgeCheck, Banknote, Pencil, Phone, Plus, Power, Trash2, UserCog, Users, Wallet } from 'lucide-react'
-import { useStore } from '@/store'
-import { inScope, useHostelName, useScope } from '@/store/selectors'
+import { useEffect, useState, type ReactNode } from 'react'
+import { BadgeCheck, Banknote, Loader2, Pencil, Phone, Plus, Power, Trash2, UserCog, Users, Wallet } from 'lucide-react'
+import { useHostelName, useScope } from '@/api/common'
+import {
+  DIRECTORY_ROLES,
+  useCreateStaff,
+  useDeleteStaff,
+  usePaySalaries,
+  useStaffList,
+  useUpdateStaff,
+  type DirectoryRole,
+  type StaffMember,
+} from '@/api/staff'
+import type { PaymentMode } from '@/api/types'
 import {
   Avatar,
   Badge,
@@ -11,8 +20,11 @@ import {
   EmptyState,
   Field,
   Input,
+  LoadingState,
+  ErrorState,
   Modal,
   PageHeader,
+  QueryView,
   SearchInput,
   Select,
   StatCard,
@@ -23,13 +35,11 @@ import {
   THead,
   TR,
   confirm,
-  toast,
 } from '@/components/ui'
 import { cn, currentMonth, formatDate, formatMoney, formatMonth, titleCase, today } from '@/lib/utils'
-import type { Expense, PaymentMode, Staff as StaffMember, StaffRole } from '@/types'
-import { HostelSelect, STAFF_ROLES, useHostelPicker } from './_ops'
+import { HostelSelect, useHostelPicker } from './_ops'
 
-const ROLE_TONE: Record<StaffRole, 'blue' | 'violet' | 'green' | 'amber' | 'red' | 'slate'> = {
+const ROLE_TONE: Record<DirectoryRole, 'blue' | 'violet' | 'green' | 'amber' | 'red' | 'slate'> = {
   manager: 'violet',
   warden: 'blue',
   accountant: 'green',
@@ -38,65 +48,59 @@ const ROLE_TONE: Record<StaffRole, 'blue' | 'violet' | 'green' | 'amber' | 'red'
   cleaner: 'slate',
 }
 
-const salaryNote = (month: string) => `Salary ${formatMonth(month)}`
-
-function isPaid(expenses: Expense[], s: StaffMember, month: string) {
-  const note = salaryNote(month)
-  return expenses.some((e) => e.category === 'salary' && e.note === note && e.paidTo === s.name && e.hostelId === s.hostelId)
-}
-
 export default function Staff() {
   const scope = useScope()
-  const staff = useStore((s) => s.staff)
-  const expenses = useStore((s) => s.expenses)
-  const updateStaff = useStore((s) => s.updateStaff)
-  const deleteStaff = useStore((s) => s.deleteStaff)
   const hostelName = useHostelName()
-  const [role, setRole] = useState<StaffRole | 'all'>('all')
+  const month = currentMonth()
+  const query = useStaffList({ hostelId: scope, month })
+  const update = useUpdateStaff()
+  const del = useDeleteStaff()
+  const [role, setRole] = useState<DirectoryRole | 'all'>('all')
   const [q, setQ] = useState('')
   const [showInactive, setShowInactive] = useState(false)
   const [editing, setEditing] = useState<StaffMember | 'new' | null>(null)
   const [payOpen, setPayOpen] = useState(false)
 
-  const month = currentMonth()
-  const scoped = useMemo(() => staff.filter((s) => inScope(s.hostelId, scope)), [staff, scope])
+  const scoped = query.data?.items ?? []
   const active = scoped.filter((s) => s.active)
   const payroll = active.reduce((a, s) => a + s.salary, 0)
-  const paidThisMonth = active.filter((s) => isPaid(expenses, s, month))
+  const paidThisMonth = active.filter((s) => s.paidThisMonth)
   const paidAmount = paidThisMonth.reduce((a, s) => a + s.salary, 0)
 
+  const s = q.trim().toLowerCase()
   const rows = scoped
-    .filter((s) => showInactive || s.active)
-    .filter((s) => role === 'all' || s.role === role)
-    .filter((s) => !q || s.name.toLowerCase().includes(q.toLowerCase()) || s.phone.includes(q))
-    .sort((a, b) => Number(b.active) - Number(a.active) || STAFF_ROLES.indexOf(a.role) - STAFF_ROLES.indexOf(b.role) || a.name.localeCompare(b.name))
+    .filter((x) => showInactive || x.active)
+    .filter((x) => role === 'all' || x.role === role)
+    .filter((x) => !s || x.name.toLowerCase().includes(s) || x.phone.includes(s))
+    .sort(
+      (a, b) =>
+        Number(b.active) - Number(a.active) || DIRECTORY_ROLES.indexOf(a.role) - DIRECTORY_ROLES.indexOf(b.role) || a.name.localeCompare(b.name),
+    )
 
-  const roleCounts = STAFF_ROLES.map((r) => ({ r, n: active.filter((s) => s.role === r).length }))
+  const roleCounts = DIRECTORY_ROLES.map((r) => ({ r, n: active.filter((x) => x.role === r).length }))
 
-  const toggleActive = async (s: StaffMember) => {
-    if (s.active) {
+  const toggleActive = async (m: StaffMember) => {
+    if (m.active) {
       const ok = await confirm({
-        title: `Deactivate ${s.name}?`,
+        title: `Deactivate ${m.name}?`,
         message: 'Inactive staff are excluded from payroll and complaint assignment. You can reactivate them later.',
         confirmText: 'Deactivate',
         danger: true,
       })
       if (!ok) return
     }
-    updateStaff(s.id, { active: !s.active })
-    toast.success(`${s.name} ${s.active ? 'deactivated' : 'reactivated'}`)
+    update.mutate({ id: m.id, body: { active: !m.active }, success: `${m.name} ${m.active ? 'deactivated' : 'reactivated'}` })
   }
 
-  const remove = async (s: StaffMember) => {
+  const remove = async (m: StaffMember) => {
     const ok = await confirm({
-      title: `Delete ${s.name}?`,
+      title: `Delete ${m.name}?`,
       message: 'This permanently removes the staff record. Past salary expenses are kept.',
       confirmText: 'Delete',
       danger: true,
     })
     if (!ok) return
-    deleteStaff(s.id)
-    toast.success('Staff member deleted')
+    del.mutate(m.id)
   }
 
   return (
@@ -168,90 +172,99 @@ export default function Staff() {
             <Switch checked={showInactive} onChange={setShowInactive} label="Show inactive" />
           </div>
         </div>
-        {rows.length === 0 ? (
-          <EmptyState
-            icon={<UserCog className="h-6 w-6" />}
-            title="No staff found"
-            description="Add your wardens, cooks and security guards to manage payroll and assign complaints."
-            action={
-              <Button icon={<Plus className="h-4 w-4" />} onClick={() => setEditing('new')}>
-                Add staff
-              </Button>
-            }
-          />
-        ) : (
-          <Table>
-            <THead>
-              <tr>
-                <TH>Name</TH>
-                <TH>Role</TH>
-                {scope === 'all' && <TH>Hostel</TH>}
-                <TH>Joined</TH>
-                <TH className="text-right">Salary</TH>
-                <TH>{formatMonth(month)}</TH>
-                <TH className="text-right">Actions</TH>
-              </tr>
-            </THead>
-            <tbody>
-              {rows.map((s) => {
-                const paid = isPaid(expenses, s, month)
-                return (
-                  <TR key={s.id} className={cn(!s.active && 'opacity-60')}>
-                    <TD>
-                      <div className="flex items-center gap-3">
-                        <Avatar name={s.name} size="sm" />
-                        <div className="min-w-0">
-                          <p className="truncate font-medium text-slate-900">
-                            {s.name}
-                            {!s.active && (
-                              <Badge className="ml-2" tone="slate">
-                                Inactive
-                              </Badge>
-                            )}
-                          </p>
-                          <a href={`tel:${s.phone}`} className="flex items-center gap-1 text-xs text-slate-500 hover:text-brand-600">
-                            <Phone className="h-3 w-3" />
-                            {s.phone || '—'}
-                          </a>
-                        </div>
-                      </div>
-                    </TD>
-                    <TD>
-                      <Badge tone={ROLE_TONE[s.role]}>{titleCase(s.role)}</Badge>
-                    </TD>
-                    {scope === 'all' && <TD className="whitespace-nowrap">{hostelName(s.hostelId)}</TD>}
-                    <TD className="whitespace-nowrap text-xs">{formatDate(s.joinDate)}</TD>
-                    <TD className="whitespace-nowrap text-right font-medium text-slate-900">{formatMoney(s.salary)}</TD>
-                    <TD>
-                      {paid ? (
-                        <Badge tone="green">
-                          <BadgeCheck className="h-3 w-3" /> Paid
-                        </Badge>
-                      ) : s.active ? (
-                        <Badge tone="amber">Unpaid</Badge>
-                      ) : (
-                        <span className="text-xs text-slate-400">—</span>
-                      )}
-                    </TD>
-                    <TD className="text-right">
-                      <div className="flex justify-end gap-1">
-                        <ActionBtn label="Edit" onClick={() => setEditing(s)}>
-                          <Pencil className="h-4 w-4" />
-                        </ActionBtn>
-                        <ActionBtn label={s.active ? 'Deactivate' : 'Reactivate'} onClick={() => toggleActive(s)}>
-                          <Power className={cn('h-4 w-4', s.active ? '' : 'text-emerald-600')} />
-                        </ActionBtn>
-                        <ActionBtn label="Delete" danger onClick={() => remove(s)}>
-                          <Trash2 className="h-4 w-4" />
-                        </ActionBtn>
-                      </div>
-                    </TD>
-                  </TR>
-                )
-              })}
-            </tbody>
-          </Table>
-        )}
+        <QueryView query={query}>
+          {() =>
+            rows.length === 0 ? (
+              <EmptyState
+                icon={<UserCog className="h-6 w-6" />}
+                title="No staff found"
+                description="Add your wardens, cooks and security guards to manage payroll and assign complaints."
+                action={
+                  <Button icon={<Plus className="h-4 w-4" />} onClick={() => setEditing('new')}>
+                    Add staff
+                  </Button>
+                }
+              />
+            ) : (
+              <Table>
+                <THead>
+                  <tr>
+                    <TH>Name</TH>
+                    <TH>Role</TH>
+                    {scope === 'all' && <TH>Hostel</TH>}
+                    <TH>Joined</TH>
+                    <TH className="text-right">Salary</TH>
+                    <TH>{formatMonth(month)}</TH>
+                    <TH className="text-right">Actions</TH>
+                  </tr>
+                </THead>
+                <tbody>
+                  {rows.map((m) => {
+                    const toggling = update.isPending && update.variables?.id === m.id
+                    const deleting = del.isPending && del.variables === m.id
+                    return (
+                      <TR key={m.id} className={cn(!m.active && 'opacity-60', deleting && 'opacity-40')}>
+                        <TD>
+                          <div className="flex items-center gap-3">
+                            <Avatar name={m.name} size="sm" />
+                            <div className="min-w-0">
+                              <p className="truncate font-medium text-slate-900">
+                                {m.name}
+                                {!m.active && (
+                                  <Badge className="ml-2" tone="slate">
+                                    Inactive
+                                  </Badge>
+                                )}
+                              </p>
+                              <a href={`tel:${m.phone}`} className="flex items-center gap-1 text-xs text-slate-500 hover:text-brand-600">
+                                <Phone className="h-3 w-3" />
+                                {m.phone || '—'}
+                              </a>
+                            </div>
+                          </div>
+                        </TD>
+                        <TD>
+                          <Badge tone={ROLE_TONE[m.role]}>{titleCase(m.role)}</Badge>
+                        </TD>
+                        {scope === 'all' && <TD className="whitespace-nowrap">{hostelName(m.hostelId)}</TD>}
+                        <TD className="whitespace-nowrap text-xs">{formatDate(m.joinDate)}</TD>
+                        <TD className="whitespace-nowrap text-right font-medium text-slate-900">{formatMoney(m.salary)}</TD>
+                        <TD>
+                          {m.paidThisMonth ? (
+                            <Badge tone="green">
+                              <BadgeCheck className="h-3 w-3" /> Paid
+                            </Badge>
+                          ) : m.active ? (
+                            <Badge tone="amber">Unpaid</Badge>
+                          ) : (
+                            <span className="text-xs text-slate-400">—</span>
+                          )}
+                        </TD>
+                        <TD className="text-right">
+                          <div className="flex justify-end gap-1">
+                            <ActionBtn label="Edit" onClick={() => setEditing(m)}>
+                              <Pencil className="h-4 w-4" />
+                            </ActionBtn>
+                            <ActionBtn label={m.active ? 'Deactivate' : 'Reactivate'} onClick={() => toggleActive(m)} disabled={toggling}>
+                              {toggling ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Power className={cn('h-4 w-4', m.active ? '' : 'text-emerald-600')} />
+                              )}
+                            </ActionBtn>
+                            <ActionBtn label="Delete" danger onClick={() => remove(m)} disabled={deleting}>
+                              <Trash2 className="h-4 w-4" />
+                            </ActionBtn>
+                          </div>
+                        </TD>
+                      </TR>
+                    )
+                  })}
+                </tbody>
+              </Table>
+            )
+          }
+        </QueryView>
       </Card>
 
       {editing && <StaffModal staff={editing === 'new' ? null : editing} onClose={() => setEditing(null)} />}
@@ -260,15 +273,28 @@ export default function Staff() {
   )
 }
 
-function ActionBtn({ label, onClick, danger, children }: { label: string; onClick: () => void; danger?: boolean; children: ReactNode }) {
+function ActionBtn({
+  label,
+  onClick,
+  danger,
+  disabled,
+  children,
+}: {
+  label: string
+  onClick: () => void
+  danger?: boolean
+  disabled?: boolean
+  children: ReactNode
+}) {
   return (
     <button
       type="button"
       title={label}
       aria-label={label}
       onClick={onClick}
+      disabled={disabled}
       className={cn(
-        'inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition',
+        'inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition disabled:cursor-not-allowed disabled:opacity-50',
         danger ? 'hover:bg-red-50 hover:text-red-600' : 'hover:bg-slate-100 hover:text-slate-800',
       )}
     >
@@ -279,22 +305,23 @@ function ActionBtn({ label, onClick, danger, children }: { label: string; onClic
 
 function StaffModal({ staff, onClose }: { staff: StaffMember | null; onClose: () => void }) {
   const { hostelId: defaultHostel } = useHostelPicker()
-  const addStaff = useStore((s) => s.addStaff)
-  const updateStaff = useStore((s) => s.updateStaff)
+  const create = useCreateStaff()
+  const update = useUpdateStaff()
   const [hostelId, setHostelId] = useState(staff?.hostelId ?? '')
   const [name, setName] = useState(staff?.name ?? '')
   const [phone, setPhone] = useState(staff?.phone ?? '')
-  const [role, setRole] = useState<StaffRole>(staff?.role ?? 'warden')
+  const [role, setRole] = useState<DirectoryRole>(staff?.role ?? 'warden')
   const [salary, setSalary] = useState(staff ? String(staff.salary) : '')
   const [joinDate, setJoinDate] = useState(staff?.joinDate ?? today())
   const [active, setActive] = useState(staff?.active ?? true)
   const [err, setErr] = useState<Record<string, string>>({})
-  const hid = hostelId || defaultHostel
+  const hid = hostelId || defaultHostel || ''
+  const saving = create.isPending || update.isPending
 
   const submit = () => {
     const e: Record<string, string> = {}
     if (!hid) e.hostel = 'Select a hostel'
-    if (!name.trim()) e.name = 'Name is required'
+    if (name.trim().length < 2) e.name = 'Name is required'
     const digits = phone.replace(/\D/g, '')
     if (!digits) e.phone = 'Phone is required'
     else if (digits.length < 10) e.phone = 'Enter a valid phone number'
@@ -304,14 +331,8 @@ function StaffModal({ staff, onClose }: { staff: StaffMember | null; onClose: ()
     setErr(e)
     if (Object.keys(e).length) return
     const data = { hostelId: hid, name: name.trim(), phone: phone.trim(), role, salary: Math.round(sal), joinDate, active }
-    if (staff) {
-      updateStaff(staff.id, data)
-      toast.success('Staff details updated')
-    } else {
-      addStaff(data)
-      toast.success(`${data.name} added`)
-    }
-    onClose()
+    if (staff) update.mutate({ id: staff.id, body: data }, { onSuccess: onClose })
+    else create.mutate(data, { onSuccess: onClose })
   }
 
   return (
@@ -321,22 +342,24 @@ function StaffModal({ staff, onClose }: { staff: StaffMember | null; onClose: ()
       title={staff ? 'Edit staff' : 'Add staff'}
       footer={
         <>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" onClick={onClose} disabled={saving}>
             Cancel
           </Button>
-          <Button onClick={submit}>{staff ? 'Save changes' : 'Add staff'}</Button>
+          <Button onClick={submit} loading={saving}>
+            {staff ? 'Save changes' : 'Add staff'}
+          </Button>
         </>
       }
     >
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Full name" required error={err.name} className="sm:col-span-2">
-          <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Ramesh Kumar" />
+          <Input autoFocus maxLength={80} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Ramesh Kumar" />
         </Field>
         <Field label="Phone" required error={err.phone}>
-          <Input value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="tel" placeholder="10-digit mobile" />
+          <Input value={phone} maxLength={20} onChange={(e) => setPhone(e.target.value)} inputMode="tel" placeholder="10-digit mobile" />
         </Field>
         <Field label="Role" required>
-          <Select value={role} onChange={(e) => setRole(e.target.value as StaffRole)} options={STAFF_ROLES.map((r) => ({ value: r, label: titleCase(r) }))} />
+          <Select value={role} onChange={(e) => setRole(e.target.value as DirectoryRole)} options={DIRECTORY_ROLES.map((r) => ({ value: r, label: titleCase(r) }))} />
         </Field>
         <Field label="Hostel" required error={err.hostel}>
           <HostelSelect value={hid} onChange={setHostelId} />
@@ -357,20 +380,23 @@ function StaffModal({ staff, onClose }: { staff: StaffMember | null; onClose: ()
 
 function PaySalariesModal({ onClose }: { onClose: () => void }) {
   const scope = useScope()
-  const staff = useStore((s) => s.staff)
-  const expenses = useStore((s) => s.expenses)
-  const addExpense = useStore((s) => s.addExpense)
   const hostelName = useHostelName()
   const [month, setMonth] = useState(currentMonth())
   const [mode, setMode] = useState<PaymentMode>('bank')
+  const query = useStaffList({ hostelId: scope, month, active: 'true' })
+  const pay = usePaySalaries()
 
-  const active = staff.filter((s) => s.active && inScope(s.hostelId, scope)).sort((a, b) => a.name.localeCompare(b.name))
-  const pending = active.filter((s) => !isPaid(expenses, s, month))
-  const [selected, setSelected] = useState<Set<string>>(() => new Set(active.map((s) => s.id)))
-  const toPay = pending.filter((s) => selected.has(s.id))
+  const active = [...(query.data?.items ?? [])].sort((a, b) => a.name.localeCompare(b.name))
+  const pending = active.filter((s) => !s.paidThisMonth)
+  const [selected, setSelected] = useState<Set<string> | null>(null)
+  // select everyone the first time the list arrives
+  useEffect(() => {
+    if (selected === null && query.data) setSelected(new Set(query.data.items.map((s) => s.id)))
+  }, [query.data, selected])
+  const toPay = pending.filter((s) => selected?.has(s.id) && s.salary > 0)
   const total = toPay.reduce((a, s) => a + s.salary, 0)
 
-  const pay = async () => {
+  const doPay = async () => {
     if (!toPay.length) return
     const ok = await confirm({
       title: `Pay ${toPay.length} salar${toPay.length > 1 ? 'ies' : 'y'}?`,
@@ -378,17 +404,7 @@ function PaySalariesModal({ onClose }: { onClose: () => void }) {
       confirmText: 'Record payments',
     })
     if (!ok) return
-    const date = month === currentMonth() ? today() : format(endOfMonth(parseISO(`${month}-01`)), 'yyyy-MM-dd')
-    // re-check against fresh state to avoid duplicates
-    const fresh = useStore.getState().expenses
-    let n = 0
-    for (const s of toPay) {
-      if (isPaid(fresh, s, month)) continue
-      addExpense({ hostelId: s.hostelId, category: 'salary', amount: s.salary, date, paidTo: s.name, mode, note: salaryNote(month) })
-      n++
-    }
-    toast.success(`${n} salary payment${n === 1 ? '' : 's'} recorded for ${formatMonth(month)}`)
-    onClose()
+    pay.mutate({ month, mode, staffIds: toPay.map((s) => s.id) }, { onSuccess: onClose })
   }
 
   return (
@@ -400,10 +416,10 @@ function PaySalariesModal({ onClose }: { onClose: () => void }) {
       description="Creates one salary expense per staff member. Staff already paid for the month are skipped."
       footer={
         <>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" onClick={onClose} disabled={pay.isPending}>
             Cancel
           </Button>
-          <Button variant="success" icon={<Banknote className="h-4 w-4" />} onClick={pay} disabled={!toPay.length}>
+          <Button variant="success" icon={<Banknote className="h-4 w-4" />} onClick={doPay} loading={pay.isPending} disabled={!toPay.length || query.isFetching}>
             Pay {formatMoney(total)}
           </Button>
         </>
@@ -427,23 +443,27 @@ function PaySalariesModal({ onClose }: { onClose: () => void }) {
           </Field>
         </div>
 
-        {active.length === 0 ? (
+        {query.isLoading ? (
+          <LoadingState className="py-8" />
+        ) : query.error ? (
+          <ErrorState error={query.error} onRetry={() => void query.refetch()} className="py-8" />
+        ) : active.length === 0 ? (
           <p className="text-sm text-slate-500">No active staff in this scope.</p>
         ) : (
-          <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+          <ul className={cn('divide-y divide-slate-100 rounded-lg border border-slate-200', query.isFetching && 'opacity-70')}>
             {active.map((s) => {
-              const paid = isPaid(expenses, s, month)
+              const paid = s.paidThisMonth
               return (
                 <li key={s.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
                   <label className={cn('flex min-w-0 items-center gap-3', paid ? 'cursor-default' : 'cursor-pointer')}>
                     <input
                       type="checkbox"
                       className="h-4 w-4 rounded border-slate-300 text-brand-600"
-                      disabled={paid}
-                      checked={paid || selected.has(s.id)}
+                      disabled={paid || s.salary <= 0}
+                      checked={paid || (!!selected?.has(s.id) && s.salary > 0)}
                       onChange={(e) =>
                         setSelected((cur) => {
-                          const next = new Set(cur)
+                          const next = new Set(cur ?? [])
                           if (e.target.checked) next.add(s.id)
                           else next.delete(s.id)
                           return next
@@ -455,6 +475,7 @@ function PaySalariesModal({ onClose }: { onClose: () => void }) {
                       <p className="text-xs text-slate-500">
                         {titleCase(s.role)}
                         {scope === 'all' ? ` · ${hostelName(s.hostelId)}` : ''}
+                        {s.salary <= 0 ? ' · no salary set' : ''}
                       </p>
                     </div>
                   </label>

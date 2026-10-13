@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   BedDouble,
@@ -16,10 +17,15 @@ import {
   UserCheck,
   UserPlus,
 } from 'lucide-react'
-import { useStore } from '@/store'
-import { formatLoginId } from '@/lib/auth'
-import { bedLabel, useHostelName, useScope, useScopedHostelers, useVacantBeds } from '@/store/selectors'
-import type { DocumentType, ID, PaymentMode, Room } from '@/types'
+import { errorMessage } from '@/api/client'
+import { useHostels, useOrg, useScope, useSettings } from '@/api/common'
+import { useApiMutation } from '@/api/query'
+import { useCan } from '@/api/session'
+import { useVacantBeds, type VacantBed } from '@/api/rooms'
+import { documentsApi } from '@/api/documents'
+import { feesApi } from '@/api/fees'
+import { HOSTELER_INVALIDATE, hostelersApi, useHostelers, type HostelerRow } from '@/api/hostelers'
+import type { DocumentType, ID, PaymentMode } from '@/api/types'
 import {
   Avatar,
   Badge,
@@ -28,10 +34,12 @@ import {
   CardHeader,
   DescriptionList,
   EmptyState,
+  ErrorState,
   Field,
   FileDrop,
   IconButton,
   Input,
+  LoadingState,
   PageHeader,
   Select,
   Switch,
@@ -45,17 +53,24 @@ import {
   DOC_TYPE_LABELS,
   DOC_TYPE_OPTIONS,
   GuardianFields,
+  HostelerAvatar,
   IdProofFields,
   PAYMENT_MODE_OPTIONS,
   PersonalFields,
+  PhotoPicker,
   SectionTitle,
+  UPLOAD_ACCEPT,
+  UPLOAD_HINT,
+  acceptFile,
+  bedText,
+  cleanPhone,
+  copyText,
   emptyProfile,
   portalInviteText,
   portalInviteWhatsApp,
-  readFile,
+  profileBody,
   validateGuardian,
   validatePersonal,
-  type FilePayload,
   type ProfileErrors,
   type ProfileForm,
   type SetProfile,
@@ -66,19 +81,18 @@ const STEPS = ['Personal', 'Academic & guardian', 'ID & documents', 'Room & bed'
 interface PendingDoc {
   key: string
   type: DocumentType
-  file: FilePayload
+  file: File
+  preview: string | null
 }
 
 interface Done {
-  hostelerId: ID
-  name: string
-  phone: string
+  hosteler: HostelerRow
   loginId: string
   tempPassword: string
-  bed: string
   reserved: boolean
   receiptId: ID | null
-  docs: number
+  docsUploaded: number
+  failed: string[]
 }
 
 function guessDocType(name: string): DocumentType {
@@ -94,43 +108,62 @@ function guessDocType(name: string): DocumentType {
   return 'other'
 }
 
+/** Object URL for a local file (revoked on change/unmount). */
+function useLocalPreview(file: File | null) {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    if (!file) return setUrl(null)
+    const u = URL.createObjectURL(file)
+    setUrl(u)
+    return () => URL.revokeObjectURL(u)
+  }, [file])
+  return url
+}
+
 /* ------------------------------------------------------------------ */
 /* Pending reservations                                                */
 /* ------------------------------------------------------------------ */
 
 function Reservations() {
-  const hostelers = useScopedHostelers()
-  const rooms = useStore((s) => s.rooms)
-  const beds = useStore((s) => s.beds)
-  const confirmCheckIn = useStore((s) => s.confirmCheckIn)
-  const reserved = hostelers.filter((h) => h.status === 'reserved').sort((a, b) => a.checkInDate.localeCompare(b.checkInDate))
-  if (!reserved.length) return null
+  const scope = useScope()
+  const q = useHostelers({ status: 'reserved', hostelId: scope, limit: 100 })
+  const confirmIn = useApiMutation(hostelersApi.confirmCheckIn, {
+    invalidate: HOSTELER_INVALIDATE,
+    success: (h) => `${h.name} checked in`,
+  })
+  const reserved = [...(q.data?.items ?? [])].sort((a, b) => a.checkInDate.localeCompare(b.checkInDate))
+  if (q.error || !reserved.length) return null
 
   const doConfirm = async (id: ID, name: string) => {
     const ok = await confirm({ title: `Check in ${name}?`, message: 'The reservation will become an active stay starting today.', confirmText: 'Confirm check-in' })
-    if (!ok) return
-    confirmCheckIn(id, today())
-    toast.success(`${name} checked in`)
+    if (ok) confirmIn.mutate({ id, date: today() })
   }
 
   return (
     <Card className="mb-6">
-      <CardHeader title="Pending reservations" subtitle={`${reserved.length} resident(s) waiting to move in`} />
+      <CardHeader title="Pending reservations" subtitle={`${q.data?.total ?? reserved.length} resident(s) waiting to move in`} />
       <ul className="divide-y divide-slate-100">
         {reserved.map((h) => (
           <li key={h.id} className="flex flex-col gap-3 px-5 py-3 sm:flex-row sm:items-center">
             <Link to={`/app/hostelers/${h.id}`} className="flex min-w-0 flex-1 items-center gap-3">
-              <Avatar name={h.name} src={h.photo} size="sm" />
+              <HostelerAvatar h={h} />
               <div className="min-w-0">
                 <p className="truncate font-medium text-slate-900">{h.name}</p>
                 <p className="text-xs text-slate-500">
-                  {bedLabel({ rooms, beds }, h.bedId)} · expected {formatDate(h.checkInDate)}
+                  {bedText(h, 'No bed held')} · expected {formatDate(h.checkInDate)}
                 </p>
               </div>
             </Link>
             <div className="flex items-center gap-2">
               {h.checkInDate < today() && <Badge tone="amber">Overdue</Badge>}
-              <Button size="sm" variant="success" icon={<UserCheck className="h-4 w-4" />} onClick={() => doConfirm(h.id, h.name)}>
+              <Button
+                size="sm"
+                variant="success"
+                icon={<UserCheck className="h-4 w-4" />}
+                onClick={() => doConfirm(h.id, h.name)}
+                loading={confirmIn.isPending && confirmIn.variables?.id === h.id}
+                disabled={confirmIn.isPending}
+              >
                 Confirm check-in
               </Button>
             </div>
@@ -163,12 +196,7 @@ function Stepper({ step, onJump }: { step: number; onJump: (i: number) => void }
           const active = i === step
           return (
             <li key={label} className={cn('flex items-center', i < STEPS.length - 1 && 'flex-1')}>
-              <button
-                type="button"
-                disabled={i > step}
-                onClick={() => onJump(i)}
-                className="flex items-center gap-2 disabled:cursor-default"
-              >
+              <button type="button" disabled={i > step} onClick={() => onJump(i)} className="flex items-center gap-2 disabled:cursor-default">
                 <span
                   className={cn(
                     'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold',
@@ -194,35 +222,30 @@ function Stepper({ step, onJump }: { step: number; onJump: (i: number) => void }
 
 export default function CheckIn() {
   const navigate = useNavigate()
+  const can = useCan()
   const [params, setParams] = useSearchParams()
   const scope = useScope()
-  const hostels = useStore((s) => s.hostels)
-  const settings = useStore((s) => s.settings)
-  const allBeds = useStore((s) => s.beds)
-  const allRooms = useStore((s) => s.rooms)
-  const hostelers = useStore((s) => s.hostelers)
-  const admitHosteler = useStore((s) => s.admitHosteler)
-  const addDocument = useStore((s) => s.addDocument)
-  const hostelName = useHostelName()
-
-  const defaultHostel = scope !== 'all' ? scope : hostels[0]?.id ?? ''
+  const hostelsQ = useHostels()
+  const hostels = useMemo(() => hostelsQ.data ?? [], [hostelsQ.data])
+  const { data: org } = useOrg()
+  const settings = useSettings()
 
   const [step, setStep] = useState(0)
   const [done, setDone] = useState<Done | null>(null)
+  const [saving, setSaving] = useState<string | null>(null)
   const [profile, setProfile] = useState<ProfileForm>(emptyProfile)
+  const [photo, setPhoto] = useState<File | null>(null)
+  const photoPreview = useLocalPreview(photo)
   const [errors, setErrors] = useState<ProfileErrors>({})
   const [docs, setDocs] = useState<PendingDoc[]>([])
-  const [hostelId, setHostelId] = useState<ID>(defaultHostel)
-  const nextLoginId = useMemo(() => {
-    const h = hostels.find((x) => x.id === hostelId)
-    return h ? formatLoginId(h.code, h.hostelerSeq + 1) : '—'
-  }, [hostels, hostelId])
+  const [hostelId, setHostelId] = useState<ID>('')
   const [bedId, setBedId] = useState<ID | ''>('')
   const [reserveOnly, setReserveOnly] = useState(false)
   const [rent, setRent] = useState('')
-  const [deposit, setDeposit] = useState(String(settings.defaultSecurityDeposit))
+  const [deposit, setDeposit] = useState('')
+  const [depTouched, setDepTouched] = useState(false)
   const [collect, setCollect] = useState(true)
-  const [depAmount, setDepAmount] = useState(String(settings.defaultSecurityDeposit))
+  const [depAmount, setDepAmount] = useState('')
   const [depMode, setDepMode] = useState<PaymentMode>('upi')
   const [depRef, setDepRef] = useState('')
   const [messOpted, setMessOpted] = useState(false)
@@ -230,41 +253,53 @@ export default function CheckIn() {
   const [checkInDate, setCheckInDate] = useState(today())
   const [expectedOut, setExpectedOut] = useState('')
   const [notes, setNotes] = useState('')
+  const [checkingPhone, setCheckingPhone] = useState(false)
 
-  const vacant = useVacantBeds(hostelId || 'all')
-
-  // ?bed= preselect
-  const bedParam = params.get('bed')
+  // default hostel: top-bar scope, else the first one
   useEffect(() => {
-    if (!bedParam) return
-    const bed = allBeds.find((b) => b.id === bedParam)
-    const room = bed && allRooms.find((r) => r.id === bed.roomId)
-    if (!bed || !room) return
-    if (bed.hostelerId) {
+    if (!hostelId && hostels.length) setHostelId(scope !== 'all' && hostels.some((h) => h.id === scope) ? scope : hostels[0]!.id)
+  }, [hostelId, hostels, scope])
+
+  // default deposit from org settings once loaded
+  useEffect(() => {
+    if (org && !depTouched) {
+      setDeposit(String(org.settings.defaultSecurityDeposit))
+      setDepAmount(String(org.settings.defaultSecurityDeposit))
+    }
+  }, [org, depTouched])
+
+  const hostel = hostels.find((h) => h.id === hostelId)
+  const nextLoginId = hostel ? `${hostel.code}-${String(hostel.hostelerSeq + 1).padStart(4, '0')}` : '—'
+
+  const vacantQ = useVacantBeds(hostelId || 'all', !!hostelId)
+  const vacant = useMemo(() => vacantQ.data ?? [], [vacantQ.data])
+
+  // ?bed= preselect (looked up across all hostels)
+  const bedParam = params.get('bed')
+  const allVacantQ = useVacantBeds('all', !!bedParam)
+  useEffect(() => {
+    if (!bedParam || !allVacantQ.data) return
+    const b = allVacantQ.data.find((x) => x.id === bedParam)
+    if (!b) {
       toast.error('That bed is no longer vacant')
       return
     }
-    setHostelId(bed.hostelId)
-    setBedId(bed.id)
-    setRent(String(room.rentPerBed))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bedParam])
-
-  useEffect(() => {
-    if (!hostelId && hostels[0]) setHostelId(hostels[0].id)
-  }, [hostelId, hostels])
+    setHostelId(b.hostelId)
+    setBedId(b.id)
+    setRent(String(b.room.rentPerBed))
+  }, [bedParam, allVacantQ.data])
 
   const grouped = useMemo(() => {
-    const m = new Map<ID, { room: Room; beds: { id: ID; label: string }[] }>()
-    for (const { bed, room } of vacant) {
-      const g = m.get(room.id) ?? { room, beds: [] }
-      g.beds.push({ id: bed.id, label: bed.label })
-      m.set(room.id, g)
+    const m = new Map<ID, { room: VacantBed['room']; beds: { id: ID; label: string }[] }>()
+    for (const b of vacant) {
+      const g = m.get(b.roomId) ?? { room: b.room, beds: [] }
+      g.beds.push({ id: b.id, label: b.label })
+      m.set(b.roomId, g)
     }
     return [...m.values()]
   }, [vacant])
 
-  const selected = vacant.find((v) => v.bed.id === bedId)
+  const selected = vacant.find((v) => v.id === bedId)
   const depositNum = Math.max(0, Number(deposit) || 0)
 
   const set: SetProfile = (k, v) => {
@@ -272,7 +307,7 @@ export default function CheckIn() {
     if (errors[k]) setErrors((e) => ({ ...e, [k]: undefined }))
   }
 
-  const pickBed = (id: ID, room: Room) => {
+  const pickBed = (id: ID, room: VacantBed['room']) => {
     setBedId(id)
     setRent(String(room.rentPerBed))
   }
@@ -285,29 +320,20 @@ export default function CheckIn() {
   const validate = (s: number): boolean => {
     if (s === 0) {
       const e = validatePersonal(profile)
-      const phone = profile.phone.replace(/\D/g, '')
-      if (!e.phone && hostelers.some((h) => h.status !== 'checked_out' && h.phone.replace(/\D/g, '').endsWith(phone)))
-        e.phone = 'A current resident already uses this number'
       setErrors(e)
-      if (Object.keys(e).length) {
-        toast.error('Please fill the required details')
-        return false
-      }
+      if (Object.keys(e).length) return fail('Please fill the required details')
     }
     if (s === 1) {
       const e = validateGuardian(profile)
       setErrors(e)
-      if (Object.keys(e).length) {
-        toast.error('Guardian name and phone are required')
-        return false
-      }
+      if (Object.keys(e).length) return fail('Guardian name and phone are required')
     }
     if (s === 3) {
       if (!hostelId) return fail('Choose a hostel')
       if (!reserveOnly && !selected) return fail('Select a vacant bed, or choose "Reserve only"')
     }
     if (s === 4) {
-      if (!(Number(rent) >= 0) || rent === '') return fail('Enter the monthly rent')
+      if (rent === '' || !(Number(rent) >= 0)) return fail('Enter the monthly rent')
       if (!checkInDate) return fail('Choose a check-in date')
       if (expectedOut && expectedOut <= checkInDate) return fail('Expected check-out must be after check-in')
       if (collect && !(Number(depAmount) > 0)) return fail('Enter the deposit amount collected')
@@ -315,65 +341,115 @@ export default function CheckIn() {
     return true
   }
 
-  const next = () => {
+  /** Warn (server-side search) if a current resident already uses this phone. */
+  const phoneInUse = async (): Promise<boolean> => {
+    const phone = cleanPhone(profile.phone)
+    setCheckingPhone(true)
+    try {
+      const r = await hostelersApi.list({ q: phone, limit: 5 })
+      const clash = r.items.find((h) => cleanPhone(h.phone) === phone)
+      if (clash) {
+        setErrors((e) => ({ ...e, phone: `${clash.name} (${clash.loginId}) already uses this number` }))
+        toast.error('A current resident already uses this number')
+        return true
+      }
+    } catch {
+      // the check is a convenience; don't block admission if it fails
+    } finally {
+      setCheckingPhone(false)
+    }
+    return false
+  }
+
+  const next = async () => {
     if (!validate(step)) return
+    if (step === 0 && (await phoneInUse())) return
     setStep((s) => Math.min(s + 1, STEPS.length - 1))
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
   const back = () => setStep((s) => Math.max(s - 1, 0))
 
-  const addFiles = async (files: File[]) => {
+  const addFiles = (files: File[]) => {
     const out: PendingDoc[] = []
     for (const f of files) {
-      const p = await readFile(f)
-      if (p) out.push({ key: `${Date.now()}-${Math.random()}`, type: guessDocType(f.name), file: p })
+      if (!acceptFile(f)) continue
+      out.push({ key: `${Date.now()}-${Math.random()}`, type: guessDocType(f.name), file: f, preview: f.type.startsWith('image/') ? URL.createObjectURL(f) : null })
     }
     if (out.length) setDocs((d) => [...d, ...out])
   }
+  const removeDoc = (key: string) =>
+    setDocs((all) => {
+      const d = all.find((x) => x.key === key)
+      if (d?.preview) URL.revokeObjectURL(d.preview)
+      return all.filter((x) => x.key !== key)
+    })
 
-  const submit = () => {
+  const admit = useApiMutation(hostelersApi.admit, { invalidate: HOSTELER_INVALIDATE })
+
+  const submit = async () => {
     for (let i = 0; i < 5; i++) {
       if (!validate(i)) {
         setStep(i)
         return
       }
     }
-    const bed = reserveOnly ? (selected?.bed.id ?? null) : selected!.bed.id
-    const id = admitHosteler({
-      hosteler: {
-        ...profile,
-        name: profile.name.trim(),
-        email: profile.email.trim(),
+    const depositPayment = collect && Number(depAmount) > 0 ? { amount: Number(depAmount), mode: depMode, reference: depRef.trim() } : null
+    let res: Awaited<ReturnType<typeof hostelersApi.admit>>
+    try {
+      setSaving(reserveOnly ? 'Reserving…' : 'Checking in…')
+      res = await admit.mutateAsync({
+        ...profileBody(profile),
         hostelId,
+        bedId: (reserveOnly ? selected?.id : selected!.id) ?? null,
+        reserveOnly,
         checkInDate,
         expectedCheckOut: expectedOut || null,
         monthlyRent: Number(rent) || 0,
         securityDeposit: depositNum,
         messOpted,
         notes: notes.trim(),
-      },
-      bedId: bed,
-      reserveOnly,
-      depositPayment: collect && Number(depAmount) > 0 ? { amount: Number(depAmount), mode: depMode, reference: depRef.trim() } : null,
-      generateFirstInvoice: genInvoice && !reserveOnly,
-    })
-    for (const d of docs) {
-      addDocument({ hostelerId: id, type: d.type, ...d.file, verified: false, expiryDate: null })
+        depositPayment,
+        generateFirstInvoice: genInvoice && !reserveOnly,
+      })
+    } catch {
+      setSaving(null)
+      return // error already toasted by useApiMutation
     }
-    const st = useStore.getState()
-    const pay = st.payments.find((p) => p.hostelerId === id) ?? null
-    setDone({
-      hostelerId: id,
-      name: profile.name.trim(),
-      phone: profile.phone,
-      loginId: st.hostelers.find((h) => h.id === id)?.loginId ?? '',
-      tempPassword: st.hostelers.find((h) => h.id === id)?.tempPassword ?? '',
-      bed: bedLabel(st, st.hostelers.find((h) => h.id === id)?.bedId ?? null),
-      reserved: reserveOnly,
-      receiptId: pay?.id ?? null,
-      docs: docs.length,
-    })
-    toast.success(reserveOnly ? `Bed reserved for ${profile.name}` : `${profile.name} checked in`)
+
+    const id = res.hosteler.id
+    const failed: string[] = []
+    let hosteler = res.hosteler
+    if (photo) {
+      setSaving('Uploading photo…')
+      try {
+        hosteler = (await hostelersApi.uploadPhoto({ id, file: photo })).hosteler
+      } catch (e) {
+        failed.push(`Photo: ${errorMessage(e)}`)
+      }
+    }
+    let docsUploaded = 0
+    for (const [i, d] of docs.entries()) {
+      setSaving(`Uploading documents (${i + 1}/${docs.length})…`)
+      try {
+        await documentsApi.upload({ file: d.file, hostelerId: id, type: d.type })
+        docsUploaded++
+      } catch (e) {
+        failed.push(`${d.file.name}: ${errorMessage(e)}`)
+      }
+    }
+    let receiptId: ID | null = null
+    if (depositPayment && can('fees')) {
+      try {
+        receiptId = (await feesApi.payments({ hostelerId: id, kind: 'deposit', limit: 1 })).items[0]?.id ?? null
+      } catch {
+        receiptId = null
+      }
+    }
+    setSaving(null)
+    for (const d of docs) if (d.preview) URL.revokeObjectURL(d.preview)
+    setDone({ hosteler, loginId: res.credentials.loginId, tempPassword: res.credentials.tempPassword, reserved: reserveOnly, receiptId, docsUploaded, failed })
+    toast.success(reserveOnly ? `Bed reserved for ${hosteler.name}` : `${hosteler.name} checked in`)
+    if (failed.length) toast.error(`${failed.length} upload(s) failed — add them from the profile`)
     if (params.get('bed')) setParams({}, { replace: true })
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -382,11 +458,13 @@ export default function CheckIn() {
     setDone(null)
     setStep(0)
     setProfile(emptyProfile())
+    setPhoto(null)
     setErrors({})
     setDocs([])
     setBedId('')
     setReserveOnly(false)
     setRent('')
+    setDepTouched(false)
     setDeposit(String(settings.defaultSecurityDeposit))
     setCollect(true)
     setDepAmount(String(settings.defaultSecurityDeposit))
@@ -397,7 +475,11 @@ export default function CheckIn() {
     setCheckInDate(today())
     setExpectedOut('')
     setNotes('')
+    admit.reset()
   }
+
+  if (hostelsQ.isLoading) return <LoadingState />
+  if (hostelsQ.error) return <ErrorState error={hostelsQ.error} onRetry={() => void hostelsQ.refetch()} />
 
   if (!hostels.length) {
     return (
@@ -421,7 +503,8 @@ export default function CheckIn() {
 
   /* ---------------- success screen ---------------- */
   if (done) {
-    const invite = { name: done.name, phone: done.phone, loginId: done.loginId, tempPassword: done.tempPassword, hostelName: hostelName(hostelId) }
+    const h = done.hosteler
+    const invite = { name: h.name, phone: h.phone, loginId: done.loginId, tempPassword: done.tempPassword, hostelName: h.hostelName ?? hostel?.name ?? 'the hostel' }
     return (
       <>
         <PageHeader title={done.reserved ? 'Bed reserved' : 'Check-in complete'} />
@@ -430,27 +513,41 @@ export default function CheckIn() {
             <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50">
               <CheckCircle2 className="h-9 w-9 text-emerald-500" />
             </div>
-            <h2 className="text-xl font-bold text-slate-900">{done.reserved ? `${done.name}'s bed is reserved` : `Welcome, ${done.name}!`}</h2>
+            <h2 className="text-xl font-bold text-slate-900">{done.reserved ? `${h.name}'s bed is reserved` : `Welcome, ${h.name}!`}</h2>
             <p className="mt-1 text-sm text-slate-500">
-              {done.bed} · {hostelName(hostelId)}
+              {bedText(h, done.reserved ? 'No bed held' : 'Not allotted')} · {h.hostelName ?? '—'}
             </p>
           </div>
           <div className="mt-6 rounded-xl border border-slate-200 p-5">
             <DescriptionList
               items={[
                 { label: 'Status', value: done.reserved ? 'Reserved – check in later' : 'Checked in' },
-                { label: done.reserved ? 'Expected check-in' : 'Check-in date', value: formatDate(checkInDate) },
-                { label: 'Monthly rent', value: formatMoney(Number(rent) || 0) },
-                { label: 'Security deposit', value: formatMoney(depositNum) },
+                { label: done.reserved ? 'Expected check-in' : 'Check-in date', value: formatDate(h.checkInDate) },
+                { label: 'Monthly rent', value: formatMoney(h.monthlyRent) },
+                { label: 'Security deposit', value: formatMoney(h.securityDeposit) },
                 { label: 'Deposit collected', value: collect ? `${formatMoney(Number(depAmount) || 0)} (${depMode.toUpperCase()})` : 'Not yet' },
-                { label: 'Documents uploaded', value: String(done.docs) },
+                { label: 'Documents uploaded', value: String(done.docsUploaded) },
               ]}
             />
           </div>
+          {done.failed.length > 0 && (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+              <p className="flex items-center gap-2 font-semibold">
+                <AlertTriangle className="h-4 w-4" /> Some uploads failed
+              </p>
+              <ul className="mt-1 list-disc pl-5 text-xs">
+                {done.failed.map((f) => (
+                  <li key={f}>{f}</li>
+                ))}
+              </ul>
+              <p className="mt-1 text-xs">You can upload them again from the resident's profile.</p>
+            </div>
+          )}
           <div className="mt-4 rounded-xl bg-brand-50 p-4 sm:p-5">
             <p className="text-sm font-semibold text-brand-900">Hosteler portal login</p>
             <p className="mt-1 text-xs text-brand-700">
-              Send these to {done.name.split(' ')[0]}. On first login they'll be asked to create their own password, and the temporary one stops working.
+              Send these to {h.name.split(' ')[0]}. On first login they'll be asked to create their own password, and the temporary one stops working.
+              This password is shown only once.
             </p>
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="rounded-lg bg-white px-3 py-2.5">
@@ -468,19 +565,13 @@ export default function CheckIn() {
                   Send login on WhatsApp
                 </Button>
               </a>
-              <Button
-                variant="outline"
-                icon={<Copy className="h-4 w-4" />}
-                onClick={() => {
-                  void navigator.clipboard?.writeText(portalInviteText(invite)).then(() => toast.success('Login details copied'))
-                }}
-              >
+              <Button variant="outline" icon={<Copy className="h-4 w-4" />} onClick={() => void copyText(portalInviteText(invite), 'Login details copied')}>
                 Copy message
               </Button>
             </div>
           </div>
           <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-center">
-            <Button variant="outline" onClick={() => navigate(`/app/hostelers/${done.hostelerId}`)}>
+            <Button variant="outline" onClick={() => navigate(`/app/hostelers/${h.id}`)}>
               View profile
             </Button>
             {done.receiptId && (
@@ -505,7 +596,12 @@ export default function CheckIn() {
     body = (
       <>
         <SectionTitle hint="Basic details of the resident.">Personal details</SectionTitle>
-        <PersonalFields f={profile} set={set} errors={errors} />
+        <PersonalFields
+          f={profile}
+          set={set}
+          errors={errors}
+          photo={<PhotoPicker name={profile.name} src={photoPreview} onPick={setPhoto} onRemove={() => setPhoto(null)} />}
+        />
       </>
     )
   } else if (step === 1) {
@@ -528,40 +624,42 @@ export default function CheckIn() {
           <SectionTitle>ID proof</SectionTitle>
           <IdProofFields f={profile} set={set} />
         </section>
-        <section>
-          <SectionTitle hint="Aadhaar, college/office ID, police verification… They'll be saved after admission.">Documents</SectionTitle>
-          <FileDrop multiple accept="image/*,application/pdf" onFiles={addFiles} hint="JPG, PNG or PDF · up to 2 MB each" />
-          {docs.length > 0 && (
-            <ul className="mt-4 divide-y divide-slate-100 rounded-lg border border-slate-200">
-              {docs.map((d) => (
-                <li key={d.key} className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center">
-                  <div className="flex min-w-0 flex-1 items-center gap-3">
-                    {d.file.mimeType.startsWith('image/') ? (
-                      <img src={d.file.dataUrl} alt="" className="h-9 w-9 shrink-0 rounded object-cover" />
-                    ) : (
-                      <FileText className="h-9 w-9 shrink-0 rounded bg-slate-100 p-2 text-slate-500" />
-                    )}
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-slate-800">{d.file.fileName}</p>
-                      <p className="text-xs text-slate-500">{formatBytes(d.file.size)}</p>
+        {can('documents') && (
+          <section>
+            <SectionTitle hint="Aadhaar, college/office ID, police verification… They're uploaded right after admission.">Documents</SectionTitle>
+            <FileDrop multiple accept={UPLOAD_ACCEPT} onFiles={addFiles} hint={`${UPLOAD_HINT} each`} />
+            {docs.length > 0 && (
+              <ul className="mt-4 divide-y divide-slate-100 rounded-lg border border-slate-200">
+                {docs.map((d) => (
+                  <li key={d.key} className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center">
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
+                      {d.preview ? (
+                        <img src={d.preview} alt="" className="h-9 w-9 shrink-0 rounded object-cover" />
+                      ) : (
+                        <FileText className="h-9 w-9 shrink-0 rounded bg-slate-100 p-2 text-slate-500" />
+                      )}
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-slate-800">{d.file.name}</p>
+                        <p className="text-xs text-slate-500">{formatBytes(d.file.size)}</p>
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Select
-                      className="h-9 sm:w-52"
-                      value={d.type}
-                      options={DOC_TYPE_OPTIONS}
-                      onChange={(e) => setDocs((all) => all.map((x) => (x.key === d.key ? { ...x, type: e.target.value as DocumentType } : x)))}
-                    />
-                    <IconButton label="Remove" onClick={() => setDocs((all) => all.filter((x) => x.key !== d.key))} className="hover:text-red-600">
-                      <Trash2 className="h-4 w-4" />
-                    </IconButton>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+                    <div className="flex items-center gap-2">
+                      <Select
+                        className="h-9 sm:w-52"
+                        value={d.type}
+                        options={DOC_TYPE_OPTIONS}
+                        onChange={(e) => setDocs((all) => all.map((x) => (x.key === d.key ? { ...x, type: e.target.value as DocumentType } : x)))}
+                      />
+                      <IconButton label="Remove" onClick={() => removeDoc(d.key)} className="hover:text-red-600">
+                        <Trash2 className="h-4 w-4" />
+                      </IconButton>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
       </div>
     )
   } else if (step === 3) {
@@ -587,7 +685,11 @@ export default function CheckIn() {
             The resident will be saved as <b>reserved</b>. Picking a bed below holds it for them (optional). Confirm the check-in when they arrive.
           </p>
         )}
-        {grouped.length ? (
+        {vacantQ.isLoading ? (
+          <LoadingState label="Finding vacant beds…" className="py-10" />
+        ) : vacantQ.error ? (
+          <ErrorState error={vacantQ.error} onRetry={() => void vacantQ.refetch()} className="py-10" />
+        ) : grouped.length ? (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {grouped.map(({ room, beds }) => (
               <div key={room.id} className={cn('rounded-xl border p-3', beds.some((b) => b.id === bedId) ? 'border-brand-400 bg-brand-50/40' : 'border-slate-200')}>
@@ -618,9 +720,19 @@ export default function CheckIn() {
           </div>
         ) : (
           <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center">
-            <p className="text-sm text-slate-600">No vacant beds in {hostelName(hostelId)}.</p>
+            <p className="text-sm text-slate-600">No vacant beds in {hostel?.name ?? 'this hostel'}.</p>
             <p className="mt-1 text-xs text-slate-500">
-              Add rooms in <Link to="/app/rooms" className="text-brand-600 hover:underline">Rooms & beds</Link>, or reserve without a bed.
+              {can('rooms') ? (
+                <>
+                  Add rooms in{' '}
+                  <Link to="/app/rooms" className="text-brand-600 hover:underline">
+                    Rooms & beds
+                  </Link>
+                  , or reserve without a bed.
+                </>
+              ) : (
+                'Reserve without a bed, or ask a manager to add rooms.'
+              )}
             </p>
           </div>
         )}
@@ -641,6 +753,7 @@ export default function CheckIn() {
                 min={0}
                 value={deposit}
                 onChange={(e) => {
+                  setDepTouched(true)
                   setDeposit(e.target.value)
                   setDepAmount(e.target.value)
                 }}
@@ -665,17 +778,32 @@ export default function CheckIn() {
         </section>
         <section>
           <SectionTitle>Deposit payment</SectionTitle>
-          <Switch checked={collect} onChange={setCollect} label="Collect security deposit now" />
+          <Switch
+            checked={collect}
+            onChange={(v) => {
+              setCollect(v)
+              setDepTouched(true)
+            }}
+            label="Collect security deposit now"
+          />
           {collect && (
             <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
               <Field label="Amount received" required>
-                <Input type="number" min={1} value={depAmount} onChange={(e) => setDepAmount(e.target.value)} />
+                <Input
+                  type="number"
+                  min={1}
+                  value={depAmount}
+                  onChange={(e) => {
+                    setDepTouched(true)
+                    setDepAmount(e.target.value)
+                  }}
+                />
               </Field>
               <Field label="Mode">
                 <Select value={depMode} options={PAYMENT_MODE_OPTIONS} onChange={(e) => setDepMode(e.target.value as PaymentMode)} />
               </Field>
               <Field label="Reference" hint="UTR / txn id">
-                <Input value={depRef} onChange={(e) => setDepRef(e.target.value)} />
+                <Input value={depRef} maxLength={100} onChange={(e) => setDepRef(e.target.value)} />
               </Field>
             </div>
           )}
@@ -684,7 +812,7 @@ export default function CheckIn() {
           <SectionTitle hint="Created automatically when you confirm. You'll get them on the next screen to share on WhatsApp.">Portal access</SectionTitle>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
-              <p className="text-xs text-slate-500">Hosteler ID</p>
+              <p className="text-xs text-slate-500">Hosteler ID (expected)</p>
               <p className="font-mono text-lg font-bold tracking-wide text-slate-900">{nextLoginId}</p>
             </div>
             <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
@@ -694,7 +822,7 @@ export default function CheckIn() {
           </div>
         </section>
         <Field label="Notes">
-          <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Anything the warden should know" />
+          <Textarea value={notes} maxLength={2000} onChange={(e) => setNotes(e.target.value)} placeholder="Anything the warden should know" />
         </Field>
       </div>
     )
@@ -703,7 +831,7 @@ export default function CheckIn() {
     body = (
       <div className="space-y-5">
         <div className="flex items-center gap-4">
-          <Avatar name={profile.name || '?'} src={profile.photo} size="lg" />
+          <Avatar name={profile.name || '?'} src={photoPreview} size="lg" />
           <div>
             <p className="text-lg font-bold text-slate-900">{profile.name}</p>
             <p className="text-sm text-slate-500">
@@ -740,6 +868,7 @@ export default function CheckIn() {
             cols={3}
             items={[
               { label: 'ID proof', value: profile.idProofNumber ? `${profile.idProofType} · ${profile.idProofNumber}` : '' },
+              { label: 'Photo', value: photo ? 'Added' : 'None' },
               { label: 'Documents', value: docs.length ? docs.map((d) => DOC_TYPE_LABELS[d.type]).join(', ') : 'None' },
             ]}
           />
@@ -748,8 +877,8 @@ export default function CheckIn() {
           <DescriptionList
             cols={3}
             items={[
-              { label: 'Hostel', value: hostelName(hostelId) },
-              { label: 'Bed', value: selected ? `Room ${selected.room.number} · Bed ${selected.bed.label}` : 'Not allotted' },
+              { label: 'Hostel', value: hostel?.name ?? '' },
+              { label: 'Bed', value: selected ? `Room ${selected.room.number} · Bed ${selected.label}` : 'Not allotted' },
               { label: 'Type', value: reserveOnly ? <Badge tone="amber">Reservation</Badge> : <Badge tone="green">Check in now</Badge> },
               { label: reserveOnly ? 'Expected check-in' : 'Check-in date', value: formatDate(checkInDate) },
               { label: 'Monthly rent', value: formatMoney(Number(rent) || 0) },
@@ -764,24 +893,30 @@ export default function CheckIn() {
     )
   }
 
+  const busy = !!saving
   return (
     <>
       <PageHeader title="New check-in" subtitle="Admit a resident in a few steps." />
       <Reservations />
       <Card className="p-5 sm:p-6">
-        <Stepper step={step} onJump={setStep} />
+        <Stepper step={step} onJump={(i) => !busy && setStep(i)} />
         <div className="min-h-[18rem]">{body}</div>
         <div className="mt-8 flex items-center justify-between gap-3 border-t border-slate-100 pt-5">
-          <Button variant="outline" icon={<ArrowLeft className="h-4 w-4" />} onClick={back} disabled={step === 0}>
+          <Button variant="outline" icon={<ArrowLeft className="h-4 w-4" />} onClick={back} disabled={step === 0 || busy}>
             Back
           </Button>
           {step < STEPS.length - 1 ? (
-            <Button onClick={next}>
+            <Button onClick={() => void next()} loading={checkingPhone}>
               Next <ArrowRight className="h-4 w-4" />
             </Button>
           ) : (
-            <Button variant="success" icon={reserveOnly ? <Clock className="h-4 w-4" /> : <UserCheck className="h-4 w-4" />} onClick={submit}>
-              {reserveOnly ? 'Confirm reservation' : 'Confirm check-in'}
+            <Button
+              variant="success"
+              icon={reserveOnly ? <Clock className="h-4 w-4" /> : <UserCheck className="h-4 w-4" />}
+              onClick={() => void submit()}
+              loading={busy}
+            >
+              {saving ?? (reserveOnly ? 'Confirm reservation' : 'Confirm check-in')}
             </Button>
           )}
         </div>

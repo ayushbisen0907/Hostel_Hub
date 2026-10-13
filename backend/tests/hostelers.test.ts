@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import fs from 'node:fs'
+import path from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
 import { api, makeHostel, makeHosteler, makeOrg, makeRoom, makeStaffUser, makeWorld } from './helpers.js'
 import { Bed } from '../src/models/Bed.js'
 import { Hosteler } from '../src/models/Hosteler.js'
@@ -6,6 +8,8 @@ import { Invoice } from '../src/models/Invoice.js'
 import { Payment } from '../src/models/Payment.js'
 import { Room } from '../src/models/Room.js'
 import { GateLog } from '../src/models/Operations.js'
+import { HDocument } from '../src/models/Document.js'
+import { uploadRoot } from '../src/lib/upload.js'
 
 function admission(hostelId: unknown, bedId: unknown, extra: Record<string, unknown> = {}) {
   return {
@@ -283,5 +287,65 @@ describe('transfer, check-out, reset-password, delete', () => {
     expect(r.body.hosteler.bedId).toBeNull()
     expect(r.body.hosteler.securityDeposit).toBe(5000) // org default
     expect(r.body.credentials.loginId).toBe(`${hostel.code}-0001`)
+  })
+})
+
+describe('profile photo (staff)', () => {
+  // 1x1 transparent PNG
+  const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
+  const keys = async () => (await HDocument.find({ type: 'photo' }).select('storageKey').lean()).map((d) => d.storageKey)
+
+  afterEach(async () => {
+    for (const k of await keys()) fs.rmSync(path.join(uploadRoot, k), { force: true })
+  })
+
+  it('uploads, replaces and serves the photo', async () => {
+    const w = await makeWorld()
+    await api().get(`/api/hostelers/${w.hosteler._id}/photo`).set(w.auth).expect(404)
+    const r1 = await api()
+      .post(`/api/hostelers/${w.hosteler._id}/photo`)
+      .set(w.auth)
+      .attach('file', PNG, { filename: 'me.png', contentType: 'image/png' })
+      .expect(201)
+    expect(r1.body.photoUrl).toBe(`/api/hostelers/${w.hosteler._id}/photo`)
+    expect(r1.body.hosteler.photoUrl).toBe(r1.body.photoUrl)
+    expect(r1.body.hosteler).not.toHaveProperty('passwordHash')
+    const [first] = await keys()
+    expect(fs.existsSync(path.join(uploadRoot, first!))).toBe(true)
+
+    await api()
+      .post(`/api/hostelers/${w.hosteler._id}/photo`)
+      .set(w.auth)
+      .attach('file', PNG, { filename: 'me2.png', contentType: 'image/png' })
+      .expect(201)
+    const docs = await HDocument.find({ hostelerId: w.hosteler._id, type: 'photo' }).lean()
+    expect(docs).toHaveLength(1)
+    expect(docs[0]!.fileName).toBe('me2.png')
+    expect(docs[0]!.uploadedBy).toBe('staff')
+    // old file removed after the replace committed
+    await new Promise((r) => setTimeout(r, 50))
+    expect(fs.existsSync(path.join(uploadRoot, first!))).toBe(false)
+
+    const img = await api().get(`/api/hostelers/${w.hosteler._id}/photo`).set(w.auth).expect(200)
+    expect(img.headers['content-type']).toMatch(/^image\/png/)
+  })
+
+  it('rejects non-images, missing files, other orgs and hostelers', async () => {
+    const w = await makeWorld()
+    const before = fs.readdirSync(uploadRoot).length
+    await api()
+      .post(`/api/hostelers/${w.hosteler._id}/photo`)
+      .set(w.auth)
+      .attach('file', Buffer.from('%PDF-1.4'), { filename: 'a.pdf', contentType: 'application/pdf' })
+      .expect(400)
+    await api().post(`/api/hostelers/${w.hosteler._id}/photo`).set(w.auth).expect(400)
+    const other = await makeWorld()
+    await api()
+      .post(`/api/hostelers/${other.hosteler._id}/photo`)
+      .set(w.auth)
+      .attach('file', PNG, { filename: 'me.png', contentType: 'image/png' })
+      .expect(404)
+    expect(fs.readdirSync(uploadRoot).length).toBe(before)
+    await api().get(`/api/hostelers/${w.hosteler._id}/photo`).set(w.hostelerAuth).expect(403)
   })
 })

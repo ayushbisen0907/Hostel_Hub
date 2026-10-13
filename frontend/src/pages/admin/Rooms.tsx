@@ -14,17 +14,22 @@ import {
   UserCheck,
   Wrench,
 } from 'lucide-react'
-import { useStore, type RoomInput } from '@/store'
-import { inScope, useHostelName, useHostelerMap, useScope } from '@/store/selectors'
-import type { Bed, Hosteler, ID, Room, RoomStatus, RoomType } from '@/types'
+import { ApiError, errorMessage } from '@/api/client'
+import { useHostelName, useHostels, useScope } from '@/api/common'
+import { useApiMutation } from '@/api/query'
+import { useCan, useStaffSession } from '@/api/session'
+import { ROOM_INVALIDATE, roomsApi, useRooms, type RoomBed, type RoomInput, type RoomWithBeds } from '@/api/rooms'
+import type { ID, Room } from '@/api/types'
 import {
   Badge,
   Button,
   Card,
   EmptyState,
+  ErrorState,
   Field,
   IconButton,
   Input,
+  LoadingState,
   Modal,
   PageHeader,
   Select,
@@ -40,10 +45,11 @@ import {
   toast,
 } from '@/components/ui'
 import { cn, formatMoney } from '@/lib/utils'
-import { planInfo } from '@/lib/plans'
 import { AMENITIES, Chip, FilterBar, firstName } from './_residents'
 
 type View = 'grid' | 'table'
+type RoomType = Room['type']
+type RoomStatus = Room['status']
 
 function floorName(f: number) {
   if (f === 0) return 'Ground floor'
@@ -53,33 +59,42 @@ function floorName(f: number) {
   return `${f}${suffix} floor`
 }
 
-const LIMIT_PREFIX = 'Free plan'
+/* ------------------------------------------------------------------ */
+/* Errors (plan limits get an upgrade link)                            */
+/* ------------------------------------------------------------------ */
 
-/** Returns an error message if adding `extra` beds would exceed the plan limit. */
-function useBedLimit() {
-  const plan = useStore((s) => s.org?.plan ?? 'free')
-  const totalBeds = useStore((s) => s.beds.length)
-  const max = planInfo(plan).maxBeds
-  return (extra: number): string | null => {
-    if (plan !== 'free' || max === null) return null
-    if (totalBeds + extra > max)
-      return `${LIMIT_PREFIX} allows up to ${max} beds. You have ${totalBeds}; this would add ${extra}. Upgrade to add more.`
-    return null
-  }
+interface FormErr {
+  message: string
+  planLimit: boolean
 }
 
-function FormError({ message }: { message: string | null }) {
-  if (!message) return null
-  if (message.startsWith(LIMIT_PREFIX))
+function toFormErr(e: unknown): FormErr {
+  return { message: errorMessage(e), planLimit: e instanceof ApiError && (e.code === 'PLAN_LIMIT' || e.status === 402) }
+}
+
+function reportError(e: unknown, setError: (e: FormErr) => void) {
+  const fe = toFormErr(e)
+  setError(fe)
+  toast.error(fe.planLimit ? 'Plan bed limit reached — upgrade to add more beds' : fe.message)
+}
+
+function FormError({ error }: { error: FormErr | null }) {
+  const isOwner = useStaffSession()?.user.role === 'owner'
+  if (!error) return null
+  if (error.planLimit)
     return (
       <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-        {message}{' '}
-        <Link to="/app/settings?tab=billing" className="font-semibold underline">
-          Upgrade plan
-        </Link>
+        {error.message}{' '}
+        {isOwner ? (
+          <Link to="/app/settings?tab=billing" className="font-semibold underline">
+            Upgrade plan
+          </Link>
+        ) : (
+          <span className="font-medium">Ask the owner to upgrade the plan.</span>
+        )}
       </div>
     )
-  return <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{message}</p>
+  return <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error.message}</p>
 }
 
 /* ------------------------------------------------------------------ */
@@ -117,26 +132,55 @@ function blankRoom(hostelId: ID): RoomForm {
   return { hostelId, number: '', floor: '1', type: 'non-ac', sharing: '2', rentPerBed: '6000', status: 'active', amenities: ['WiFi'] }
 }
 
-function RoomModal({ open, onClose, room, defaultHostelId }: { open: boolean; onClose: () => void; room: Room | null; defaultHostelId: ID }) {
-  const hostels = useStore((s) => s.hostels)
-  const rooms = useStore((s) => s.rooms)
-  const addRoom = useStore((s) => s.addRoom)
-  const updateRoom = useStore((s) => s.updateRoom)
-  const checkLimit = useBedLimit()
+function RoomModal({
+  open,
+  onClose,
+  room,
+  defaultHostelId,
+}: {
+  open: boolean
+  onClose: () => void
+  room: RoomWithBeds | null
+  defaultHostelId: ID
+}) {
+  const { data: hostels = [] } = useHostels()
   const [f, setF] = useState<RoomForm>(() => blankRoom(defaultHostelId))
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<FormErr | null>(null)
 
   useEffect(() => {
     if (!open) return
     setError(null)
     setF(
       room
-        ? { ...room, floor: String(room.floor), sharing: String(room.sharing), rentPerBed: String(room.rentPerBed), amenities: [...room.amenities] }
+        ? {
+            hostelId: room.hostelId,
+            number: room.number,
+            type: room.type,
+            status: room.status,
+            floor: String(room.floor),
+            sharing: String(room.sharing),
+            rentPerBed: String(room.rentPerBed),
+            amenities: [...room.amenities],
+          }
         : blankRoom(defaultHostelId),
     )
   }, [open, room, defaultHostelId])
 
   const set = <K extends keyof RoomForm>(k: K, v: RoomForm[K]) => setF((p) => ({ ...p, [k]: v }))
+
+  const create = useApiMutation(roomsApi.create, {
+    invalidate: ROOM_INVALIDATE,
+    toastErrors: false,
+    success: (r) => `Room ${r.number} added with ${r.sharing} bed${r.sharing > 1 ? 's' : ''}`,
+    onSuccess: () => onClose(),
+  })
+  const update = useApiMutation(roomsApi.update, {
+    invalidate: ROOM_INVALIDATE,
+    toastErrors: false,
+    success: (r) => `Room ${r.number} updated`,
+    onSuccess: () => onClose(),
+  })
+  const busy = create.isPending || update.isPending
 
   const save = () => {
     setError(null)
@@ -144,35 +188,17 @@ function RoomModal({ open, onClose, room, defaultHostelId }: { open: boolean; on
     const sharing = Number(f.sharing)
     const rent = Number(f.rentPerBed)
     const floor = Number(f.floor)
-    if (!f.hostelId) return setError('Choose a hostel')
-    if (!number) return setError('Room number is required')
-    if (!Number.isInteger(floor) || floor < 0) return setError('Enter a valid floor (0 for ground)')
-    if (!(Number.isInteger(sharing) && sharing >= 1 && sharing <= 12)) return setError('Sharing must be between 1 and 12')
-    if (!(rent >= 0)) return setError('Enter a valid rent')
-    if (rooms.some((r) => r.hostelId === f.hostelId && r.number === number && r.id !== room?.id))
-      return setError(`Room ${number} already exists in this hostel`)
-
-    const extra = sharing - (room?.sharing ?? 0)
-    if (extra > 0) {
-      const limit = checkLimit(extra)
-      if (limit) {
-        toast.error('Free plan bed limit reached — upgrade to add more beds')
-        return setError(limit)
-      }
-    }
-    const data: RoomInput = { hostelId: f.hostelId, number, floor, type: f.type, sharing, rentPerBed: rent, status: f.status, amenities: f.amenities }
-    if (room) {
-      const res = updateRoom(room.id, data)
-      if (!res.ok) {
-        toast.error(res.error ?? 'Could not update room')
-        return setError(res.error ?? 'Could not update room')
-      }
-      toast.success(`Room ${number} updated`)
-    } else {
-      addRoom(data)
-      toast.success(`Room ${number} added with ${sharing} bed${sharing > 1 ? 's' : ''}`)
-    }
-    onClose()
+    const fail = (message: string) => setError({ message, planLimit: false })
+    if (!f.hostelId) return fail('Choose a hostel')
+    if (!number) return fail('Room number is required')
+    if (number.length > 20) return fail('Room number can be at most 20 characters')
+    if (!Number.isInteger(floor) || floor < 0 || floor > 200) return fail('Enter a valid floor (0 for ground)')
+    if (!(Number.isInteger(sharing) && sharing >= 1 && sharing <= 20)) return fail('Sharing must be between 1 and 20')
+    if (f.rentPerBed.trim() === '' || !(rent >= 0)) return fail('Enter a valid rent')
+    const data = { number, floor, type: f.type, sharing, rentPerBed: rent, status: f.status, amenities: f.amenities }
+    const onError = (e: unknown) => reportError(e, setError)
+    if (room) update.mutate({ id: room.id, ...data }, { onError })
+    else create.mutate({ hostelId: f.hostelId, ...data }, { onError })
   }
 
   return (
@@ -182,15 +208,17 @@ function RoomModal({ open, onClose, room, defaultHostelId }: { open: boolean; on
       title={room ? `Edit room ${room.number}` : 'Add room'}
       footer={
         <>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
-          <Button onClick={save}>{room ? 'Save changes' : 'Add room'}</Button>
+          <Button onClick={save} loading={busy}>
+            {room ? 'Save changes' : 'Add room'}
+          </Button>
         </>
       }
     >
       <div className="space-y-4">
-        <FormError message={error} />
+        <FormError error={error} />
         {!room && (
           <Field label="Hostel" required>
             <Select value={f.hostelId} options={hostels.map((h) => ({ value: h.id, label: h.name }))} onChange={(e) => set('hostelId', e.target.value)} />
@@ -198,16 +226,16 @@ function RoomModal({ open, onClose, room, defaultHostelId }: { open: boolean; on
         )}
         <div className="grid grid-cols-2 gap-4">
           <Field label="Room number" required>
-            <Input value={f.number} onChange={(e) => set('number', e.target.value)} placeholder="e.g. 101" />
+            <Input value={f.number} maxLength={20} onChange={(e) => set('number', e.target.value)} placeholder="e.g. 101" />
           </Field>
           <Field label="Floor" hint="0 = ground floor">
-            <Input type="number" min={0} value={f.floor} onChange={(e) => set('floor', e.target.value)} />
+            <Input type="number" min={0} max={200} value={f.floor} onChange={(e) => set('floor', e.target.value)} />
           </Field>
           <Field label="Type">
             <Select value={f.type} options={TYPE_OPTIONS} onChange={(e) => set('type', e.target.value as RoomType)} />
           </Field>
           <Field label="Sharing (beds)" hint={room ? 'Reducing removes empty beds only' : undefined}>
-            <Input type="number" min={1} max={12} value={f.sharing} onChange={(e) => set('sharing', e.target.value)} />
+            <Input type="number" min={1} max={20} value={f.sharing} onChange={(e) => set('sharing', e.target.value)} />
           </Field>
           <Field label="Rent per bed / month">
             <Input type="number" min={0} value={f.rentPerBed} onChange={(e) => set('rentPerBed', e.target.value)} />
@@ -222,11 +250,8 @@ function RoomModal({ open, onClose, room, defaultHostelId }: { open: boolean; on
   )
 }
 
-function BulkModal({ open, onClose, defaultHostelId }: { open: boolean; onClose: () => void; defaultHostelId: ID }) {
-  const hostels = useStore((s) => s.hostels)
-  const rooms = useStore((s) => s.rooms)
-  const addRoomsBulk = useStore((s) => s.addRoomsBulk)
-  const checkLimit = useBedLimit()
+function BulkModal({ open, onClose, defaultHostelId, rooms }: { open: boolean; onClose: () => void; defaultHostelId: ID; rooms: RoomWithBeds[] }) {
+  const { data: hostels = [] } = useHostels()
   const [hostelId, setHostelId] = useState(defaultHostelId)
   const [floor, setFloor] = useState('1')
   const [from, setFrom] = useState('101')
@@ -235,7 +260,7 @@ function BulkModal({ open, onClose, defaultHostelId }: { open: boolean; onClose:
   const [sharing, setSharing] = useState('2')
   const [rent, setRent] = useState('6000')
   const [amenities, setAmenities] = useState<string[]>(['WiFi'])
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<FormErr | null>(null)
 
   useEffect(() => {
     if (open) {
@@ -247,28 +272,40 @@ function BulkModal({ open, onClose, defaultHostelId }: { open: boolean; onClose:
   const a = parseInt(from, 10)
   const b = parseInt(to, 10)
   const valid = Number.isFinite(a) && Number.isFinite(b) && b >= a && b - a < 200
+  // rooms already loaded for this hostel (the server skips duplicates too)
   const existing = new Set(rooms.filter((r) => r.hostelId === hostelId).map((r) => r.number))
   const numbers = valid ? Array.from({ length: b - a + 1 }, (_, i) => String(a + i)) : []
   const newNumbers = numbers.filter((n) => !existing.has(n))
   const skipped = numbers.length - newNumbers.length
   const bedCount = newNumbers.length * (Number(sharing) || 0)
 
+  const bulk = useApiMutation(roomsApi.bulk, {
+    invalidate: ROOM_INVALIDATE,
+    toastErrors: false,
+    success: (r) =>
+      r.created ? `${r.created} rooms added${r.skipped.length ? ` · ${r.skipped.length} existing skipped` : ''}` : 'All these room numbers already exist',
+    onSuccess: () => onClose(),
+  })
+
   const save = () => {
     setError(null)
-    if (!hostelId) return setError('Choose a hostel')
-    if (!valid) return setError('Enter a valid range (max 200 rooms), e.g. 101 to 110')
-    if (!newNumbers.length) return setError('All these room numbers already exist')
-    const limit = checkLimit(bedCount)
-    if (limit) {
-      toast.error('Free plan bed limit reached — upgrade to add more beds')
-      return setError(limit)
-    }
-    const n = addRoomsBulk(
-      { hostelId, floor: Math.max(0, parseInt(floor, 10) || 0), type, sharing: Number(sharing), rentPerBed: Number(rent) || 0, status: 'active', amenities },
-      newNumbers,
+    const fail = (message: string) => setError({ message, planLimit: false })
+    if (!hostelId) return fail('Choose a hostel')
+    if (!valid) return fail('Enter a valid range (max 200 rooms), e.g. 101 to 110')
+    if (!newNumbers.length) return fail('All these room numbers already exist')
+    bulk.mutate(
+      {
+        hostelId,
+        numbers: newNumbers,
+        floor: Math.min(Math.max(0, parseInt(floor, 10) || 0), 200),
+        type,
+        sharing: Number(sharing),
+        rentPerBed: Math.max(0, Number(rent) || 0),
+        status: 'active',
+        amenities,
+      },
+      { onError: (e) => reportError(e, setError) },
     )
-    toast.success(`${n} rooms added (${bedCount} beds)`)
-    onClose()
   }
 
   return (
@@ -280,23 +317,23 @@ function BulkModal({ open, onClose, defaultHostelId }: { open: boolean; onClose:
       description="Create a run of rooms on one floor with the same configuration."
       footer={
         <>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" onClick={onClose} disabled={bulk.isPending}>
             Cancel
           </Button>
-          <Button onClick={save} disabled={!newNumbers.length}>
+          <Button onClick={save} disabled={!newNumbers.length} loading={bulk.isPending}>
             Add {newNumbers.length || ''} rooms
           </Button>
         </>
       }
     >
       <div className="space-y-4">
-        <FormError message={error} />
+        <FormError error={error} />
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           <Field label="Hostel" className="col-span-2">
             <Select value={hostelId} options={hostels.map((h) => ({ value: h.id, label: h.name }))} onChange={(e) => setHostelId(e.target.value)} />
           </Field>
           <Field label="Floor" className="col-span-2" hint="0 = ground floor">
-            <Input type="number" min={0} value={floor} onChange={(e) => setFloor(e.target.value)} />
+            <Input type="number" min={0} max={200} value={floor} onChange={(e) => setFloor(e.target.value)} />
           </Field>
           <Field label="From room no.">
             <Input inputMode="numeric" value={from} onChange={(e) => setFrom(e.target.value.replace(/\D/g, ''))} />
@@ -335,27 +372,32 @@ function BulkModal({ open, onClose, defaultHostelId }: { open: boolean; onClose:
 /* Bed chip                                                            */
 /* ------------------------------------------------------------------ */
 
-function bedTone(h: Hosteler | undefined) {
+function bedTone(h: RoomBed['hosteler']) {
   if (!h) return 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
   if (h.status === 'reserved') return 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'
   return 'border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100'
 }
 
-function BedChip({ bed, hosteler, onClick, disabled }: { bed: Bed; hosteler: Hosteler | undefined; onClick: () => void; disabled?: boolean }) {
+function occupantName(b: RoomBed) {
+  return b.hosteler ? firstName(b.hosteler.name) : b.hostelerId ? 'Occupied' : 'Vacant'
+}
+
+function BedChip({ bed, onClick, disabled }: { bed: RoomBed; onClick: () => void; disabled?: boolean }) {
+  const h = bed.hosteler
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      title={hosteler ? `${hosteler.name}${hosteler.status === 'reserved' ? ' (reserved)' : ''}` : disabled ? 'Room under maintenance' : 'Vacant — click to check in'}
+      title={h ? `${h.name}${h.status === 'reserved' ? ' (reserved)' : ''}` : disabled ? 'Room under maintenance' : 'Vacant — click to check in'}
       className={cn(
         'flex min-w-0 items-center gap-1.5 rounded-lg border px-2 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60',
-        bedTone(hosteler),
+        bedTone(h),
       )}
     >
       <BedDouble className="h-3.5 w-3.5 shrink-0" />
       <span className="font-semibold">{bed.label}</span>
-      <span className="truncate">{hosteler ? firstName(hosteler.name) : 'Vacant'}</span>
+      <span className="truncate">{occupantName(bed)}</span>
     </button>
   )
 }
@@ -366,12 +408,10 @@ function BedChip({ bed, hosteler, onClick, disabled }: { bed: Bed; hosteler: Hos
 
 export default function Rooms() {
   const navigate = useNavigate()
+  const can = useCan()
   const scope = useScope()
-  const hostels = useStore((s) => s.hostels)
-  const rooms = useStore((s) => s.rooms)
-  const beds = useStore((s) => s.beds)
-  const deleteRoom = useStore((s) => s.deleteRoom)
-  const hostelerMap = useHostelerMap()
+  const hostelsQ = useHostels()
+  const hostels = useMemo(() => hostelsQ.data ?? [], [hostelsQ.data])
   const hostelName = useHostelName()
 
   const [view, setView] = useState<View>('grid')
@@ -382,10 +422,10 @@ export default function Rooms() {
   const [statusFilter, setStatusFilter] = useState('')
   const [onlyVacant, setOnlyVacant] = useState(false)
 
-  const [editing, setEditing] = useState<Room | null>(null)
+  const [editing, setEditing] = useState<RoomWithBeds | null>(null)
   const [roomModal, setRoomModal] = useState(false)
   const [bulkModal, setBulkModal] = useState(false)
-  const [vacantBed, setVacantBed] = useState<{ bed: Bed; room: Room } | null>(null)
+  const [vacantBed, setVacantBed] = useState<{ bed: RoomBed; room: RoomWithBeds } | null>(null)
 
   useEffect(() => {
     setHostelFilter('')
@@ -393,34 +433,25 @@ export default function Rooms() {
   }, [scope])
 
   const effectiveHostel: ID | 'all' = scope !== 'all' ? scope : hostelFilter || 'all'
-  const defaultHostelId = effectiveHostel !== 'all' ? effectiveHostel : hostels[0]?.id ?? ''
+  const defaultHostelId = effectiveHostel !== 'all' ? effectiveHostel : (hostels[0]?.id ?? '')
 
-  const bedsByRoom = useMemo(() => {
-    const m = new Map<ID, Bed[]>()
-    for (const b of beds) {
-      const arr = m.get(b.roomId) ?? []
-      arr.push(b)
-      m.set(b.roomId, arr)
-    }
-    for (const arr of m.values()) arr.sort((a, b) => a.label.localeCompare(b.label))
-    return m
-  }, [beds])
+  const roomsQ = useRooms({ hostelId: effectiveHostel })
+  const hostelRooms = useMemo(() => roomsQ.data ?? [], [roomsQ.data])
 
-  const hostelRooms = useMemo(() => rooms.filter((r) => inScope(r.hostelId, effectiveHostel)), [rooms, effectiveHostel])
+  const del = useApiMutation(roomsApi.remove, { invalidate: ROOM_INVALIDATE })
 
   const stats = useMemo(() => {
     let total = 0
     let occupied = 0
     let vacant = 0
     for (const r of hostelRooms) {
-      const rb = bedsByRoom.get(r.id) ?? []
-      total += rb.length
-      const o = rb.filter((b) => b.hostelerId).length
+      total += r.beds.length
+      const o = r.beds.filter((b) => b.hostelerId).length
       occupied += o
-      if (r.status === 'active') vacant += rb.length - o
+      if (r.status === 'active') vacant += r.beds.length - o
     }
     return { rooms: hostelRooms.length, beds: total, occupied, vacant, maintenance: hostelRooms.filter((r) => r.status === 'maintenance').length }
-  }, [hostelRooms, bedsByRoom])
+  }, [hostelRooms])
 
   const floors = useMemo(() => [...new Set(hostelRooms.map((r) => r.floor))].sort((a, b) => a - b), [hostelRooms])
   const sharings = useMemo(() => [...new Set(hostelRooms.map((r) => r.sharing))].sort((a, b) => a - b), [hostelRooms])
@@ -433,7 +464,7 @@ export default function Rooms() {
           if (typeFilter && r.type !== typeFilter) return false
           if (sharingFilter && String(r.sharing) !== sharingFilter) return false
           if (statusFilter && r.status !== statusFilter) return false
-          if (onlyVacant && (r.status !== 'active' || !(bedsByRoom.get(r.id) ?? []).some((b) => !b.hostelerId))) return false
+          if (onlyVacant && (r.status !== 'active' || !r.beds.some((b) => !b.hostelerId))) return false
           return true
         })
         .sort(
@@ -442,11 +473,11 @@ export default function Rooms() {
             a.floor - b.floor ||
             a.number.localeCompare(b.number, undefined, { numeric: true }),
         ),
-    [hostelRooms, floorFilter, typeFilter, sharingFilter, statusFilter, onlyVacant, bedsByRoom, hostelName],
+    [hostelRooms, floorFilter, typeFilter, sharingFilter, statusFilter, onlyVacant, hostelName],
   )
 
   const groups = useMemo(() => {
-    const g: { key: string; hostelId: ID; floor: number; rooms: Room[] }[] = []
+    const g: { key: string; hostelId: ID; floor: number; rooms: RoomWithBeds[] }[] = []
     for (const r of filtered) {
       const key = `${r.hostelId}|${r.floor}`
       const last = g[g.length - 1]
@@ -457,6 +488,9 @@ export default function Rooms() {
   }, [filtered])
 
   const showHostelName = effectiveHostel === 'all' && hostels.length > 1
+
+  if (hostelsQ.isLoading) return <LoadingState />
+  if (hostelsQ.error) return <ErrorState error={hostelsQ.error} onRetry={() => void hostelsQ.refetch()} />
 
   if (!hostels.length) {
     return (
@@ -478,27 +512,27 @@ export default function Rooms() {
     )
   }
 
-  const openBed = (bed: Bed, room: Room) => {
+  const openBed = (bed: RoomBed, room: RoomWithBeds) => {
     if (bed.hostelerId) navigate(`/app/hostelers/${bed.hostelerId}`)
     else setVacantBed({ bed, room })
   }
 
-  const edit = (r: Room) => {
+  const edit = (r: RoomWithBeds) => {
     setEditing(r)
     setRoomModal(true)
   }
 
-  const remove = async (room: Room) => {
+  const remove = async (room: RoomWithBeds) => {
+    if (room.beds.some((b) => b.hostelerId))
+      return toast.error(`Room ${room.number} has occupied beds. Move or check out hostelers first.`)
     const ok = await confirm({
       title: `Delete room ${room.number}?`,
-      message: `This removes the room and its ${room.sharing} bed(s). This can't be undone.`,
+      message: `This removes the room and its ${room.beds.length} bed(s). This can't be undone.`,
       danger: true,
       confirmText: 'Delete room',
     })
     if (!ok) return
-    const res = deleteRoom(room.id)
-    if (res.ok) toast.success(`Room ${room.number} deleted`)
-    else toast.error(res.error ?? 'Could not delete room')
+    del.mutate(room.id, { onSuccess: () => toast.success(`Room ${room.number} deleted`) })
   }
 
   const anyFilter = floorFilter !== '' || !!typeFilter || !!sharingFilter || !!statusFilter || onlyVacant
@@ -510,12 +544,12 @@ export default function Rooms() {
     setOnlyVacant(false)
   }
 
-  const roomActions = (r: Room) => (
+  const roomActions = (r: RoomWithBeds) => (
     <div className="flex shrink-0 items-center">
       <IconButton label="Edit room" onClick={() => edit(r)}>
         <Pencil className="h-4 w-4" />
       </IconButton>
-      <IconButton label="Delete room" onClick={() => remove(r)} className="hover:text-red-600">
+      <IconButton label="Delete room" onClick={() => remove(r)} disabled={del.isPending && del.variables === r.id} className="hover:text-red-600">
         <Trash2 className="h-4 w-4" />
       </IconButton>
     </div>
@@ -545,17 +579,24 @@ export default function Rooms() {
       />
 
       <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
-        <StatCard label="Rooms" value={stats.rooms} icon={<DoorOpen className="h-5 w-5" />} />
-        <StatCard label="Beds" value={stats.beds} icon={<BedDouble className="h-5 w-5" />} tone="violet" />
+        <StatCard label="Rooms" value={roomsQ.isLoading ? '…' : stats.rooms} icon={<DoorOpen className="h-5 w-5" />} />
+        <StatCard label="Beds" value={roomsQ.isLoading ? '…' : stats.beds} icon={<BedDouble className="h-5 w-5" />} tone="violet" />
         <StatCard
           label="Occupied"
-          value={stats.occupied}
+          value={roomsQ.isLoading ? '…' : stats.occupied}
           icon={<UserCheck className="h-5 w-5" />}
           tone="brand"
           hint={stats.beds ? `${Math.round((stats.occupied / stats.beds) * 100)}% occupancy` : undefined}
         />
-        <StatCard label="Vacant" value={stats.vacant} icon={<BedDouble className="h-5 w-5" />} tone="green" onClick={() => setOnlyVacant(true)} hint="Click to filter" />
-        <StatCard label="Under maintenance" value={stats.maintenance} icon={<Wrench className="h-5 w-5" />} tone="amber" />
+        <StatCard
+          label="Vacant"
+          value={roomsQ.isLoading ? '…' : stats.vacant}
+          icon={<BedDouble className="h-5 w-5" />}
+          tone="green"
+          onClick={() => setOnlyVacant(true)}
+          hint="Click to filter"
+        />
+        <StatCard label="Under maintenance" value={roomsQ.isLoading ? '…' : stats.maintenance} icon={<Wrench className="h-5 w-5" />} tone="amber" />
       </div>
 
       <Card className="mb-6 p-4">
@@ -628,7 +669,15 @@ export default function Rooms() {
         </div>
       </Card>
 
-      {!filtered.length ? (
+      {roomsQ.isLoading ? (
+        <Card>
+          <LoadingState label="Loading rooms…" />
+        </Card>
+      ) : roomsQ.error ? (
+        <Card>
+          <ErrorState error={roomsQ.error} onRetry={() => void roomsQ.refetch()} />
+        </Card>
+      ) : !filtered.length ? (
         <Card>
           <EmptyState
             icon={<DoorOpen className="h-6 w-6" />}
@@ -660,8 +709,7 @@ export default function Rooms() {
               </div>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
                 {g.rooms.map((r) => {
-                  const rb = bedsByRoom.get(r.id) ?? []
-                  const occ = rb.filter((b) => b.hostelerId).length
+                  const occ = r.beds.filter((b) => b.hostelerId).length
                   return (
                     <Card key={r.id} className={cn('flex flex-col p-4', r.status === 'maintenance' && 'border-amber-200 bg-amber-50/40')}>
                       <div className="flex items-start justify-between gap-2">
@@ -680,8 +728,8 @@ export default function Rooms() {
                         {r.status === 'maintenance' ? (
                           <StatusBadge status="maintenance" label="Under maintenance" />
                         ) : (
-                          <Badge tone={occ === rb.length ? 'blue' : 'green'}>
-                            {occ}/{rb.length} occupied
+                          <Badge tone={occ === r.beds.length ? 'blue' : 'green'}>
+                            {occ}/{r.beds.length} occupied
                           </Badge>
                         )}
                         {r.amenities.slice(0, 3).map((a) => (
@@ -690,14 +738,8 @@ export default function Rooms() {
                         {r.amenities.length > 3 && <Badge>+{r.amenities.length - 3}</Badge>}
                       </div>
                       <div className="mt-3 grid grid-cols-2 gap-2">
-                        {rb.map((b) => (
-                          <BedChip
-                            key={b.id}
-                            bed={b}
-                            hosteler={b.hostelerId ? hostelerMap.get(b.hostelerId) : undefined}
-                            disabled={!b.hostelerId && r.status === 'maintenance'}
-                            onClick={() => openBed(b, r)}
-                          />
+                        {r.beds.map((b) => (
+                          <BedChip key={b.id} bed={b} disabled={!b.hostelerId && r.status === 'maintenance'} onClick={() => openBed(b, r)} />
                         ))}
                       </div>
                     </Card>
@@ -724,50 +766,44 @@ export default function Rooms() {
               </tr>
             </THead>
             <tbody>
-              {filtered.map((r) => {
-                const rb = bedsByRoom.get(r.id) ?? []
-                return (
-                  <TR key={r.id}>
-                    <TD className="font-semibold text-slate-900">{r.number}</TD>
-                    {showHostelName && <TD>{hostelName(r.hostelId)}</TD>}
-                    <TD className="whitespace-nowrap">{floorName(r.floor)}</TD>
-                    <TD>{r.type === 'ac' ? 'AC' : 'Non-AC'}</TD>
-                    <TD>{r.sharing}</TD>
-                    <TD>{formatMoney(r.rentPerBed)}</TD>
-                    <TD>
-                      <div className="flex min-w-[12rem] max-w-sm flex-wrap gap-1">
-                        {rb.map((b) => {
-                          const h = b.hostelerId ? hostelerMap.get(b.hostelerId) : undefined
-                          return (
-                            <button
-                              key={b.id}
-                              type="button"
-                              disabled={!h && r.status === 'maintenance'}
-                              onClick={() => openBed(b, r)}
-                              className={cn('rounded-md border px-1.5 py-0.5 text-xs font-medium disabled:opacity-60', bedTone(h))}
-                            >
-                              {b.label}: {h ? firstName(h.name) : 'Vacant'}
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </TD>
-                    <TD>
-                      <StatusBadge status={r.status} />
-                    </TD>
-                    <TD className="text-right">
-                      <div className="inline-flex">{roomActions(r)}</div>
-                    </TD>
-                  </TR>
-                )
-              })}
+              {filtered.map((r) => (
+                <TR key={r.id}>
+                  <TD className="font-semibold text-slate-900">{r.number}</TD>
+                  {showHostelName && <TD>{hostelName(r.hostelId)}</TD>}
+                  <TD className="whitespace-nowrap">{floorName(r.floor)}</TD>
+                  <TD>{r.type === 'ac' ? 'AC' : 'Non-AC'}</TD>
+                  <TD>{r.sharing}</TD>
+                  <TD>{formatMoney(r.rentPerBed)}</TD>
+                  <TD>
+                    <div className="flex min-w-[12rem] max-w-sm flex-wrap gap-1">
+                      {r.beds.map((b) => (
+                        <button
+                          key={b.id}
+                          type="button"
+                          disabled={!b.hostelerId && r.status === 'maintenance'}
+                          onClick={() => openBed(b, r)}
+                          className={cn('rounded-md border px-1.5 py-0.5 text-xs font-medium disabled:opacity-60', bedTone(b.hosteler))}
+                        >
+                          {b.label}: {occupantName(b)}
+                        </button>
+                      ))}
+                    </div>
+                  </TD>
+                  <TD>
+                    <StatusBadge status={r.status} />
+                  </TD>
+                  <TD className="text-right">
+                    <div className="inline-flex">{roomActions(r)}</div>
+                  </TD>
+                </TR>
+              ))}
             </tbody>
           </Table>
         </Card>
       )}
 
       <RoomModal open={roomModal} onClose={() => setRoomModal(false)} room={editing} defaultHostelId={defaultHostelId} />
-      <BulkModal open={bulkModal} onClose={() => setBulkModal(false)} defaultHostelId={defaultHostelId} />
+      <BulkModal open={bulkModal} onClose={() => setBulkModal(false)} defaultHostelId={defaultHostelId} rooms={hostelRooms} />
 
       <Modal
         open={!!vacantBed}
@@ -780,9 +816,11 @@ export default function Rooms() {
             <Button variant="outline" onClick={() => setVacantBed(null)}>
               Close
             </Button>
-            <Button icon={<UserCheck className="h-4 w-4" />} onClick={() => vacantBed && navigate(`/app/check-in?bed=${vacantBed.bed.id}`)}>
-              Check in here
-            </Button>
+            {can('checkin') && (
+              <Button icon={<UserCheck className="h-4 w-4" />} onClick={() => vacantBed && navigate(`/app/check-in?bed=${vacantBed.bed.id}`)}>
+                Check in here
+              </Button>
+            )}
           </>
         }
       >

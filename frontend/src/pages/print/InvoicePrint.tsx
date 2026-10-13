@@ -1,37 +1,45 @@
-import { useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { Building2 } from 'lucide-react'
-import { useStore } from '@/store'
-import { bedLabel, invoiceBalance, invoicePaid, invoiceStatus } from '@/store/selectors'
+import { ApiError } from '@/api/client'
+import { usePrintInvoice } from '@/api/fees'
+import { Button, LoadingState } from '@/components/ui'
 import { cn, formatDate, formatMoney, formatMonth } from '@/lib/utils'
 import { PrintMessage, PrintSheet, PrintToolbar, amountInWords, modeLabel } from '@/pages/admin/_fees'
 
 export default function InvoicePrint() {
   const { id } = useParams<{ id: string }>()
-  const session = useStore((s) => s.session)
-  const org = useStore((s) => s.org)
-  const invoices = useStore((s) => s.invoices)
-  const payments = useStore((s) => s.payments)
-  const hostelers = useStore((s) => s.hostelers)
-  const hostels = useStore((s) => s.hostels)
-  const rooms = useStore((s) => s.rooms)
-  const beds = useStore((s) => s.beds)
+  const query = usePrintInvoice(id)
 
-  const inv = invoices.find((i) => i.id === id)
-  const invPayments = useMemo(
-    () => (inv ? payments.filter((p) => p.invoiceId === inv.id).sort((a, b) => a.date.localeCompare(b.date)) : []),
-    [inv, payments],
-  )
+  if (query.isLoading)
+    return (
+      <PrintSheet>
+        <PrintToolbar title="Invoice" canPrint={false} />
+        <LoadingState label="Loading invoice…" />
+      </PrintSheet>
+    )
+  if (query.error || !query.data) {
+    const e = query.error
+    if (e instanceof ApiError && (e.status === 404 || e.status === 400))
+      return <PrintMessage title="Invoice not found" message="This invoice may have been deleted or the link is incorrect." />
+    if (e instanceof ApiError && e.status === 403)
+      return <PrintMessage title="Not available" message="You don't have access to this invoice." />
+    return (
+      <PrintMessage
+        title="Couldn't load the invoice"
+        message={e instanceof Error ? e.message : 'Something went wrong'}
+        action={
+          <Button variant="outline" onClick={() => void query.refetch()}>
+            Try again
+          </Button>
+        }
+      />
+    )
+  }
 
-  if (!inv) return <PrintMessage title="Invoice not found" message="This invoice may have been deleted or the link is incorrect." />
-  if (session?.kind === 'hosteler' && session.hostelerId !== inv.hostelerId)
-    return <PrintMessage title="Not available" message="You can only view your own invoices." />
-
-  const h = hostelers.find((x) => x.id === inv.hostelerId)
-  const hostel = hostels.find((x) => x.id === inv.hostelId)
-  const paid = invoicePaid({ payments }, inv.id)
-  const balance = invoiceBalance({ payments }, inv)
-  const status = invoiceStatus({ payments }, inv)
+  const { invoice: inv, payments: invPayments, organization: org, hostel, hosteler: h } = query.data
+  const paid = inv.paidAmount
+  const balance = inv.balance
+  const status = inv.status
   const stamp =
     status === 'cancelled'
       ? { text: 'CANCELLED', cls: 'border-slate-400 text-slate-400' }
@@ -85,7 +93,7 @@ export default function InvoicePrint() {
               <div className="text-sm text-slate-600">
                 <p>Phone: {h.phone}</p>
                 {h.email && <p>{h.email}</p>}
-                <p>{h.bedId ? bedLabel({ rooms, beds }, h.bedId) : h.status === 'checked_out' ? 'Checked out' : 'Bed not allotted'}</p>
+                <p>{h.place}</p>
               </div>
             )}
           </div>
@@ -172,8 +180,8 @@ export default function InvoicePrint() {
             <p className="font-semibold text-slate-900">How to pay</p>
             <ul className="mt-1.5 space-y-1 text-slate-600">
               <li>
-                • UPI: <span className="font-medium text-slate-800">{(org?.phone || 'yourhostel').replace(/\D/g, '').slice(-10) || 'yourhostel'}@upi</span> — mention invoice{' '}
-                <span className="font-medium text-slate-800">{inv.number}</span> in the remarks.
+                • Online: from the resident portal (Fees → Pay now) — or quote invoice{' '}
+                <span className="font-medium text-slate-800">{inv.number}</span> when paying by UPI / bank transfer.
               </li>
               <li>• Cash / card at the hostel office between 10:00 AM and 7:00 PM.</li>
               <li>• Payments after the due date may attract a late fee as per hostel policy.</li>

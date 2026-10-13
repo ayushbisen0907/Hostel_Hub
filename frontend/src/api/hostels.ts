@@ -1,0 +1,40 @@
+/**
+ * Hostel CRUD (backend/src/modules/hostels/routes.ts). Listing lives in
+ * common.ts (useHostels). Owner / manager only.
+ */
+import { del, patch, post } from './client'
+import { useApiMutation } from './query'
+import type { Hostel, HostelType, ID } from './types'
+
+export interface HostelInput {
+  name: string
+  type: HostelType
+  address: string
+  city: string
+  phone: string
+  /** optional hosteler-ID prefix (2-8 letters/digits); blank = auto */
+  code?: string
+}
+
+export const hostelsApi = {
+  create: (body: HostelInput) => post<Hostel>('/hostels', body),
+  update: ({ id, ...body }: Partial<HostelInput> & { id: ID }) => patch<Hostel>(`/hostels/${id}`, body),
+  remove: (id: ID) => del<{ ok: true }>(`/hostels/${id}`),
+}
+
+// counts and usage appear in the org, dashboard, reports and room screens
+const INVALIDATE = [['hostels'], ['org'], ['dashboard'], ['reports'], ['rooms']]
+
+/** Errors are not toasted: the form shows them inline (e.g. 409 code taken). */
+export function useCreateHostel(onSuccess?: (h: Hostel) => void) {
+  return useApiMutation(hostelsApi.create, { invalidate: INVALIDATE, success: (h) => `${h.name} added`, onSuccess: (h) => onSuccess?.(h), toastErrors: false })
+}
+
+/** Errors are not toasted: the form shows them inline. */
+export function useUpdateHostel(onSuccess?: (h: Hostel) => void) {
+  return useApiMutation(hostelsApi.update, { invalidate: INVALIDATE, success: 'Hostel updated', onSuccess: (h) => onSuccess?.(h), toastErrors: false })
+}
+
+export function useDeleteHostel() {
+  return useApiMutation(hostelsApi.remove, { invalidate: INVALIDATE })
+}

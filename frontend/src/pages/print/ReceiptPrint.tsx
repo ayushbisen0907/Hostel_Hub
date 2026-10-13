@@ -1,44 +1,60 @@
 import { useParams } from 'react-router-dom'
 import { Building2 } from 'lucide-react'
-import { useStore } from '@/store'
-import { bedLabel } from '@/store/selectors'
+import { ApiError } from '@/api/client'
+import { usePrintReceipt } from '@/api/fees'
+import { Button, LoadingState } from '@/components/ui'
 import { formatDate, formatMoney, formatMonth } from '@/lib/utils'
 import { PrintMessage, PrintSheet, PrintToolbar, amountInWords, isDeposit, modeLabel } from '@/pages/admin/_fees'
 
 export default function ReceiptPrint() {
   const { id } = useParams<{ id: string }>()
-  const session = useStore((s) => s.session)
-  const org = useStore((s) => s.org)
-  const payments = useStore((s) => s.payments)
-  const invoices = useStore((s) => s.invoices)
-  const hostelers = useStore((s) => s.hostelers)
-  const hostels = useStore((s) => s.hostels)
-  const rooms = useStore((s) => s.rooms)
-  const beds = useStore((s) => s.beds)
+  const query = usePrintReceipt(id)
 
-  const p = payments.find((x) => x.id === id)
-  if (!p) return <PrintMessage title="Receipt not found" message="This payment may have been deleted or the link is incorrect." />
-  if (session?.kind === 'hosteler' && session.hostelerId !== p.hostelerId)
-    return <PrintMessage title="Not available" message="You can only view your own receipts." />
+  if (query.isLoading)
+    return (
+      <PrintSheet>
+        <PrintToolbar title="Receipt" canPrint={false} />
+        <LoadingState label="Loading receipt…" />
+      </PrintSheet>
+    )
+  if (query.error || !query.data) {
+    const e = query.error
+    if (e instanceof ApiError && (e.status === 404 || e.status === 400))
+      return <PrintMessage title="Receipt not found" message="This payment may have been deleted or the link is incorrect." />
+    if (e instanceof ApiError && e.status === 403)
+      return <PrintMessage title="Not available" message="You don't have access to this receipt." />
+    return (
+      <PrintMessage
+        title="Couldn't load the receipt"
+        message={e instanceof Error ? e.message : 'Something went wrong'}
+        action={
+          <Button variant="outline" onClick={() => void query.refetch()}>
+            Try again
+          </Button>
+        }
+      />
+    )
+  }
 
-  const h = hostelers.find((x) => x.id === p.hostelerId)
-  const hostel = hostels.find((x) => x.id === p.hostelId)
-  const inv = p.invoiceId ? invoices.find((i) => i.id === p.invoiceId) : undefined
+  const { payment: p, invoice: inv, organization: org, hostel, hosteler: h } = query.data
   const against = inv
     ? `Invoice ${inv.number} · ${formatMonth(inv.month)}`
     : isDeposit(p)
       ? 'Security deposit'
       : p.invoiceId
         ? 'Invoice (deleted)'
-        : p.note || 'Advance payment'
+        : p.note && p.note !== 'Advance'
+          ? `Advance payment · ${p.note}`
+          : 'Advance payment'
 
   const rows: { label: string; value: string }[] = [
     { label: 'Received from', value: h ? `${h.name}${h.phone ? ` (${h.phone})` : ''}` : 'Hosteler' },
-    { label: 'Room / bed', value: h?.bedId ? bedLabel({ rooms, beds }, h.bedId) : '—' },
+    { label: 'Room / bed', value: h?.place ?? '—' },
     { label: 'Towards', value: against },
     { label: 'Payment mode', value: modeLabel(p.mode) },
     { label: 'Reference', value: p.reference || '—' },
   ]
+  if (p.recordedBy === 'hosteler') rows.push({ label: 'Paid via', value: 'Resident portal' })
 
   return (
     <PrintSheet>

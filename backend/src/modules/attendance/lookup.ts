@@ -12,6 +12,7 @@ type Id = string | Types.ObjectId
 export interface HostelerInfo {
   name: string
   loginId: string
+  phone: string
   roomId: string | null
   roomNumber: string | null
   hostelId: string
@@ -32,13 +33,14 @@ export async function hostelerInfo(orgId: Id, hostelerIds: (Id | null | undefine
   const ids = [...new Set(hostelerIds.filter(Boolean).map(String))]
   const map = new Map<string, HostelerInfo>()
   if (!ids.length) return map
-  const hs = await Hosteler.find({ orgId, _id: { $in: ids } }).select('name loginId roomId hostelId').lean()
+  const hs = await Hosteler.find({ orgId, _id: { $in: ids } }).select('name loginId phone roomId hostelId').lean()
   const rooms = await roomNumbers(orgId, hs.map((h) => h.roomId))
   for (const h of hs) {
     const roomId = h.roomId ? String(h.roomId) : null
     map.set(String(h._id), {
       name: h.name,
       loginId: h.loginId,
+      phone: h.phone ?? '',
       roomId,
       roomNumber: roomId ? (rooms.get(roomId) ?? null) : null,
       hostelId: String(h.hostelId),

@@ -1,20 +1,24 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, LogOut, Plus, Printer, Trash2, UserMinus } from 'lucide-react'
-import { useStore } from '@/store'
-import { bedLabel, hostelerDues, invoiceBalance, useHostelName, useScope, useScopedHostelers } from '@/store/selectors'
-import { inScope } from '@/store/selectors'
-import type { Hosteler, ID, Invoice } from '@/types'
+import { useQueryClient } from '@tanstack/react-query'
+import { useOrg, useScope } from '@/api/common'
+import { useApiMutation } from '@/api/query'
+import { useCan } from '@/api/session'
+import { useInvoices } from '@/api/fees'
+import { HOSTELER_INVALIDATE, hostelersApi, useHosteler, useHostelers, type HostelerDetail, type Settlement } from '@/api/hostelers'
+import type { ID } from '@/api/types'
 import {
-  Avatar,
   Badge,
   Button,
   Card,
   CardHeader,
   EmptyState,
+  ErrorState,
   Field,
   IconButton,
   Input,
+  LoadingState,
   PageHeader,
   SearchInput,
   Switch,
@@ -28,6 +32,7 @@ import {
   toast,
 } from '@/components/ui'
 import { cn, daysBetween, formatDate, formatMoney, formatMonth, today, uid } from '@/lib/utils'
+import { HostelerAvatar, Pager, bedText, useDebounced } from './_residents'
 
 interface Deduction {
   key: string
@@ -35,20 +40,10 @@ interface Deduction {
   amount: string
 }
 
-interface Settlement {
-  hosteler: Hosteler
-  bed: string
+interface Result {
+  s: Settlement
+  phone: string
   hostel: string
-  checkIn: string
-  checkOut: string
-  days: number
-  held: number
-  dues: number
-  adjusted: number
-  deductions: { label: string; amount: number }[]
-  refund: number
-  toCollect: number
-  notes: string
 }
 
 const CHECKLIST = [
@@ -62,16 +57,16 @@ type CheckKey = (typeof CHECKLIST)[number]['key']
 /* Printable summary                                                   */
 /* ------------------------------------------------------------------ */
 
-function SettlementSummary({ s, orgName, onDone }: { s: Settlement; orgName: string; onDone: () => void }) {
-  const totalDeductions = s.deductions.reduce((a, d) => a + d.amount, 0)
+function SettlementSummary({ r, orgName, onDone }: { r: Result; orgName: string; onDone: () => void }) {
+  const s = r.s
   return (
     <>
       <div className="no-print mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
           <CheckCircle2 className="h-8 w-8 text-emerald-500" />
           <div>
-            <h1 className="text-xl font-bold text-slate-900">{s.hosteler.name} has been checked out</h1>
-            <p className="text-sm text-slate-500">The bed is now vacant. Print the settlement for your records.</p>
+            <h1 className="text-xl font-bold text-slate-900">{s.name} has been checked out</h1>
+            <p className="text-sm text-slate-500">The bed is now vacant and the portal account is closed. Print the settlement for your records.</p>
           </div>
         </div>
         <div className="flex gap-2">
@@ -87,7 +82,7 @@ function SettlementSummary({ s, orgName, onDone }: { s: Settlement; orgName: str
         <div className="flex items-start justify-between border-b border-slate-200 pb-4">
           <div>
             <p className="text-lg font-bold text-slate-900">{orgName}</p>
-            <p className="text-sm text-slate-500">{s.hostel}</p>
+            <p className="text-sm text-slate-500">{r.hostel}</p>
           </div>
           <div className="text-right">
             <p className="text-sm font-semibold uppercase tracking-wide text-slate-700">Checkout settlement</p>
@@ -97,12 +92,14 @@ function SettlementSummary({ s, orgName, onDone }: { s: Settlement; orgName: str
         <div className="grid grid-cols-2 gap-4 border-b border-slate-200 py-4 text-sm">
           <div>
             <p className="text-xs text-slate-500">Resident</p>
-            <p className="font-semibold text-slate-900">{s.hosteler.name}</p>
-            <p className="text-slate-600">{s.hosteler.phone}</p>
+            <p className="font-semibold text-slate-900">{s.name}</p>
+            <p className="text-slate-600">
+              {r.phone} · <span className="font-mono">{s.loginId}</span>
+            </p>
           </div>
           <div>
             <p className="text-xs text-slate-500">Room</p>
-            <p className="font-semibold text-slate-900">{s.bed}</p>
+            <p className="font-semibold text-slate-900">{s.bed ?? '—'}</p>
             <p className="text-slate-600">
               {formatDate(s.checkIn)} – {formatDate(s.checkOut)} ({s.days} days)
             </p>
@@ -115,7 +112,9 @@ function SettlementSummary({ s, orgName, onDone }: { s: Settlement; orgName: str
               <td className="py-1.5 text-right font-medium">{formatMoney(s.held)}</td>
             </tr>
             <tr>
-              <td className="py-1.5 text-slate-600">Outstanding dues{s.adjusted > 0 && ' (adjusted from deposit)'}</td>
+              <td className="py-1.5 text-slate-600">
+                Outstanding dues{s.adjusted > 0 && ` (${formatMoney(s.adjusted)} adjusted from deposit)`}
+              </td>
               <td className="py-1.5 text-right font-medium text-red-600">− {formatMoney(s.dues)}</td>
             </tr>
             {s.deductions.map((d, i) => (
@@ -127,7 +126,7 @@ function SettlementSummary({ s, orgName, onDone }: { s: Settlement; orgName: str
             {s.deductions.length > 1 && (
               <tr>
                 <td className="py-1.5 text-xs text-slate-500">Total deductions</td>
-                <td className="py-1.5 text-right text-xs text-slate-500">{formatMoney(totalDeductions)}</td>
+                <td className="py-1.5 text-right text-xs text-slate-500">{formatMoney(s.totalDeductions)}</td>
               </tr>
             )}
             <tr className="border-t-2 border-slate-900">
@@ -150,95 +149,25 @@ function SettlementSummary({ s, orgName, onDone }: { s: Settlement; orgName: str
 }
 
 /* ------------------------------------------------------------------ */
-/* Page                                                                */
+/* Recently checked out                                                */
 /* ------------------------------------------------------------------ */
 
-export default function CheckOut() {
+function RecentCheckouts() {
   const navigate = useNavigate()
-  const [params, setParams] = useSearchParams()
   const scope = useScope()
-  const scoped = useScopedHostelers()
-  const allHostelers = useStore((s) => s.hostelers)
-  const rooms = useStore((s) => s.rooms)
-  const beds = useStore((s) => s.beds)
-  const invoices = useStore((s) => s.invoices)
-  const payments = useStore((s) => s.payments)
-  const orgName = useStore((s) => s.org?.name ?? 'HostelHub')
-  const recordPayment = useStore((s) => s.recordPayment)
-  const checkOut = useStore((s) => s.checkOut)
-  const hostelName = useHostelName()
-
-  const [q, setQ] = useState('')
-  const selectedId = params.get('h') ?? ''
-  const h = allHostelers.find((x) => x.id === selectedId && x.status === 'active')
-
-  const [date, setDate] = useState(today())
-  const [held, setHeld] = useState('0')
-  const [deductions, setDeductions] = useState<Deduction[]>([])
-  const [adjust, setAdjust] = useState(true)
-  const [notes, setNotes] = useState('')
-  const [checks, setChecks] = useState<Record<CheckKey, boolean>>({ keys: false, idcard: false, inspected: false })
-  const [result, setResult] = useState<Settlement | null>(null)
-
-  const db = useMemo(() => ({ rooms, beds, invoices, payments }), [rooms, beds, invoices, payments])
-
-  const collectedDeposit = useMemo(
-    () => (h ? payments.filter((p) => p.hostelerId === h.id && !p.invoiceId && /deposit/i.test(p.note)).reduce((a, p) => a + p.amount, 0) : 0),
-    [payments, h],
-  )
-
-  useEffect(() => {
-    if (!h) return
-    setDate(today())
-    setHeld(String(collectedDeposit || h.securityDeposit))
-    setDeductions([])
-    setAdjust(true)
-    setNotes('')
-    setChecks({ keys: false, idcard: false, inspected: false })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [h?.id])
-
-  const active = useMemo(() => {
-    const term = q.trim().toLowerCase()
-    return scoped
-      .filter((x) => x.status === 'active')
-      .map((x) => ({ h: x, bed: bedLabel(db, x.bedId), dues: hostelerDues(db, x.id) }))
-      .filter((r) => !term || `${r.h.name} ${r.h.phone} ${r.bed}`.toLowerCase().includes(term))
-      .sort((a, b) => a.h.name.localeCompare(b.h.name))
-  }, [scoped, db, q])
-
+  const q = useHostelers({ status: 'checked_out', hostelId: scope, limit: 50 })
   const recent = useMemo(
-    () =>
-      allHostelers
-        .filter((x) => x.status === 'checked_out' && inScope(x.hostelId, scope))
-        .sort((a, b) => (b.checkOutDate ?? '').localeCompare(a.checkOutDate ?? ''))
-        .slice(0, 15),
-    [allHostelers, scope],
+    () => [...(q.data?.items ?? [])].sort((a, b) => (b.checkOutDate ?? '').localeCompare(a.checkOutDate ?? '')).slice(0, 15),
+    [q.data],
   )
-
-  const select = (id: ID | null) => {
-    setResult(null)
-    setParams(id ? { h: id } : {}, { replace: false })
-  }
-
-  /* ---------------- after checkout ---------------- */
-  if (result) {
-    return (
-      <SettlementSummary
-        s={result}
-        orgName={orgName}
-        onDone={() => {
-          setResult(null)
-          setParams({})
-        }}
-      />
-    )
-  }
-
-  const recentTable = (
+  return (
     <Card className="no-print mt-6">
       <CardHeader title="Recently checked out" />
-      {recent.length ? (
+      {q.isLoading ? (
+        <LoadingState className="py-10" />
+      ) : q.error ? (
+        <ErrorState error={q.error} onRetry={() => void q.refetch()} className="py-10" />
+      ) : recent.length ? (
         <Table>
           <THead>
             <tr>
@@ -250,26 +179,23 @@ export default function CheckOut() {
             </tr>
           </THead>
           <tbody>
-            {recent.map((x) => {
-              const d = hostelerDues(db, x.id)
-              return (
-                <TR key={x.id} onClick={() => navigate(`/app/hostelers/${x.id}`)}>
-                  <TD>
-                    <div className="flex items-center gap-3">
-                      <Avatar name={x.name} src={x.photo} size="sm" />
-                      <div>
-                        <p className="font-medium text-slate-900">{x.name}</p>
-                        <p className="text-xs text-slate-500">{hostelName(x.hostelId)}</p>
-                      </div>
+            {recent.map((x) => (
+              <TR key={x.id} onClick={() => navigate(`/app/hostelers/${x.id}`)}>
+                <TD>
+                  <div className="flex items-center gap-3">
+                    <HostelerAvatar h={x} />
+                    <div>
+                      <p className="font-medium text-slate-900">{x.name}</p>
+                      <p className="text-xs text-slate-500">{x.hostelName ?? '—'}</p>
                     </div>
-                  </TD>
-                  <TD className="whitespace-nowrap">{x.checkOutDate ? `${Math.max(daysBetween(x.checkInDate, x.checkOutDate), 0)} days` : '—'}</TD>
-                  <TD className="whitespace-nowrap">{formatDate(x.checkOutDate)}</TD>
-                  <TD className="text-right">{x.depositRefunded !== null ? formatMoney(x.depositRefunded) : '—'}</TD>
-                  <TD className={cn('text-right', d > 0 ? 'font-medium text-red-600' : 'text-slate-400')}>{d > 0 ? formatMoney(d) : '—'}</TD>
-                </TR>
-              )
-            })}
+                  </div>
+                </TD>
+                <TD className="whitespace-nowrap">{x.checkOutDate ? `${Math.max(daysBetween(x.checkInDate, x.checkOutDate), 0)} days` : '—'}</TD>
+                <TD className="whitespace-nowrap">{formatDate(x.checkOutDate)}</TD>
+                <TD className="text-right">{x.depositRefunded !== null ? formatMoney(x.depositRefunded) : '—'}</TD>
+                <TD className={cn('text-right', x.dues > 0 ? 'font-medium text-red-600' : 'text-slate-400')}>{x.dues > 0 ? formatMoney(x.dues) : '—'}</TD>
+              </TR>
+            ))}
           </tbody>
         </Table>
       ) : (
@@ -277,55 +203,139 @@ export default function CheckOut() {
       )}
     </Card>
   )
+}
 
-  /* ---------------- selection ---------------- */
-  if (!h) {
-    return (
-      <>
-        <PageHeader title="Check-out" subtitle="Settle dues and deposit, then free up the bed." />
-        {selectedId && (
-          <p className="mb-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800">That resident isn't currently checked in. Choose someone from the list.</p>
+/* ------------------------------------------------------------------ */
+/* Selection                                                           */
+/* ------------------------------------------------------------------ */
+
+function ChooseResident({ onSelect, notice }: { onSelect: (id: ID) => void; notice?: string }) {
+  const scope = useScope()
+  const [q, setQ] = useState('')
+  const [page, setPage] = useState(1)
+  const term = useDebounced(q.trim(), 300)
+  useEffect(() => setPage(1), [term, scope])
+  const list = useHostelers({ status: 'active', hostelId: scope, q: term || undefined, page, limit: 30 })
+  const items = list.data?.items ?? []
+  return (
+    <>
+      <PageHeader title="Check-out" subtitle="Settle dues and deposit, then free up the bed." />
+      {notice && <p className="mb-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800">{notice}</p>}
+      <Card>
+        <div className="border-b border-slate-100 p-4">
+          <SearchInput value={q} onChange={setQ} placeholder="Search active residents by name, phone or Hosteler ID…" className="sm:max-w-md" />
+        </div>
+        {list.isLoading ? (
+          <LoadingState className="py-10" />
+        ) : list.error ? (
+          <ErrorState error={list.error} onRetry={() => void list.refetch()} />
+        ) : items.length ? (
+          <ul className={cn('divide-y divide-slate-100', list.isPlaceholderData && 'opacity-60')}>
+            {items.map((x) => (
+              <li key={x.id}>
+                <button type="button" onClick={() => onSelect(x.id)} className="flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-slate-50">
+                  <HostelerAvatar h={x} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium text-slate-900">{x.name}</p>
+                    <p className="truncate text-xs text-slate-500">
+                      {bedText(x)} · since {formatDate(x.checkInDate)}
+                    </p>
+                  </div>
+                  {x.dues > 0 ? <Badge tone="red">Dues {formatMoney(x.dues)}</Badge> : <Badge tone="green">No dues</Badge>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <EmptyState
+            icon={<UserMinus className="h-6 w-6" />}
+            title={term ? 'No match' : 'No active residents'}
+            description={term ? 'Try another search.' : 'There is no one to check out.'}
+          />
         )}
-        <Card>
-          <div className="border-b border-slate-100 p-4">
-            <SearchInput value={q} onChange={setQ} placeholder="Search active residents by name, phone or room…" className="sm:max-w-md" />
-          </div>
-          {active.length ? (
-            <ul className="max-h-[28rem] divide-y divide-slate-100 overflow-y-auto">
-              {active.map(({ h: x, bed, dues }) => (
-                <li key={x.id}>
-                  <button type="button" onClick={() => select(x.id)} className="flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-slate-50">
-                    <Avatar name={x.name} src={x.photo} size="sm" />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-medium text-slate-900">{x.name}</p>
-                      <p className="truncate text-xs text-slate-500">
-                        {bed} · since {formatDate(x.checkInDate)}
-                      </p>
-                    </div>
-                    {dues > 0 ? <Badge tone="red">Dues {formatMoney(dues)}</Badge> : <Badge tone="green">No dues</Badge>}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <EmptyState icon={<UserMinus className="h-6 w-6" />} title={q ? 'No match' : 'No active residents'} description={q ? 'Try another search.' : 'There is no one to check out.'} />
-          )}
-        </Card>
-        {recentTable}
-      </>
-    )
+        {list.data && (
+          <Pager page={list.data.page} pages={list.data.pages} total={list.data.total} limit={list.data.limit} onPage={setPage} busy={list.isFetching} noun="residents" />
+        )}
+      </Card>
+      <RecentCheckouts />
+    </>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Page                                                                */
+/* ------------------------------------------------------------------ */
+
+export default function CheckOut() {
+  const [params, setParams] = useSearchParams()
+  const { data: org } = useOrg()
+  const [result, setResult] = useState<Result | null>(null)
+  const selectedId = params.get('h') ?? ''
+  const q = useHosteler(selectedId || null)
+
+  const select = (id: ID | null) => {
+    setResult(null)
+    setParams(id ? { h: id } : {}, { replace: false })
   }
 
-  /* ---------------- settlement ---------------- */
-  const unpaid: { inv: Invoice; balance: number }[] = invoices
-    .filter((i) => i.hostelerId === h.id && !i.cancelled)
-    .map((inv) => ({ inv, balance: invoiceBalance(db, inv) }))
-    .filter((x) => x.balance > 0)
-    .sort((a, b) => a.inv.dueDate.localeCompare(b.inv.dueDate))
-  const dues = unpaid.reduce((a, x) => a + x.balance, 0)
-  const heldNum = Math.max(0, Number(held) || 0)
+  if (result)
+    return (
+      <SettlementSummary
+        r={result}
+        orgName={org?.name ?? 'HostelHub'}
+        onDone={() => {
+          setResult(null)
+          setParams({})
+        }}
+      />
+    )
+
+  if (!selectedId) return <ChooseResident onSelect={select} />
+  if (q.isLoading) return <LoadingState />
+  if (q.error || !q.data)
+    return <ChooseResident onSelect={select} notice="That resident couldn't be found. Choose someone from the list." />
+  if (q.data.status !== 'active')
+    return (
+      <ChooseResident
+        onSelect={select}
+        notice={`${q.data.name} isn't currently checked in${q.data.status === 'reserved' ? ' (reservation)' : ''}. Choose someone from the list.`}
+      />
+    )
+  return <SettlementForm key={q.data.id} h={q.data} onBack={() => select(null)} onDone={(r) => setResult(r)} />
+}
+
+function SettlementForm({ h, onBack, onDone }: { h: HostelerDetail; onBack: () => void; onDone: (r: Result) => void }) {
+  const can = useCan()
+  const qc = useQueryClient()
+  const canFees = can('fees')
+  const invoicesQ = useInvoices({ hostelerId: h.id, limit: 500 }, { enabled: canFees })
+
+  const [date, setDate] = useState(today())
+  const [held, setHeld] = useState(String(h.depositCollected || h.securityDeposit))
+  const [deductions, setDeductions] = useState<Deduction[]>([])
+  const [adjust, setAdjust] = useState(true)
+  const [notes, setNotes] = useState('')
+  const [checks, setChecks] = useState<Record<CheckKey, boolean>>({ keys: false, idcard: false, inspected: false })
+
+  const checkOut = useApiMutation(hostelersApi.checkOut, {
+    // the profile query is refreshed after the summary is shown (else this form would unmount first)
+    invalidate: [...HOSTELER_INVALIDATE.filter((k) => k[0] !== 'hosteler'), ['dues'], ['deposits'], ['attendance']],
+    success: (r) => `${r.settlement.name} checked out`,
+    onSuccess: (r) => {
+      onDone({ s: r.settlement, phone: h.phone, hostel: h.hostelName ?? '' })
+      window.scrollTo({ top: 0 })
+      void qc.invalidateQueries({ queryKey: ['hosteler'] })
+    },
+  })
+
+  const unpaid = useMemo(
+    () => (invoicesQ.data?.items ?? []).filter((i) => i.status !== 'cancelled' && i.balance > 0).sort((a, b) => a.dueDate.localeCompare(b.dueDate)),
+    [invoicesQ.data],
+  )
+  const dues = h.dues
+  const heldNum = Math.max(0, Math.round(Number(held) || 0))
   const deductionLines = deductions
-    .map((d) => ({ label: d.label.trim() || 'Deduction', amount: Math.max(0, Number(d.amount) || 0) }))
+    .map((d) => ({ label: d.label.trim() || 'Deduction', amount: Math.max(0, Math.round(Number(d.amount) || 0)) }))
     .filter((d) => d.amount > 0)
   const totalDeductions = deductionLines.reduce((a, d) => a + d.amount, 0)
   const balance = heldNum - dues - totalDeductions
@@ -334,7 +344,7 @@ export default function CheckOut() {
   const adjustable = Math.min(dues, heldNum)
   const days = Math.max(daysBetween(h.checkInDate, date || today()), 0)
   const allChecked = CHECKLIST.every((c) => checks[c.key])
-  const bed = bedLabel(db, h.bedId)
+  const bed = bedText(h)
 
   const submit = async () => {
     if (!date) return toast.error('Choose the checkout date')
@@ -342,48 +352,19 @@ export default function CheckOut() {
     if (!allChecked) return toast.error('Complete the checkout checklist first')
     const ok = await confirm({
       title: `Check out ${h.name}?`,
-      message: `${bed} will be freed. ${toCollect > 0 ? `Collect ${formatMoney(toCollect)} from the resident.` : `Refund ${formatMoney(refund)} to the resident.`}`,
+      message: `${bed} will be freed and the portal account closed. ${toCollect > 0 ? `Collect ${formatMoney(toCollect)} from the resident.` : `Refund ${formatMoney(refund)} to the resident.`}`,
       confirmText: 'Check out',
       danger: true,
     })
     if (!ok) return
-
-    let adjusted = 0
-    if (adjust && adjustable > 0) {
-      let left = adjustable
-      for (const { inv, balance: b } of unpaid) {
-        if (left <= 0) break
-        const amt = Math.min(b, left)
-        recordPayment({ invoiceId: inv.id, hostelerId: h.id, amount: amt, mode: 'cash', reference: '', date, note: 'Adjusted from security deposit' })
-        left -= amt
-        adjusted += amt
-      }
-    }
-    const noteParts = [
-      `Deposit held ${formatMoney(heldNum)}`,
-      dues > 0 ? `dues ${formatMoney(dues)}${adjusted ? ` (${formatMoney(adjusted)} adjusted)` : ' (not adjusted)'}` : null,
-      ...deductionLines.map((d) => `${d.label} ${formatMoney(d.amount)}`),
-      toCollect > 0 ? `to collect ${formatMoney(toCollect)}` : `refund ${formatMoney(refund)}`,
-    ].filter(Boolean)
-    const deductionNote = `${noteParts.join('; ')}${notes.trim() ? `. ${notes.trim()}` : ''}`
-    checkOut(h.id, { date, depositRefund: refund, deductionNote })
-    toast.success(`${h.name} checked out`)
-    setResult({
-      hosteler: h,
-      bed,
-      hostel: hostelName(h.hostelId),
-      checkIn: h.checkInDate,
-      checkOut: date,
-      days,
-      held: heldNum,
-      dues,
-      adjusted,
+    checkOut.mutate({
+      id: h.id,
+      date,
       deductions: deductionLines,
-      refund,
-      toCollect,
-      notes: notes.trim(),
+      adjustDuesFromDeposit: adjust,
+      depositHeld: heldNum,
+      note: notes.trim(),
     })
-    window.scrollTo({ top: 0 })
   }
 
   return (
@@ -392,7 +373,7 @@ export default function CheckOut() {
         title="Check-out"
         subtitle="Settle dues and deposit, then free up the bed."
         actions={
-          <Button variant="outline" icon={<ArrowLeft className="h-4 w-4" />} onClick={() => select(null)}>
+          <Button variant="outline" icon={<ArrowLeft className="h-4 w-4" />} onClick={onBack} disabled={checkOut.isPending}>
             Choose another
           </Button>
         }
@@ -401,13 +382,13 @@ export default function CheckOut() {
         <div className="space-y-6 lg:col-span-2">
           <Card className="p-5">
             <div className="flex items-center gap-4">
-              <Avatar name={h.name} src={h.photo} size="lg" />
+              <HostelerAvatar h={h} size="lg" />
               <div className="min-w-0">
                 <Link to={`/app/hostelers/${h.id}`} className="text-lg font-bold text-slate-900 hover:underline">
                   {h.name}
                 </Link>
                 <p className="text-sm text-slate-500">
-                  {h.phone} · {hostelName(h.hostelId)}
+                  {h.phone} · <span className="font-mono">{h.loginId}</span> · {h.hostelName ?? '—'}
                 </p>
               </div>
             </div>
@@ -432,31 +413,48 @@ export default function CheckOut() {
           </Card>
 
           <Card>
-            <CardHeader title="Outstanding dues" subtitle={dues > 0 ? `${unpaid.length} unpaid invoice(s)` : 'All invoices are paid'} action={<span className={cn('text-lg font-bold', dues > 0 ? 'text-red-600' : 'text-emerald-600')}>{formatMoney(dues)}</span>} />
-            {unpaid.length > 0 && (
+            <CardHeader
+              title="Outstanding dues"
+              subtitle={dues > 0 ? (canFees && invoicesQ.data ? `${unpaid.length} unpaid invoice(s)` : 'Unpaid invoices') : 'All invoices are paid'}
+              action={<span className={cn('text-lg font-bold', dues > 0 ? 'text-red-600' : 'text-emerald-600')}>{formatMoney(dues)}</span>}
+            />
+            {dues > 0 && (
               <>
-                <Table>
-                  <THead>
-                    <tr>
-                      <TH>Invoice</TH>
-                      <TH>Month</TH>
-                      <TH>Due</TH>
-                      <TH className="text-right">Balance</TH>
-                    </tr>
-                  </THead>
-                  <tbody>
-                    {unpaid.map(({ inv, balance: b }) => (
-                      <TR key={inv.id}>
-                        <TD className="font-medium text-slate-900">{inv.number}</TD>
-                        <TD>{formatMonth(inv.month)}</TD>
-                        <TD className="whitespace-nowrap">{formatDate(inv.dueDate)}</TD>
-                        <TD className="text-right font-medium text-red-600">{formatMoney(b)}</TD>
-                      </TR>
-                    ))}
-                  </tbody>
-                </Table>
+                {canFees &&
+                  (invoicesQ.isLoading ? (
+                    <LoadingState className="py-8" />
+                  ) : invoicesQ.error ? (
+                    <ErrorState error={invoicesQ.error} onRetry={() => void invoicesQ.refetch()} className="py-8" />
+                  ) : (
+                    unpaid.length > 0 && (
+                      <Table>
+                        <THead>
+                          <tr>
+                            <TH>Invoice</TH>
+                            <TH>Month</TH>
+                            <TH>Due</TH>
+                            <TH className="text-right">Balance</TH>
+                          </tr>
+                        </THead>
+                        <tbody>
+                          {unpaid.map((inv) => (
+                            <TR key={inv.id}>
+                              <TD className="font-medium text-slate-900">{inv.number}</TD>
+                              <TD>{formatMonth(inv.month)}</TD>
+                              <TD className="whitespace-nowrap">{formatDate(inv.dueDate)}</TD>
+                              <TD className="text-right font-medium text-red-600">{formatMoney(inv.balance)}</TD>
+                            </TR>
+                          ))}
+                        </tbody>
+                      </Table>
+                    )
+                  ))}
                 <div className="border-t border-slate-100 px-5 py-3">
-                  <Switch checked={adjust} onChange={setAdjust} label={`Adjust dues against deposit (records ${formatMoney(adjustable)} as cash payments)`} />
+                  <Switch
+                    checked={adjust}
+                    onChange={setAdjust}
+                    label={`Adjust dues against deposit (records ${formatMoney(adjustable)} as cash payments)`}
+                  />
                   {!adjust && <p className="mt-1 text-xs text-slate-500">Dues stay open in Fees and are still subtracted in this settlement.</p>}
                 </div>
               </>
@@ -479,6 +477,7 @@ export default function CheckOut() {
                 <div key={d.key} className="flex items-center gap-2">
                   <Input
                     placeholder="e.g. Broken chair"
+                    maxLength={100}
                     value={d.label}
                     onChange={(e) => setDeductions((all) => all.map((x) => (x.key === d.key ? { ...x, label: e.target.value } : x)))}
                   />
@@ -516,7 +515,7 @@ export default function CheckOut() {
         <div className="space-y-6">
           <Card className="p-5 lg:sticky lg:top-20">
             <h3 className="mb-4 font-semibold text-slate-900">Settlement</h3>
-            <Field label="Security deposit held" hint={`Agreed ${formatMoney(h.securityDeposit)} · collected ${formatMoney(collectedDeposit)}`}>
+            <Field label="Security deposit held" hint={`Agreed ${formatMoney(h.securityDeposit)} · collected ${formatMoney(h.depositCollected)}`}>
               <Input type="number" min={0} value={held} onChange={(e) => setHeld(e.target.value)} />
             </Field>
             <dl className="mt-4 space-y-2 text-sm">
@@ -541,7 +540,7 @@ export default function CheckOut() {
               <Input type="date" value={date} min={h.checkInDate} onChange={(e) => setDate(e.target.value)} />
             </Field>
             <Field label="Notes" className="mt-4">
-              <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Reason for leaving, forwarding address…" />
+              <Textarea value={notes} maxLength={1000} onChange={(e) => setNotes(e.target.value)} placeholder="Reason for leaving, forwarding address…" />
             </Field>
             <div className="mt-4 space-y-2 rounded-lg border border-slate-200 p-3">
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Checklist</p>
@@ -557,14 +556,21 @@ export default function CheckOut() {
                 </label>
               ))}
             </div>
-            <Button variant="danger" className="mt-5 w-full" icon={<LogOut className="h-4 w-4" />} disabled={!allChecked} onClick={submit}>
+            <Button
+              variant="danger"
+              className="mt-5 w-full"
+              icon={<LogOut className="h-4 w-4" />}
+              disabled={!allChecked}
+              loading={checkOut.isPending}
+              onClick={() => void submit()}
+            >
               Complete check-out
             </Button>
             {!allChecked && <p className="mt-2 text-center text-xs text-slate-500">Tick every checklist item to continue.</p>}
           </Card>
         </div>
       </div>
-      {recentTable}
+      <RecentCheckouts />
     </>
   )
 }

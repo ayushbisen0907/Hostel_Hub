@@ -10,7 +10,8 @@
  *   GET    /api/mess/opt-outs?from&to&hostelId
  *   POST   /api/mess/opt-outs                  { hostelerId, date, meal } (409 if it exists)
  *   DELETE /api/mess/opt-outs/:id
- *   GET    /api/mess/feedback?meal&hostelId    newest first (paginated) + average rating per meal
+ *   GET    /api/mess/feedback?meal&rating&hostelId  newest first (paginated) + average per meal, overall average,
+ *                                              rating distribution (rating=high: 4-5 stars, low: 1-2 stars)
  *   GET    /api/mess/stats?month=&hostelId=    opt-outs in month + estimated savings
  */
 import { Router } from 'express'
@@ -135,7 +136,7 @@ router.get(
   ah(async (req, res) => {
     const { orgId } = staffOf(req)
     const hs = await Hosteler.find({ orgId, ...hostelScope(req.query), status: 'active' })
-      .select('name loginId hostelId roomId messOpted')
+      .select('name loginId phone hostelId roomId messOpted')
       .sort({ name: 1 })
       .lean()
     const rooms = await roomNumbers(orgId, hs.map((h) => h.roomId))
@@ -143,6 +144,7 @@ router.get(
       id: String(h._id),
       name: h.name,
       loginId: h.loginId,
+      phone: h.phone ?? '',
       hostelId: String(h.hostelId),
       roomId: h.roomId ? String(h.roomId) : null,
       roomNumber: h.roomId ? (rooms.get(String(h.roomId)) ?? null) : null,
@@ -224,9 +226,13 @@ router.get(
   '/feedback',
   ah(async (req, res) => {
     const { orgId } = staffOf(req)
-    const q = parse(paginationQuery.extend({ meal: meal.optional() }), req.query)
+    const q = parse(paginationQuery.extend({ meal: meal.optional(), rating: z.enum(['high', 'low']).optional() }), req.query)
     const scope = { orgId, ...hostelScope(req.query) }
-    const filter = { ...scope, ...(q.meal ? { meal: q.meal } : {}) }
+    const filter = {
+      ...scope,
+      ...(q.meal ? { meal: q.meal } : {}),
+      ...(q.rating ? { rating: q.rating === 'high' ? { $gte: 4 } : { $lte: 2 } } : {}),
+    }
     const [list, total, ratings] = await Promise.all([
       MessFeedback.find(filter)
         .sort({ createdAt: -1 })
@@ -244,6 +250,8 @@ router.get(
         return [m, { average: avg === null ? null : Math.round(avg * 10) / 10, count: rs.length }]
       }),
     )
+    const overall = ratings.length ? ratings.reduce((a, r) => a + r.rating, 0) / ratings.length : null
+    const distribution = Object.fromEntries([1, 2, 3, 4, 5].map((n) => [n, ratings.filter((r) => r.rating === n).length]))
     res.json({
       ...paginate(
         list.map((f) => {
@@ -255,6 +263,8 @@ router.get(
         q.limit,
       ),
       averages,
+      overall: { average: overall === null ? null : Math.round(overall * 10) / 10, count: ratings.length },
+      distribution,
     })
   }),
 )

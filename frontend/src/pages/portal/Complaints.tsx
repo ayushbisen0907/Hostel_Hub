@@ -15,12 +15,11 @@ import {
   Wifi,
   Zap,
 } from 'lucide-react'
-import { useStore } from '@/store'
-import { useCurrentHosteler } from '@/store/selectors'
-import { Badge, Button, Card, EmptyState, Field, Input, StatusBadge, Tabs, Textarea, toast } from '@/components/ui'
+import { useCommentOnComplaint, useMyComplaints, useRaiseComplaint } from '@/api/portal'
+import type { Complaint, ComplaintCategory, ComplaintStatus, Priority } from '@/api/types'
+import { Badge, Button, Card, EmptyState, Field, Input, QueryView, StatusBadge, Tabs, Textarea } from '@/components/ui'
 import { cn, formatDate, formatDateTime } from '@/lib/utils'
-import type { Complaint, ComplaintCategory, ComplaintStatus, Hosteler, Priority } from '@/types'
-import { NotLoggedIn, PortalTitle, SectionTitle } from './_shared'
+import { PortalTitle, SectionTitle } from './_shared'
 
 const CATEGORIES: { value: ComplaintCategory; label: string; icon: typeof Zap; tone: string }[] = [
   { value: 'electrical', label: 'Electrical', icon: Zap, tone: 'text-amber-600 bg-amber-50' },
@@ -75,8 +74,8 @@ function Timeline({ c }: { c: Complaint }) {
   )
 }
 
-function ComplaintCard({ c, me }: { c: Complaint; me: Hosteler }) {
-  const addComment = useStore((s) => s.addComplaintComment)
+function ComplaintCard({ c }: { c: Complaint }) {
+  const addComment = useCommentOnComplaint()
   const [open, setOpen] = useState(false)
   const [text, setText] = useState('')
   const cat = CAT.get(c.category) ?? CATEGORIES[CATEGORIES.length - 1]!
@@ -84,10 +83,8 @@ function ComplaintCard({ c, me }: { c: Complaint; me: Hosteler }) {
 
   const send = () => {
     const t = text.trim()
-    if (!t) return
-    addComment(c.id, me.name, t)
-    setText('')
-    toast.success('Comment added')
+    if (!t || addComment.isPending) return
+    addComment.mutate({ id: c.id, text: t }, { onSuccess: () => setText('') })
   }
 
   return (
@@ -130,10 +127,10 @@ function ComplaintCard({ c, me }: { c: Complaint; me: Hosteler }) {
             <p className="text-sm text-slate-500">No comments yet. The warden will update you here.</p>
           ) : (
             <ul className="space-y-2">
-              {c.comments.map((cm) => {
-                const mine = cm.by === me.name
+              {c.comments.map((cm, i) => {
+                const mine = cm.byKind === 'hosteler'
                 return (
-                  <li key={cm.id} className={cn('flex', mine ? 'justify-end' : 'justify-start')}>
+                  <li key={cm.id ?? i} className={cn('flex', mine ? 'justify-end' : 'justify-start')}>
                     <div
                       className={cn(
                         'max-w-[85%] rounded-2xl px-3 py-2 text-sm',
@@ -157,10 +154,16 @@ function ComplaintCard({ c, me }: { c: Complaint; me: Hosteler }) {
               onKeyDown={(e) => e.key === 'Enter' && send()}
               placeholder={c.status === 'resolved' ? 'Still an issue? Add a comment…' : 'Add a comment…'}
               className="h-11 rounded-xl"
+              maxLength={1000}
             />
-            <Button onClick={send} disabled={!text.trim()} className="h-11 rounded-xl" aria-label="Send comment">
-              <Send className="h-4 w-4" />
-            </Button>
+            <Button
+              onClick={send}
+              disabled={!text.trim()}
+              loading={addComment.isPending}
+              icon={addComment.isPending ? undefined : <Send className="h-4 w-4" />}
+              className="h-11 rounded-xl"
+              aria-label="Send comment"
+            />
           </div>
         </div>
       )}
@@ -171,9 +174,8 @@ function ComplaintCard({ c, me }: { c: Complaint; me: Hosteler }) {
 type Filter = 'active' | 'resolved' | 'all'
 
 export default function Complaints() {
-  const me = useCurrentHosteler()
-  const complaints = useStore((s) => s.complaints)
-  const addComplaint = useStore((s) => s.addComplaint)
+  const complaintsQ = useMyComplaints()
+  const raise = useRaiseComplaint()
 
   const [showForm, setShowForm] = useState(false)
   const [category, setCategory] = useState<ComplaintCategory | ''>('')
@@ -183,12 +185,7 @@ export default function Complaints() {
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [filter, setFilter] = useState<Filter>('active')
 
-  const mine = useMemo(
-    () => (me ? complaints.filter((c) => c.hostelerId === me.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)) : []),
-    [complaints, me],
-  )
-
-  if (!me) return <NotLoggedIn />
+  const mine = useMemo(() => [...(complaintsQ.data ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [complaintsQ.data])
 
   const active = mine.filter((c) => c.status !== 'resolved')
   const resolved = mine.filter((c) => c.status === 'resolved')
@@ -198,24 +195,22 @@ export default function Complaints() {
     const e: Record<string, string> = {}
     if (!category) e.category = 'Choose a category'
     if (title.trim().length < 3) e.title = 'Give a short title (at least 3 characters)'
+    if (description.trim().length > 2000) e.description = 'Keep the details under 2000 characters'
     setErrors(e)
     if (Object.keys(e).length) return
-    addComplaint({
-      hostelId: me.hostelId,
-      hostelerId: me.id,
-      roomId: me.roomId,
-      category: category as ComplaintCategory,
-      priority,
-      title: title.trim(),
-      description: description.trim(),
-    })
-    toast.success('Complaint raised. The warden has been notified.')
-    setCategory('')
-    setPriority('medium')
-    setTitle('')
-    setDescription('')
-    setShowForm(false)
-    setFilter('active')
+    raise.mutate(
+      { category: category as ComplaintCategory, priority, title: title.trim(), description: description.trim() },
+      {
+        onSuccess: () => {
+          setCategory('')
+          setPriority('medium')
+          setTitle('')
+          setDescription('')
+          setShowForm(false)
+          setFilter('active')
+        },
+      },
+    )
   }
 
   return (
@@ -290,7 +285,7 @@ export default function Complaints() {
             <Field label="Title" required error={errors.title}>
               <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Fan not working" maxLength={80} />
             </Field>
-            <Field label="Details">
+            <Field label="Details" error={errors.description}>
               <Textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
@@ -302,7 +297,7 @@ export default function Complaints() {
               <Button variant="outline" size="lg" className="flex-1 rounded-xl" onClick={() => setShowForm(false)}>
                 Cancel
               </Button>
-              <Button size="lg" className="flex-1 rounded-xl" onClick={submit}>
+              <Button size="lg" className="flex-1 rounded-xl" onClick={submit} loading={raise.isPending}>
                 Submit
               </Button>
             </div>
@@ -321,7 +316,9 @@ export default function Complaints() {
           { value: 'all', label: 'All', count: mine.length },
         ]}
       />
-      {list.length === 0 ? (
+      <QueryView query={complaintsQ}>
+        {() =>
+      list.length === 0 ? (
         <Card>
           <EmptyState
             icon={<MessageSquareWarning className="h-5 w-5" />}
@@ -339,10 +336,12 @@ export default function Complaints() {
       ) : (
         <div className="space-y-3">
           {list.map((c) => (
-            <ComplaintCard key={c.id} c={c} me={me} />
+            <ComplaintCard key={c.id} c={c} />
           ))}
         </div>
-      )}
+      )
+        }
+      </QueryView>
     </div>
   )
 }

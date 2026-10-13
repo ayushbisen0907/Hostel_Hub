@@ -11,7 +11,7 @@ describe('complaints', () => {
       .set(w.auth)
       .send({ hostelId: hid, hostelerId: String(w.hosteler._id), category: 'plumbing', title: 'Tap leaking', priority: 'high' })
       .expect(201)
-    expect(c.body).toMatchObject({ status: 'open', hostelerName: 'Aarav Sharma', roomNumber: '101', priority: 'high', comments: [] })
+    expect(c.body).toMatchObject({ status: 'open', hostelerName: 'Aarav Sharma', hostelerPhone: '9876543210', roomNumber: '101', priority: 'high', comments: [] })
     expect(c.body.id).toBeTruthy()
     await api().post('/api/complaints').set(w.auth).send({ hostelId: hid, category: 'internet', title: 'WiFi down in common room' }).expect(201)
     await api().post('/api/complaints').set(w.auth).send({ hostelId: hid, category: 'magic', title: 'Bad' }).expect(400)
@@ -52,6 +52,18 @@ describe('complaints', () => {
     const h2 = await makeHostel(w.org._id, 'Other')
     const elsewhere = await Staff.create({ orgId: w.org._id, hostelId: h2._id, name: 'Shyam', role: 'cleaner', joinDate: '2026-01-01' })
 
+    await Staff.create({ orgId: w.org._id, hostelId: w.hostel._id, name: 'Gone', role: 'cook', joinDate: '2026-01-01', active: false })
+    const asg = await api().get(`/api/complaints/assignees?hostelId=${hid}`).set(w.auth).expect(200)
+    expect(asg.body.items).toEqual([{ id: String(staff._id), name: 'Ramu', role: 'cleaner', hostelId: hid, active: true }])
+    const asgAll = await api().get(`/api/complaints/assignees?hostelId=${hid}&includeInactive=true`).set(w.auth).expect(200)
+    expect(asgAll.body.items).toHaveLength(2)
+    // wardens can't open the staff module but can list assignees
+    const warden = await makeStaffUser(w.org._id, 'warden')
+    await api().get(`/api/staff?hostelId=${hid}`).set(warden.auth).expect(403)
+    await api().get(`/api/complaints/assignees?hostelId=${hid}`).set(warden.auth).expect(200)
+    const acct = await makeStaffUser(w.org._id, 'accountant')
+    await api().get('/api/complaints/assignees').set(acct.auth).expect(403)
+
     const c = await api().post('/api/complaints').set(w.auth).send({ hostelId: hid, category: 'cleaning', title: 'Corridor dirty' }).expect(201)
     const id = c.body.id
     const p1 = await api().patch(`/api/complaints/${id}`).set(w.auth).send({ status: 'in_progress', assignedStaffId: String(staff._id) }).expect(200)
@@ -84,6 +96,9 @@ describe('complaints', () => {
     await api().post('/api/complaints').set(other.auth).send({ hostelId: String(w.hostel._id), category: 'other', title: 'Sneaky one' }).expect(404)
     const list = await api().get('/api/complaints').set(other.auth).expect(200)
     expect(list.body.items).toHaveLength(0)
+    await Staff.create({ orgId: w.org._id, hostelId: w.hostel._id, name: 'Ramu', role: 'cleaner', joinDate: '2026-01-01' })
+    const asg = await api().get('/api/complaints/assignees').set(other.auth).expect(200)
+    expect(asg.body.items).toHaveLength(0)
 
     const acct = await makeStaffUser(w.org._id, 'accountant')
     await api().get('/api/complaints').set(acct.auth).expect(403)

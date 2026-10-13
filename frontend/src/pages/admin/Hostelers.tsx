@@ -1,14 +1,17 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Download, UserPlus, Users } from 'lucide-react'
-import { useStore } from '@/store'
-import { bedLabel, hostelerDues, useHostelName, useScopedHostelers, useScope } from '@/store/selectors'
-import type { HostelerStatus } from '@/types'
+import { useScope } from '@/api/common'
+import { toastError } from '@/api/query'
+import { useCan } from '@/api/session'
+import { hostelersApi, useHostelers, type HostelerListParams } from '@/api/hostelers'
+import type { Hosteler, HostelerStatus } from '@/api/types'
 import {
-  Avatar,
   Button,
   Card,
   EmptyState,
+  ErrorState,
+  LoadingState,
   PageHeader,
   SearchInput,
   Select,
@@ -19,98 +22,120 @@ import {
   THead,
   TR,
   Tabs,
+  toast,
 } from '@/components/ui'
 import { cn, downloadCsv, formatDate, formatMoney, today } from '@/lib/utils'
-import { FilterBar, OCCUPATION_OPTIONS } from './_residents'
+import { FilterBar, HostelerAvatar, OCCUPATION_OPTIONS, Pager, bedText, useDebounced } from './_residents'
 
 type Tab = HostelerStatus | 'all'
+const PAGE_SIZE = 50
 
 export default function Hostelers() {
   const navigate = useNavigate()
+  const can = useCan()
   const scope = useScope()
-  const all = useScopedHostelers({ includeCheckedOut: true })
-  const rooms = useStore((s) => s.rooms)
-  const beds = useStore((s) => s.beds)
-  const invoices = useStore((s) => s.invoices)
-  const payments = useStore((s) => s.payments)
-  const hostelName = useHostelName()
 
   const [tab, setTab] = useState<Tab>('active')
   const [q, setQ] = useState('')
   const [occupation, setOccupation] = useState('')
   const [mess, setMess] = useState('')
   const [dues, setDues] = useState('')
+  const [page, setPage] = useState(1)
+  const [exporting, setExporting] = useState(false)
 
-  const rows = useMemo(() => {
-    const db = { rooms, beds, invoices, payments }
-    return all.map((h) => ({ h, bed: h.status === 'checked_out' ? '—' : bedLabel(db, h.bedId), dues: hostelerDues(db, h.id) }))
-  }, [all, rooms, beds, invoices, payments])
+  const term = useDebounced(q.trim(), 300)
 
-  const counts = useMemo(() => {
-    const c = { active: 0, reserved: 0, checked_out: 0, all: rows.length }
-    for (const r of rows) c[r.h.status]++
-    return c
-  }, [rows])
-
-  const filtered = useMemo(() => {
-    const term = q.trim().toLowerCase()
-    return rows
-      .filter(({ h, bed, dues: d }) => {
-        if (tab !== 'all' && h.status !== tab) return false
-        if (occupation && h.occupation !== occupation) return false
-        if (mess === 'yes' && !h.messOpted) return false
-        if (mess === 'no' && h.messOpted) return false
-        if (dues === 'yes' && d <= 0) return false
-        if (dues === 'no' && d > 0) return false
-        if (term) {
-          const hay = `${h.name} ${h.phone} ${bed} ${h.institution}`.toLowerCase()
-          if (!hay.includes(term)) return false
-        }
-        return true
-      })
-      .sort((a, b) => a.h.name.localeCompare(b.h.name))
-  }, [rows, tab, q, occupation, mess, dues])
-
-  const exportCsv = () => {
-    downloadCsv(`hostelers-${today()}.csv`, [
-      ['Name', 'Phone', 'Email', 'Hostel', 'Room / Bed', 'Status', 'Occupation', 'Institution', 'Course', 'Check-in', 'Check-out', 'Monthly rent', 'Security deposit', 'Dues', 'Mess', 'Guardian', 'Guardian phone'],
-      ...filtered.map(({ h, bed, dues: d }) => [
-        h.name,
-        h.phone,
-        h.email,
-        hostelName(h.hostelId),
-        bed,
-        h.status,
-        h.occupation,
-        h.institution,
-        h.course,
-        h.checkInDate,
-        h.checkOutDate,
-        h.monthlyRent,
-        h.securityDeposit,
-        d,
-        h.messOpted ? 'Yes' : 'No',
-        h.guardianName,
-        h.guardianPhone,
-      ]),
-    ])
+  // filters shared by the list and the tab counts
+  const filters: Omit<HostelerListParams, 'status' | 'page' | 'limit'> = {
+    hostelId: scope,
+    q: term || undefined,
+    occupation: (occupation || undefined) as Hosteler['occupation'] | undefined,
+    messOpted: mess === 'yes' ? 'true' : mess === 'no' ? 'false' : undefined,
+    hasDues: dues === 'yes' ? 'true' : dues === 'no' ? 'false' : undefined,
   }
 
+  useEffect(() => setPage(1), [tab, term, occupation, mess, dues, scope])
+
+  const list = useHostelers({ ...filters, status: tab, page, limit: PAGE_SIZE })
+  const cActive = useHostelers({ ...filters, status: 'active', limit: 1 })
+  const cReserved = useHostelers({ ...filters, status: 'reserved', limit: 1 })
+  const cOut = useHostelers({ ...filters, status: 'checked_out', limit: 1 })
+  const cAll = useHostelers({ ...filters, status: 'all', limit: 1 })
+
+  const rows = list.data?.items ?? []
   const anyFilter = !!(q || occupation || mess || dues)
+
+  const exportCsv = async () => {
+    setExporting(true)
+    try {
+      const all = await hostelersApi.listAll({ ...filters, status: tab })
+      if (!all.length) return toast.info('Nothing to export')
+      downloadCsv(`hostelers-${today()}.csv`, [
+        [
+          'Hosteler ID',
+          'Name',
+          'Phone',
+          'Email',
+          'Hostel',
+          'Room / Bed',
+          'Status',
+          'Occupation',
+          'Institution',
+          'Course',
+          'Check-in',
+          'Check-out',
+          'Monthly rent',
+          'Security deposit',
+          'Dues',
+          'Mess',
+          'Guardian',
+          'Guardian phone',
+        ],
+        ...all.map((h) => [
+          h.loginId,
+          h.name,
+          h.phone,
+          h.email,
+          h.hostelName ?? '',
+          bedText(h, ''),
+          h.status,
+          h.occupation,
+          h.institution,
+          h.course,
+          h.checkInDate,
+          h.checkOutDate,
+          h.monthlyRent,
+          h.securityDeposit,
+          h.dues,
+          h.messOpted ? 'Yes' : 'No',
+          h.guardianName,
+          h.guardianPhone,
+        ]),
+      ])
+    } catch (e) {
+      toastError(e)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const n = (x: { data?: { total: number } }) => x.data?.total
 
   return (
     <>
       <PageHeader
         title="Hostelers"
-        subtitle={`${counts.active} living now · ${counts.reserved} reserved`}
+        subtitle={cActive.data && cReserved.data ? `${cActive.data.total} living now · ${cReserved.data.total} reserved` : undefined}
         actions={
           <>
-            <Button variant="outline" icon={<Download className="h-4 w-4" />} onClick={exportCsv} disabled={!filtered.length}>
+            <Button variant="outline" icon={<Download className="h-4 w-4" />} onClick={exportCsv} loading={exporting} disabled={!rows.length}>
               Export CSV
             </Button>
-            <Button icon={<UserPlus className="h-4 w-4" />} onClick={() => navigate('/app/check-in')}>
-              New check-in
-            </Button>
+            {can('checkin') && (
+              <Button icon={<UserPlus className="h-4 w-4" />} onClick={() => navigate('/app/check-in')}>
+                New check-in
+              </Button>
+            )}
           </>
         }
       />
@@ -121,15 +146,15 @@ export default function Hostelers() {
           value={tab}
           onChange={setTab}
           tabs={[
-            { value: 'active', label: 'Active', count: counts.active },
-            { value: 'reserved', label: 'Reserved', count: counts.reserved },
-            { value: 'checked_out', label: 'Checked out', count: counts.checked_out },
-            { value: 'all', label: 'All', count: counts.all },
+            { value: 'active', label: 'Active', count: n(cActive) },
+            { value: 'reserved', label: 'Reserved', count: n(cReserved) },
+            { value: 'checked_out', label: 'Checked out', count: n(cOut) },
+            { value: 'all', label: 'All', count: n(cAll) },
           ]}
         />
         <div className="border-b border-slate-100 p-4">
           <FilterBar>
-            <SearchInput value={q} onChange={setQ} placeholder="Search name, phone, room, college…" className="col-span-2 sm:w-80" />
+            <SearchInput value={q} onChange={setQ} placeholder="Search name, phone, Hosteler ID, college…" className="col-span-2 sm:w-80" />
             <Select className="sm:w-48" value={occupation} placeholder="All occupations" options={OCCUPATION_OPTIONS} onChange={(e) => setOccupation(e.target.value)} />
             <Select
               className="sm:w-40"
@@ -168,13 +193,19 @@ export default function Hostelers() {
           </FilterBar>
         </div>
 
-        {!filtered.length ? (
+        {list.isLoading ? (
+          <LoadingState label="Loading hostelers…" />
+        ) : list.error ? (
+          <ErrorState error={list.error} onRetry={() => void list.refetch()} />
+        ) : !rows.length ? (
           <EmptyState
             icon={<Users className="h-6 w-6" />}
-            title={rows.length ? 'No hostelers match' : 'No hostelers yet'}
-            description={rows.length ? 'Try a different search or filter.' : 'Check in your first resident to get started.'}
+            title={anyFilter ? 'No hostelers match' : tab === 'all' || tab === 'active' ? 'No hostelers yet' : 'Nobody here'}
+            description={anyFilter ? 'Try a different search or filter.' : tab === 'active' || tab === 'all' ? 'Check in your first resident to get started.' : undefined}
             action={
-              !rows.length && (
+              !anyFilter &&
+              (tab === 'active' || tab === 'all') &&
+              can('checkin') && (
                 <Button icon={<UserPlus className="h-4 w-4" />} onClick={() => navigate('/app/check-in')}>
                   New check-in
                 </Button>
@@ -182,7 +213,7 @@ export default function Hostelers() {
             }
           />
         ) : (
-          <Table>
+          <Table className={cn(list.isPlaceholderData && 'opacity-60')}>
             <THead>
               <tr>
                 <TH>Hosteler</TH>
@@ -195,20 +226,22 @@ export default function Hostelers() {
               </tr>
             </THead>
             <tbody>
-              {filtered.map(({ h, bed, dues: d }) => (
+              {rows.map((h) => (
                 <TR key={h.id} onClick={() => navigate(`/app/hostelers/${h.id}`)}>
                   <TD>
                     <div className="flex items-center gap-3">
-                      <Avatar name={h.name} src={h.photo} size="sm" />
+                      <HostelerAvatar h={h} />
                       <div className="min-w-0">
                         <p className="truncate font-medium text-slate-900">{h.name}</p>
-                        <p className="text-xs text-slate-500">{h.phone}</p>
+                        <p className="text-xs text-slate-500">
+                          {h.phone} · <span className="font-mono">{h.loginId}</span>
+                        </p>
                       </div>
                     </div>
                   </TD>
                   <TD className="whitespace-nowrap">
-                    {bed}
-                    {scope === 'all' && <p className="text-xs text-slate-400">{hostelName(h.hostelId)}</p>}
+                    {bedText(h)}
+                    {scope === 'all' && <p className="text-xs text-slate-400">{h.hostelName ?? '—'}</p>}
                   </TD>
                   <TD>
                     <p className="max-w-[12rem] truncate">{h.institution || '—'}</p>
@@ -216,8 +249,8 @@ export default function Hostelers() {
                   </TD>
                   <TD className="whitespace-nowrap">{formatDate(h.checkInDate)}</TD>
                   <TD className="whitespace-nowrap text-right">{formatMoney(h.monthlyRent)}</TD>
-                  <TD className={cn('whitespace-nowrap text-right font-medium', d > 0 ? 'text-red-600' : 'text-slate-400')}>
-                    {d > 0 ? formatMoney(d) : '—'}
+                  <TD className={cn('whitespace-nowrap text-right font-medium', h.dues > 0 ? 'text-red-600' : 'text-slate-400')}>
+                    {h.dues > 0 ? formatMoney(h.dues) : '—'}
                   </TD>
                   <TD>
                     <StatusBadge status={h.status} />
@@ -227,10 +260,16 @@ export default function Hostelers() {
             </tbody>
           </Table>
         )}
-        {filtered.length > 0 && (
-          <div className="border-t border-slate-100 px-4 py-3 text-xs text-slate-500">
-            Showing {filtered.length} of {rows.length} hostelers
-          </div>
+        {list.data && (
+          <Pager
+            page={list.data.page}
+            pages={list.data.pages}
+            total={list.data.total}
+            limit={list.data.limit}
+            onPage={setPage}
+            busy={list.isFetching}
+            noun="hostelers"
+          />
         )}
       </Card>
     </>

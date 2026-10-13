@@ -1,9 +1,18 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AlertTriangle, BadgeCheck, Clock, Download, Eye, FileText, Files, ShieldAlert, Trash2, Upload } from 'lucide-react'
-import { useStore } from '@/store'
-import { inScope, useHostelerMap, useScope } from '@/store/selectors'
-import type { DocumentType, HDocument, ID } from '@/types'
+import { useScope } from '@/api/common'
+import { toastError, useApiMutation } from '@/api/query'
+import {
+  DOCUMENT_INVALIDATE,
+  documentsApi,
+  downloadDocument,
+  useDocuments,
+  useMissingDocuments,
+  type DocumentListParams,
+  type DocumentRow,
+} from '@/api/documents'
+import type { DocumentType, ID } from '@/api/types'
 import {
   Avatar,
   Badge,
@@ -11,7 +20,9 @@ import {
   Card,
   CardHeader,
   EmptyState,
+  ErrorState,
   IconButton,
+  LoadingState,
   PageHeader,
   SearchInput,
   Select,
@@ -22,103 +33,84 @@ import {
   THead,
   TR,
   confirm,
-  toast,
 } from '@/components/ui'
 import { cn, formatBytes, formatDate } from '@/lib/utils'
-import { DOC_TYPE_LABELS, DOC_TYPE_OPTIONS, DocPreviewModal, FilterBar, UploadDocModal, expiryState } from './_residents'
+import { DOC_TYPE_LABELS, DOC_TYPE_OPTIONS, DocPreviewModal, FilterBar, Pager, UploadDocModal, expiryState } from './_residents'
 
-const REQUIRED: DocumentType[] = ['aadhaar', 'police_verification']
+const PAGE_SIZE = 50
 
 export default function Documents() {
   const scope = useScope()
-  const documents = useStore((s) => s.documents)
-  const hostelers = useStore((s) => s.hostelers)
-  const updateDocument = useStore((s) => s.updateDocument)
-  const deleteDocument = useStore((s) => s.deleteDocument)
-  const hostelerMap = useHostelerMap()
 
   const [type, setType] = useState('')
   const [verified, setVerified] = useState('')
   const [expiry, setExpiry] = useState('')
   const [q, setQ] = useState('')
-  const [preview, setPreview] = useState<HDocument | null>(null)
-  const [upload, setUpload] = useState<{ hostelerId: ID | null; type: DocumentType } | null>(null)
+  const [page, setPage] = useState(1)
+  const [preview, setPreview] = useState<DocumentRow | null>(null)
+  const [upload, setUpload] = useState<{ hostelerId: ID | null; hostelerName?: string; type: DocumentType } | null>(null)
 
-  const docs = useMemo(
-    () =>
-      documents
-        .filter((d) => {
-          const h = hostelerMap.get(d.hostelerId)
-          return h && inScope(h.hostelId, scope)
-        })
-        .sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt)),
-    [documents, hostelerMap, scope],
-  )
+  useEffect(() => setPage(1), [type, verified, expiry, scope])
 
-  const stats = useMemo(() => {
-    let v = 0
+  // expiry filters: 'attention' / 'soon' / 'expired' all use the server's "expiring within 30 days" filter
+  const params: DocumentListParams = {
+    hostelId: scope,
+    type: (type || undefined) as DocumentType | undefined,
+    verified: verified === 'yes' ? 'true' : verified === 'no' ? 'false' : undefined,
+    expiring: expiry ? 30 : undefined,
+  }
+  const list = useDocuments({ ...params, page, limit: PAGE_SIZE })
+  const totalQ = useDocuments({ hostelId: scope, limit: 1 })
+  const verifiedQ = useDocuments({ hostelId: scope, verified: 'true', limit: 1 })
+  const pendingQ = useDocuments({ hostelId: scope, verified: 'false', limit: 1 })
+  const attentionQ = useDocuments({ hostelId: scope, expiring: 30, limit: 500 })
+  const missingQ = useMissingDocuments(scope)
+
+  const update = useApiMutation(documentsApi.update, {
+    invalidate: DOCUMENT_INVALIDATE,
+    success: (d) => (d.verified ? 'Document verified' : 'Marked as unverified'),
+  })
+  const del = useApiMutation(documentsApi.remove, { invalidate: DOCUMENT_INVALIDATE, success: 'Document deleted' })
+
+  const attention = useMemo(() => {
     let soon = 0
     let expired = 0
-    for (const d of docs) {
-      if (d.verified) v++
+    for (const d of attentionQ.data?.items ?? []) {
       const e = expiryState(d.expiryDate)
       if (e === 'soon') soon++
       if (e === 'expired') expired++
     }
-    return { total: docs.length, verified: v, pending: docs.length - v, soon, expired }
-  }, [docs])
+    return { soon, expired }
+  }, [attentionQ.data])
 
-  const filtered = useMemo(() => {
-    const term = q.trim().toLowerCase()
-    return docs.filter((d) => {
-      if (type && d.type !== type) return false
-      if (verified === 'yes' && !d.verified) return false
-      if (verified === 'no' && d.verified) return false
-      if (expiry) {
-        const e = expiryState(d.expiryDate)
-        if (expiry === 'attention' ? e !== 'expired' && e !== 'soon' : e !== expiry) return false
-      }
-      if (term) {
-        const h = hostelerMap.get(d.hostelerId)
-        if (!`${h?.name ?? ''} ${h?.phone ?? ''} ${d.fileName}`.toLowerCase().includes(term)) return false
-      }
-      return true
-    })
-  }, [docs, type, verified, expiry, q, hostelerMap])
+  const term = q.trim().toLowerCase()
+  const rows = useMemo(
+    () =>
+      (list.data?.items ?? []).filter((d) => {
+        if (expiry === 'soon' && expiryState(d.expiryDate) !== 'soon') return false
+        if (expiry === 'expired' && expiryState(d.expiryDate) !== 'expired') return false
+        if (term && !`${d.hostelerName ?? ''} ${d.hostelerLoginId ?? ''} ${d.fileName}`.toLowerCase().includes(term)) return false
+        return true
+      }),
+    [list.data, expiry, term],
+  )
 
-  const missing = useMemo(() => {
-    const have = new Map<ID, Set<DocumentType>>()
-    for (const d of documents) {
-      const s = have.get(d.hostelerId) ?? new Set<DocumentType>()
-      s.add(d.type)
-      have.set(d.hostelerId, s)
-    }
-    return hostelers
-      .filter((h) => h.status === 'active' && inScope(h.hostelId, scope))
-      .map((h) => ({ h, lacks: REQUIRED.filter((t) => !have.get(h.id)?.has(t)) }))
-      .filter((x) => x.lacks.length > 0)
-      .sort((a, b) => b.lacks.length - a.lacks.length || a.h.name.localeCompare(b.h.name))
-  }, [documents, hostelers, scope])
+  const toggleVerify = (d: DocumentRow) => update.mutate({ id: d.id, verified: !d.verified })
 
-  const toggleVerify = (d: HDocument) => {
-    updateDocument(d.id, { verified: !d.verified })
-    toast.success(d.verified ? 'Marked as unverified' : 'Document verified')
-  }
-
-  const remove = async (d: HDocument) => {
-    const h = hostelerMap.get(d.hostelerId)
+  const remove = async (d: DocumentRow) => {
     const ok = await confirm({
       title: 'Delete document?',
-      message: `${DOC_TYPE_LABELS[d.type]} of ${h?.name ?? 'this resident'} (${d.fileName}) will be permanently removed.`,
+      message: `${DOC_TYPE_LABELS[d.type]} of ${d.hostelerName ?? 'this resident'} (${d.fileName}) will be permanently removed.`,
       danger: true,
       confirmText: 'Delete',
     })
-    if (!ok) return
-    deleteDocument(d.id)
-    toast.success('Document deleted')
+    if (ok) del.mutate(d.id)
   }
 
+  const download = (d: DocumentRow) => downloadDocument(d).catch((e) => toastError(e, 'Download failed'))
+
   const anyFilter = !!(type || verified || expiry || q)
+  const n = (x: { data?: { total: number } }) => (x.data ? x.data.total : '…')
 
   return (
     <>
@@ -133,13 +125,13 @@ export default function Documents() {
       />
 
       <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard label="Total documents" value={stats.total} icon={<Files className="h-5 w-5" />} />
-        <StatCard label="Verified" value={stats.verified} icon={<BadgeCheck className="h-5 w-5" />} tone="green" onClick={() => setVerified('yes')} />
-        <StatCard label="Pending verification" value={stats.pending} icon={<Clock className="h-5 w-5" />} tone="amber" onClick={() => setVerified('no')} />
+        <StatCard label="Total documents" value={n(totalQ)} icon={<Files className="h-5 w-5" />} />
+        <StatCard label="Verified" value={n(verifiedQ)} icon={<BadgeCheck className="h-5 w-5" />} tone="green" onClick={() => setVerified('yes')} />
+        <StatCard label="Pending verification" value={n(pendingQ)} icon={<Clock className="h-5 w-5" />} tone="amber" onClick={() => setVerified('no')} />
         <StatCard
           label="Expiring / expired"
-          value={stats.soon + stats.expired}
-          hint={`${stats.soon} in 30 days · ${stats.expired} expired`}
+          value={attentionQ.data ? attention.soon + attention.expired : '…'}
+          hint={`${attention.soon} in 30 days · ${attention.expired} expired`}
           icon={<AlertTriangle className="h-5 w-5" />}
           tone="red"
           onClick={() => setExpiry('attention')}
@@ -150,7 +142,7 @@ export default function Documents() {
         <Card className="xl:col-span-2">
           <div className="border-b border-slate-100 p-4">
             <FilterBar>
-              <SearchInput value={q} onChange={setQ} placeholder="Search by resident or file…" className="col-span-2 sm:w-64" />
+              <SearchInput value={q} onChange={setQ} placeholder="Filter by resident or file…" className="col-span-2 sm:w-64" />
               <Select className="sm:w-48" value={type} placeholder="All types" options={DOC_TYPE_OPTIONS} onChange={(e) => setType(e.target.value)} />
               <Select
                 className="sm:w-40"
@@ -170,8 +162,6 @@ export default function Documents() {
                   { value: 'attention', label: 'Expired or expiring' },
                   { value: 'expired', label: 'Expired' },
                   { value: 'soon', label: 'Expiring in 30 days' },
-                  { value: 'ok', label: 'Valid' },
-                  { value: 'none', label: 'No expiry' },
                 ]}
                 onChange={(e) => setExpiry(e.target.value)}
               />
@@ -191,8 +181,12 @@ export default function Documents() {
               )}
             </FilterBar>
           </div>
-          {filtered.length ? (
-            <Table>
+          {list.isLoading ? (
+            <LoadingState />
+          ) : list.error ? (
+            <ErrorState error={list.error} onRetry={() => void list.refetch()} />
+          ) : rows.length ? (
+            <Table className={cn(list.isPlaceholderData && 'opacity-60')}>
               <THead>
                 <tr>
                   <TH>Hosteler</TH>
@@ -205,22 +199,24 @@ export default function Documents() {
                 </tr>
               </THead>
               <tbody>
-                {filtered.map((d) => {
-                  const h = hostelerMap.get(d.hostelerId)
+                {rows.map((d) => {
                   const e = expiryState(d.expiryDate)
+                  const busy = (update.isPending && update.variables?.id === d.id) || (del.isPending && del.variables === d.id)
                   return (
                     <TR key={d.id}>
                       <TD>
-                        {h ? (
-                          <Link to={`/app/hostelers/${h.id}`} className="flex items-center gap-2 hover:underline">
-                            <Avatar name={h.name} src={h.photo} size="sm" />
-                            <span className="whitespace-nowrap font-medium text-slate-900">{h.name}</span>
-                          </Link>
-                        ) : (
-                          '—'
-                        )}
+                        <Link to={`/app/hostelers/${d.hostelerId}`} className="flex items-center gap-2 hover:underline">
+                          <Avatar name={d.hostelerName ?? '?'} size="sm" />
+                          <div className="min-w-0">
+                            <span className="block whitespace-nowrap font-medium text-slate-900">{d.hostelerName ?? 'Unknown'}</span>
+                            {d.hostelerLoginId && <span className="font-mono text-xs text-slate-500">{d.hostelerLoginId}</span>}
+                          </div>
+                        </Link>
                       </TD>
-                      <TD className="whitespace-nowrap">{DOC_TYPE_LABELS[d.type]}</TD>
+                      <TD className="whitespace-nowrap">
+                        {DOC_TYPE_LABELS[d.type]}
+                        {d.uploadedBy === 'hosteler' && <p className="text-xs text-slate-400">via portal</p>}
+                      </TD>
                       <TD>
                         <button type="button" onClick={() => setPreview(d)} className="flex max-w-[11rem] items-center gap-1.5 text-left text-brand-600 hover:underline">
                           <FileText className="h-4 w-4 shrink-0" />
@@ -235,7 +231,7 @@ export default function Documents() {
                         {e === 'soon' && <p className="text-xs">Expiring soon</p>}
                       </TD>
                       <TD>
-                        <button type="button" onClick={() => toggleVerify(d)} title="Toggle verification">
+                        <button type="button" onClick={() => toggleVerify(d)} disabled={busy} title="Toggle verification">
                           {d.verified ? <Badge tone="green">Verified</Badge> : <Badge tone="amber">Pending</Badge>}
                         </button>
                       </TD>
@@ -244,19 +240,18 @@ export default function Documents() {
                           <IconButton label="Preview" onClick={() => setPreview(d)}>
                             <Eye className="h-4 w-4" />
                           </IconButton>
-                          <a
-                            href={d.dataUrl}
-                            download={d.fileName}
-                            title="Download"
-                            aria-label="Download"
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800"
-                          >
+                          <IconButton label="Download" onClick={() => void download(d)}>
                             <Download className="h-4 w-4" />
-                          </a>
-                          <IconButton label={d.verified ? 'Mark unverified' : 'Verify'} onClick={() => toggleVerify(d)} className={d.verified ? 'text-emerald-600' : ''}>
+                          </IconButton>
+                          <IconButton
+                            label={d.verified ? 'Mark unverified' : 'Verify'}
+                            onClick={() => toggleVerify(d)}
+                            disabled={busy}
+                            className={d.verified ? 'text-emerald-600' : ''}
+                          >
                             <BadgeCheck className="h-4 w-4" />
                           </IconButton>
-                          <IconButton label="Delete" onClick={() => remove(d)} className="hover:text-red-600">
+                          <IconButton label="Delete" onClick={() => remove(d)} disabled={busy} className="hover:text-red-600">
                             <Trash2 className="h-4 w-4" />
                           </IconButton>
                         </div>
@@ -269,9 +264,12 @@ export default function Documents() {
           ) : (
             <EmptyState
               icon={<Files className="h-6 w-6" />}
-              title={docs.length ? 'No documents match' : 'No documents yet'}
-              description={docs.length ? 'Try clearing a filter.' : 'Upload Aadhaar, ID cards and police verification for your residents.'}
+              title={anyFilter ? 'No documents match' : 'No documents yet'}
+              description={anyFilter ? 'Try clearing a filter.' : 'Upload Aadhaar, ID cards and police verification for your residents.'}
             />
+          )}
+          {list.data && (
+            <Pager page={list.data.page} pages={list.data.pages} total={list.data.total} limit={list.data.limit} onPage={setPage} busy={list.isFetching} noun="documents" />
           )}
         </Card>
 
@@ -284,11 +282,15 @@ export default function Documents() {
             }
             subtitle="Active residents without Aadhaar or police verification"
           />
-          {missing.length ? (
+          {missingQ.isLoading ? (
+            <LoadingState className="py-10" />
+          ) : missingQ.error ? (
+            <ErrorState error={missingQ.error} onRetry={() => void missingQ.refetch()} className="py-10" />
+          ) : missingQ.data?.length ? (
             <ul className="max-h-[32rem] divide-y divide-slate-100 overflow-y-auto">
-              {missing.map(({ h, lacks }) => (
+              {missingQ.data.map(({ hosteler: h, lacks }) => (
                 <li key={h.id} className="flex items-center gap-3 px-5 py-3">
-                  <Avatar name={h.name} src={h.photo} size="sm" />
+                  <Avatar name={h.name} size="sm" />
                   <div className="min-w-0 flex-1">
                     <Link to={`/app/hostelers/${h.id}`} className="block truncate text-sm font-medium text-slate-900 hover:underline">
                       {h.name}
@@ -301,7 +303,12 @@ export default function Documents() {
                       ))}
                     </div>
                   </div>
-                  <Button size="sm" variant="outline" icon={<Upload className="h-3.5 w-3.5" />} onClick={() => setUpload({ hostelerId: h.id, type: lacks[0]! })}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    icon={<Upload className="h-3.5 w-3.5" />}
+                    onClick={() => setUpload({ hostelerId: h.id, hostelerName: h.name, type: lacks[0]! })}
+                  >
                     Upload
                   </Button>
                 </li>
@@ -316,7 +323,13 @@ export default function Documents() {
         </Card>
       </div>
 
-      <UploadDocModal open={!!upload} onClose={() => setUpload(null)} hostelerId={upload?.hostelerId ?? null} defaultType={upload?.type ?? 'aadhaar'} />
+      <UploadDocModal
+        open={!!upload}
+        onClose={() => setUpload(null)}
+        hostelerId={upload?.hostelerId ?? null}
+        hostelerName={upload?.hostelerName}
+        defaultType={upload?.type ?? 'aadhaar'}
+      />
       <DocPreviewModal doc={preview} onClose={() => setPreview(null)} />
     </>
   )

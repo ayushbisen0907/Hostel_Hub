@@ -3,6 +3,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { api, makeHosteler, makeStaffUser, makeWorld } from './helpers.js'
 import { HDocument } from '../src/models/Document.js'
+import { Hosteler } from '../src/models/Hosteler.js'
 import { uploadRoot } from '../src/lib/upload.js'
 
 // 1x1 transparent PNG
@@ -123,5 +124,15 @@ describe('documents', () => {
     expect(r.body.items).toHaveLength(1)
     expect(r.body.items[0].hosteler.name).toBe('Zoya Khan')
     expect(r.body.items[0].lacks).toEqual(['police_verification'])
+  })
+
+  it('deleting the last photo document clears the hosteler photo', async () => {
+    const w = await makeWorld()
+    await api().post(`/api/hostelers/${w.hosteler._id}/photo`).set(w.auth).attach('file', PNG, { filename: 'me.png', contentType: 'image/png' }).expect(201)
+    expect((await Hosteler.findById(w.hosteler._id))!.photoUrl).toBe(`/api/hostelers/${w.hosteler._id}/photo`)
+    const list = await api().get('/api/documents').query({ hostelerId: String(w.hosteler._id), type: 'photo' }).set(w.auth).expect(200)
+    expect(list.body.items).toHaveLength(1)
+    await api().delete(`/api/documents/${list.body.items[0].id}`).set(w.auth).expect(204)
+    expect((await Hosteler.findById(w.hosteler._id))!.photoUrl).toBeNull()
   })
 })

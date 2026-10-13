@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useLocation } from 'react-router-dom'
-import { ChevronDown, Coffee, Cookie, Moon, Pin, Soup, UserX } from 'lucide-react'
-import { useStore } from '@/store'
-import type { Hosteler, Meal, Notice } from '@/types'
+import { ChevronDown, Coffee, Cookie, Lock, Moon, Pin, Soup, UserX } from 'lucide-react'
+import { usePortalHome } from '@/api/portal'
+import type { Meal, Notice } from '@/api/types'
 import { Badge, Card } from '@/components/ui'
 import { cn, formatDate, formatMoney } from '@/lib/utils'
 
@@ -27,7 +27,7 @@ export const MEAL_TIME: Record<Meal, string> = {
   dinner: '8:00 – 10:00 PM',
 }
 
-/** Last time (HH:mm, same day) a meal can be skipped / un-skipped */
+/** Last time (HH:mm, same day) a meal can be skipped / un-skipped — same as MEAL_CUTOFF on the server (GET /portal/mess/menu returns the live values) */
 export const MEAL_CUTOFF: Record<Meal, string> = {
   breakfast: '07:00',
   lunch: '10:00',
@@ -63,20 +63,10 @@ export function formatCutoff(hhmm: string): string {
 /* Hooks                                                               */
 /* ------------------------------------------------------------------ */
 
+/** Formats money with the organization's currency symbol (from GET /portal/home). */
 export function useMoney() {
-  const symbol = useStore((s) => s.settings.currencySymbol)
+  const symbol = usePortalHome().data?.currencySymbol ?? '₹'
   return (n: number) => formatMoney(n, symbol)
-}
-
-/** Notices visible to a hosteler: their hostel + global ones, pinned first then newest. */
-export function useMyNotices(hosteler: Hosteler | null): Notice[] {
-  const notices = useStore((s) => s.notices)
-  return useMemo(() => {
-    if (!hosteler) return []
-    return notices
-      .filter((n) => n.hostelId === null || n.hostelId === hosteler.hostelId)
-      .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt.localeCompare(a.createdAt))
-  }, [notices, hosteler])
 }
 
 /* ------------------------------------------------------------------ */
@@ -91,6 +81,21 @@ export function NotLoggedIn() {
       </div>
       <p className="font-semibold text-slate-800">Profile not found</p>
       <p className="mt-1 text-sm text-slate-500">Please log in again to the hosteler portal.</p>
+    </Card>
+  )
+}
+
+/** Friendly state for parts of the portal the hostel's plan doesn't include. */
+export function NotAvailable({ title = 'Not available for your hostel', description }: { title?: string; description?: string }) {
+  return (
+    <Card className="p-8 text-center">
+      <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-400">
+        <Lock className="h-6 w-6" />
+      </div>
+      <p className="font-semibold text-slate-800">{title}</p>
+      <p className="mx-auto mt-1 max-w-sm text-sm text-slate-500">
+        {description ?? "Your hostel hasn't enabled this feature yet. Please contact the hostel office."}
+      </p>
     </Card>
   )
 }

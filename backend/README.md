@@ -10,7 +10,7 @@ REST API for HostelHub: **Node.js + Express + TypeScript + MongoDB (Mongoose)**.
 4. Create the env file and paste the string, replacing `<password>` and adding the database name `hostelhub`:
 
 ```bash
-cd server
+cd backend
 cp .env.example .env
 # edit .env:
 # MONGODB_URI=mongodb+srv://myuser:mypassword@cluster0.xxxxx.mongodb.net/hostelhub?retryWrites=true&w=majority

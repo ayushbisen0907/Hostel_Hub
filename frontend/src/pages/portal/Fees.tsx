@@ -652,7 +652,8 @@ export default function Fees() {
                   <p className="font-medium text-slate-900">{money(p.amount)}</p>
                   <p className="truncate text-xs text-slate-500">
                     {formatDate(p.date)} · {MODE_LABEL[p.mode]} · {p.receiptNo}
-                    {p.invoiceMonth ? ` · ${formatMonth(p.invoiceMonth)}` : p.note ? ` · ${p.note}` : ''}
+                    {p.kind === 'deposit' ? ' · Security deposit' : ''}
+                    {p.invoiceMonth ? ` · ${formatMonth(p.invoiceMonth)}` : p.note && p.kind !== 'deposit' ? ` · ${p.note}` : ''}
                   </p>
                 </div>
                 <Button variant="ghost" size="sm" onClick={() => openInNewTab(`/print/receipt/${p.id}`)} icon={<Download className="h-4 w-4" />}>

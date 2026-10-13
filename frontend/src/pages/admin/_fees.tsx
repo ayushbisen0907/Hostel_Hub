@@ -411,6 +411,8 @@ export function RecordPaymentModal({
 
   const openInvoices = invoicesQ.data ?? []
   const depositPending = hosteler ? Math.max(hosteler.securityDeposit - (depositQ.data ?? 0), 0) : 0
+  // open bills that already carry a "Security deposit" line (collect those against the bill, not separately)
+  const depositBills = openInvoices.filter((i) => i.items.some((it) => it.key === 'deposit'))
 
   // reset on open
   useEffect(() => {
@@ -585,6 +587,12 @@ export function RecordPaymentModal({
                 {target === 'deposit' && hosteler && (
                   <span className="mt-1 block text-xs text-slate-500">
                     Agreed {formatMoney(hosteler.securityDeposit)} · collected {formatMoney(depositQ.data ?? 0)}
+                  </span>
+                )}
+                {target === 'deposit' && depositBills.length > 0 && (
+                  <span className="mt-2 block rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    The security deposit is already on bill {depositBills.map((i) => i.number).join(', ')}. To collect it, record the payment
+                    against that bill instead — the deposit part gets its own receipt.
                   </span>
                 )}
               </>

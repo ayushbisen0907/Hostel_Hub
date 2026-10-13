@@ -35,6 +35,8 @@ const hostelerSchema = new Schema(
     monthlyRent: { type: Number, required: true, min: 0 },
     securityDeposit: { type: Number, default: 0, min: 0 },
     depositRefunded: { type: Number, default: null },
+    /** security deposit to add to the next monthly bill (chosen at check-in or later) */
+    depositToBill: { type: Number, default: 0, min: 0 },
     messOpted: { type: Boolean, default: false },
     notes: { type: String, default: '' },
     // portal credentials

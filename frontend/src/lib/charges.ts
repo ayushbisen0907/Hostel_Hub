@@ -17,6 +17,7 @@ export const CHARGE_KEY_LABELS: Record<ChargeKey, string> = {
   laundry: 'Laundry',
   maintenance: 'Maintenance',
   late_fee: 'Late fee',
+  deposit: 'Security deposit',
   other: 'Other',
 }
 
@@ -64,6 +65,7 @@ export const EMPTY_CHARGES: HostelCharges = {
 export function guessKey(label: string): ChargeKey {
   const l = label.toLowerCase()
   if (/late fee/.test(l)) return 'late_fee'
+  if (/deposit/.test(l)) return 'deposit'
   if (/rent/.test(l)) return 'rent'
   if (/mess|food|meal/.test(l)) return 'mess'
   if (/electric|power/.test(l)) return 'electricity'

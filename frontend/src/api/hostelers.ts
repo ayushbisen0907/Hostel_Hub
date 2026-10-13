@@ -73,6 +73,17 @@ export interface AdmitInput extends HostelerProfileFields {
   messOpted: boolean
   depositPayment: { amount: number; mode: PaymentMode; reference: string } | null
   generateFirstInvoice: boolean
+  /** Deposit not collected now: on the first bill (default), the next monthly bill, or not billed. */
+  depositOption?: DepositOption
+}
+
+export type DepositOption = 'collected' | 'first_bill' | 'next_bill'
+
+export interface BillDepositResult {
+  amount: number
+  target: 'open' | 'next'
+  invoiceNumber: string | null
+  hosteler: HostelerRow
 }
 
 export type HostelerPatch = Partial<
@@ -131,6 +142,8 @@ export const hostelersApi = {
     post<HostelerRow>(`/hostelers/${id}/transfer`, { bedId, updateRent }),
   checkOut: ({ id, ...body }: CheckOutInput & { id: ID }) =>
     post<{ settlement: Settlement; hosteler: HostelerRow }>(`/hostelers/${id}/check-out`, body),
+  /** Put the outstanding security deposit on the latest bill now ('open') or on the next monthly bill ('next'). */
+  billDeposit: ({ id, target }: { id: ID; target: 'open' | 'next' }) => post<BillDepositResult>(`/hostelers/${id}/bill-deposit`, { target }),
   resetPassword: (id: ID) => post<Credentials>(`/hostelers/${id}/reset-password`),
   remove: (id: ID) => del(`/hostelers/${id}`),
   uploadPhoto: ({ id, file }: { id: ID; file: File }) => upload<{ hosteler: HostelerRow; photoUrl: string }>(`/hostelers/${id}/photo`, file),

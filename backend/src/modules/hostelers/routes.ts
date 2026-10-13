@@ -111,6 +111,13 @@ const admitSchema = z.object({
     .nullable()
     .default(null),
   generateFirstInvoice: z.boolean().default(false),
+  /**
+   * What to do with the security deposit not collected now:
+   *  first_bill (default) -> a "Security deposit" line on the first bill
+   *  next_bill            -> added to the next monthly bill
+   *  collected            -> nothing is billed
+   */
+  depositOption: z.enum(['collected', 'first_bill', 'next_bill']).optional(),
 })
 
 // PATCH: profile + stay terms; missing keys are left untouched; unknown keys rejected
@@ -300,7 +307,7 @@ router.post(
   ah(async (req, res) => {
     const { orgId } = staffOf(req)
     const body = parse(admitSchema, req.body)
-    const { hostelId: bodyHostelId, bedId, reserveOnly, depositPayment, generateFirstInvoice, securityDeposit, ...profile } = body
+    const { hostelId: bodyHostelId, bedId, reserveOnly, depositPayment, generateFirstInvoice, securityDeposit, depositOption, ...profile } = body
     if (!bedId && !bodyHostelId) throw badRequest('hostelId is required')
     const { settings } = await getSettings(orgId)
     // hash outside the transaction (the callback may be retried)
@@ -356,10 +363,22 @@ router.post(
           session,
         )
       }
-      if (generateFirstInvoice && !reserveOnly) {
+      // security deposit not collected now -> first bill (default) or next month's bill
+      const collectedNow = depositPayment?.amount ?? 0
+      const depositLeft = Math.max(hosteler.securityDeposit - collectedNow, 0)
+      const option = depositOption ?? (collectedNow > 0 ? 'collected' : 'first_bill')
+      const firstBill = generateFirstInvoice && !reserveOnly
+      let depositOnFirstBill = 0
+      if (depositLeft > 0 && option === 'first_bill' && firstBill) depositOnFirstBill = depositLeft
+      else if (depositLeft > 0 && option !== 'collected') {
+        hosteler.depositToBill = depositLeft
+        await hosteler.save({ session })
+      }
+      if (firstBill) {
         const month = hosteler.checkInDate.slice(0, 7)
         const hostelDoc = await Hostel.findById(hosteler.hostelId).select('charges').session(session).lean()
         const items = monthlyBillItems(hosteler, hostelDoc?.charges, settings.messMonthlyCharge)
+        if (depositOnFirstBill > 0) items.push({ key: 'deposit', label: 'Security deposit', amount: depositOnFirstBill })
         await createInvoice(orgId, { hostelerId: hosteler._id, month, items, dueDate: hosteler.checkInDate }, session)
       }
       if (!reserveOnly) await gateLog(hosteler, 'in', 'Check-in', session)
@@ -458,9 +477,17 @@ router.post(
       const room = h.roomId ? await Room.findOne({ _id: h.roomId, orgId }).session(session).lean() : null
       const depositPayments = await Payment.find({ orgId, hostelerId: h._id, kind: 'deposit' }).session(session).lean()
       const collected = depositPayments.reduce((a, p) => a + p.amount, 0)
-      const held = Math.round(body.depositHeld ?? (collected || h.securityDeposit))
-
       const invoices = await Invoice.find({ orgId, hostelerId: h._id, cancelled: false }).session(session).lean()
+      // A deposit line still unpaid on a bill is part of `dues` below, so it also
+      // counts as held (they net out — never charged twice). Once a deposit is
+      // tracked in the app (received, billed or waiting for the next bill), an
+      // uncollected deposit is not held; only older records fall back to the agreed amount.
+      const billedDeposit = invoices.reduce((a, inv) => a + inv.items.filter((i) => i.key === 'deposit').reduce((x, i) => x + i.amount, 0), 0)
+      const billIds = new Set(invoices.map((inv) => String(inv._id)))
+      const paidOnBills = depositPayments.filter((p) => p.invoiceId && billIds.has(String(p.invoiceId))).reduce((a, p) => a + p.amount, 0)
+      const unpaidBilledDeposit = Math.max(billedDeposit - paidOnBills, 0)
+      const tracked = collected > 0 || billedDeposit > 0 || (h.depositToBill ?? 0) > 0
+      const held = Math.round(body.depositHeld ?? (tracked ? collected + unpaidBilledDeposit : h.securityDeposit))
       const unpaid = invoices
         .map((inv) => ({ inv, balance: Math.max(inv.total - inv.paidAmount, 0) }))
         .filter((x) => x.balance > 0)
@@ -555,6 +582,57 @@ router.post(
     await h.save()
     await logActivity(orgId, `Portal password reset for ${h.name}`, 'general', h.hostelId)
     res.json({ loginId: h.loginId, tempPassword })
+  }),
+)
+
+/* ------------------------------------------------------------------ */
+/* Security deposit not yet collected -> put it on a bill              */
+/* ------------------------------------------------------------------ */
+
+/** Deposit still to be asked for: agreed − collected outside bills − already on bills − waiting for the next bill. */
+async function depositOutstanding(orgId: string, h: { _id: Types.ObjectId; securityDeposit: number; depositToBill: number }, session?: ClientSession) {
+  const [direct, bills] = await Promise.all([
+    Payment.find({ orgId, hostelerId: h._id, kind: 'deposit', invoiceId: null }).select('amount').session(session ?? null).lean(),
+    Invoice.find({ orgId, hostelerId: h._id, cancelled: false, 'items.key': 'deposit' }).select('items').session(session ?? null).lean(),
+  ])
+  const collected = direct.reduce((a, p) => a + p.amount, 0)
+  const billed = bills.reduce((a, inv) => a + inv.items.filter((i) => i.key === 'deposit').reduce((x, i) => x + i.amount, 0), 0)
+  return Math.max(h.securityDeposit - collected - billed - (h.depositToBill ?? 0), 0)
+}
+
+/**
+ * POST /api/hostelers/:id/bill-deposit { target: 'open' | 'next' }
+ *   open -> adds "Security deposit" to the hosteler's latest bill now
+ *   next -> adds it to the next monthly bill when it is generated
+ */
+router.post(
+  '/:id/bill-deposit',
+  requireStaff('fees'),
+  ah(async (req, res) => {
+    const { orgId } = staffOf(req)
+    const body = parse(z.object({ target: z.enum(['open', 'next']) }), req.body)
+    const id = idParam(req)
+    const result = await withTransaction(async (session) => {
+      const h = await Hosteler.findOne({ _id: id, orgId }).session(session)
+      if (!h) throw notFound('Hosteler')
+      if (h.status === 'checked_out') throw conflict('This hosteler has checked out')
+      const amount = await depositOutstanding(orgId, h, session)
+      if (amount <= 0) throw conflict('The security deposit is already collected or billed')
+      if (body.target === 'next') {
+        h.depositToBill = (h.depositToBill ?? 0) + amount
+        await h.save({ session })
+        await logActivity(orgId, `Security deposit ₹${amount.toLocaleString('en-IN')} for ${h.name} will be added to the next bill`, 'payment', h.hostelId, session)
+        return { amount, target: 'next' as const, invoiceNumber: null }
+      }
+      const inv = await Invoice.findOne({ orgId, hostelerId: h._id, cancelled: false }).sort({ month: -1, createdAt: -1 }).session(session)
+      if (!inv) throw conflict('No bill yet — choose "Add to next bill" instead')
+      inv.items.push({ key: 'deposit', label: 'Security deposit', amount })
+      inv.total += amount
+      await inv.save({ session })
+      await logActivity(orgId, `Security deposit ₹${amount.toLocaleString('en-IN')} added to ${inv.number} for ${h.name}`, 'payment', h.hostelId, session)
+      return { amount, target: 'open' as const, invoiceNumber: inv.number }
+    })
+    res.json({ ...result, hosteler: await decorateOne(orgId, id) })
   }),
 )
 

@@ -152,6 +152,8 @@ export interface Hosteler {
   monthlyRent: number
   securityDeposit: number
   depositRefunded: number | null
+  /** Security deposit waiting to be added to the next monthly bill. */
+  depositToBill: number
   messOpted: boolean
   notes: string
   loginId: string
@@ -162,7 +164,7 @@ export interface Hosteler {
   updatedAt: string
 }
 
-export type ChargeKey = 'rent' | 'mess' | 'electricity' | 'water' | 'internet' | 'laundry' | 'maintenance' | 'late_fee' | 'other'
+export type ChargeKey = 'rent' | 'mess' | 'electricity' | 'water' | 'internet' | 'laundry' | 'maintenance' | 'late_fee' | 'deposit' | 'other'
 
 export interface InvoiceItem {
   key?: ChargeKey

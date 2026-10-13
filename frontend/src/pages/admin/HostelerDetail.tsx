@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
   ArrowRightLeft,
+  CalendarClock,
   Camera,
   CheckCircle2,
   Copy,
@@ -357,6 +358,127 @@ function QueryBlock<T>({ q, children }: { q: { data: T | undefined; isLoading: b
   return <>{children(q.data)}</>
 }
 
+/** Invalidate after a deposit is put on a bill. */
+const BILL_DEPOSIT_INVALIDATE = [
+  ['hosteler'],
+  ['hostelers'],
+  ['invoices'],
+  ['invoice'],
+  ['payments'],
+  ['dues'],
+  ['deposits'],
+  ['fees-summary'],
+  ['dashboard'],
+  ['portal'],
+]
+
+function DepositSection({ h, canFees }: { h: HostelerDetailT; canFees: boolean }) {
+  const [payOpen, setPayOpen] = useState(false)
+  const invoicesQ = useInvoices({ hostelerId: h.id, limit: 500 }, { enabled: canFees })
+  const depPaymentsQ = usePayments({ hostelerId: h.id, kind: 'deposit', limit: 500 }, { enabled: canFees })
+  const billDeposit = useApiMutation(hostelersApi.billDeposit, {
+    invalidate: BILL_DEPOSIT_INVALIDATE,
+    success: (r) =>
+      r.target === 'open'
+        ? `${formatMoney(r.amount)} security deposit added to bill ${r.invoiceNumber ?? ''}`.trim()
+        : `${formatMoney(r.amount)} security deposit will be added to the next monthly bill`,
+  })
+
+  const agreed = h.securityDeposit
+  const collected = h.depositCollected
+  const waiting = h.depositToBill ?? 0
+  const out = h.status === 'checked_out'
+  const pending = out ? 0 : Math.max(agreed - collected, 0)
+
+  // bill breakdown (fees roles): deposit lines on bills, and what of them is paid
+  const bills = useMemo(() => (invoicesQ.data?.items ?? []).filter((i) => !i.cancelled), [invoicesQ.data])
+  const known = canFees && !!invoicesQ.data && !!depPaymentsQ.data
+  const billed = bills.reduce((a, inv) => a + inv.items.filter((i) => i.key === 'deposit').reduce((x, i) => x + i.amount, 0), 0)
+  const paidOnBills = (depPaymentsQ.data?.items ?? []).filter((p) => p.invoiceId).reduce((a, p) => a + p.amount, 0)
+  const collectedDirect = Math.max(collected - paidOnBills, 0)
+  const onBillsUnpaid = Math.max(billed - paidOnBills, 0)
+  // same rule as the backend: agreed − collected outside bills − already on bills − waiting for the next bill
+  const toBill = known && !out ? Math.max(agreed - collectedDirect - billed - waiting, 0) : 0
+  const latestBill = [...bills].sort((a, b) => b.month.localeCompare(a.month) || b.createdAt.localeCompare(a.createdAt))[0]
+
+  const addToBill = async (target: 'open' | 'next') => {
+    const ok = await confirm(
+      target === 'open'
+        ? {
+            title: 'Add deposit to the current bill?',
+            message: `${formatMoney(toBill)} security deposit will be added to bill ${latestBill?.number ?? ''}${latestBill ? ` (${formatMonth(latestBill.month)})` : ''}.`,
+            confirmText: 'Add to bill',
+          }
+        : {
+            title: "Add deposit to next month's bill?",
+            message: `${formatMoney(toBill)} security deposit will be added to ${h.name}'s next monthly bill, along with the rent.`,
+            confirmText: 'Add to next bill',
+          },
+    )
+    if (ok) billDeposit.mutate({ id: h.id, target })
+  }
+
+  return (
+    <Section title="Security deposit">
+      <DescriptionList
+        cols={3}
+        items={[
+          { label: 'Agreed', value: formatMoney(agreed) },
+          {
+            label: 'Collected',
+            value: (
+              <>
+                {formatMoney(collected)}
+                {known && paidOnBills > 0 && <span className="block text-xs text-slate-500">{formatMoney(paidOnBills)} paid through bills</span>}
+              </>
+            ),
+          },
+          ...(known && onBillsUnpaid > 0 ? [{ label: 'On bills (unpaid)', value: <span className="text-amber-700">{formatMoney(onBillsUnpaid)}</span> }] : []),
+          ...(waiting > 0 && !out ? [{ label: 'Waiting for next bill', value: <span className="text-amber-700">{formatMoney(waiting)}</span> }] : []),
+          ...(!out
+            ? [{ label: 'Pending', value: <span className={pending > 0 ? 'font-medium text-red-600' : 'text-emerald-600'}>{formatMoney(pending)}</span> }]
+            : []),
+          ...(h.depositRefunded !== null ? [{ label: 'Refunded', value: formatMoney(h.depositRefunded) }] : []),
+        ]}
+      />
+      {canFees && toBill > 0 && (
+        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <p className="text-sm text-amber-900">
+            <b>{formatMoney(toBill)}</b> of the deposit is not collected or billed yet.
+          </p>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+            <Button
+              size="sm"
+              variant="outline"
+              icon={<FileText className="h-4 w-4" />}
+              onClick={() => void addToBill('open')}
+              disabled={!latestBill || billDeposit.isPending}
+              loading={billDeposit.isPending && billDeposit.variables?.target === 'open'}
+            >
+              Add to current bill{latestBill ? ` (${latestBill.number})` : ''}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              icon={<CalendarClock className="h-4 w-4" />}
+              onClick={() => void addToBill('next')}
+              disabled={billDeposit.isPending}
+              loading={billDeposit.isPending && billDeposit.variables?.target === 'next'}
+            >
+              Add to next month’s bill
+            </Button>
+            <Button size="sm" icon={<IndianRupee className="h-4 w-4" />} onClick={() => setPayOpen(true)} disabled={billDeposit.isPending}>
+              Record payment
+            </Button>
+          </div>
+          {!latestBill && <p className="mt-2 text-xs text-amber-800">No bill yet — add it to the next month’s bill, or record the payment.</p>}
+        </div>
+      )}
+      {canFees && <RecordPaymentModal open={payOpen} onClose={() => setPayOpen(false)} hostelerId={h.id} defaultTarget="deposit" />}
+    </Section>
+  )
+}
+
 function FeesTab({ h }: { h: HostelerDetailT }) {
   const invoicesQ = useInvoices({ hostelerId: h.id, limit: 500 })
   const paymentsQ = usePayments({ hostelerId: h.id, limit: 500 })
@@ -442,7 +564,7 @@ function FeesTab({ h }: { h: HostelerDetailT }) {
                       {p.reference && <p className="text-xs text-slate-400">{p.reference}</p>}
                     </TD>
                     <TD className="text-slate-500">
-                      {p.invoice ? p.invoice.number : p.kind === 'deposit' ? 'Security deposit' : p.note || titleCase(p.kind)}
+                      {p.kind === 'deposit' ? (p.invoice ? `Deposit · ${p.invoice.number}` : 'Security deposit') : p.invoice ? p.invoice.number : p.note || titleCase(p.kind)}
                     </TD>
                     <TD className="text-right font-medium text-emerald-700">{formatMoney(p.amount)}</TD>
                     <TD className="text-right">
@@ -1118,16 +1240,7 @@ function Profile({ h }: { h: HostelerDetailT }) {
                 </p>
               )}
             </Section>
-            <Section title="Security deposit">
-              <DescriptionList
-                cols={3}
-                items={[
-                  { label: 'Deposit amount', value: formatMoney(h.securityDeposit) },
-                  { label: 'Collected', value: formatMoney(h.depositCollected) },
-                  { label: 'Refunded', value: h.depositRefunded !== null ? formatMoney(h.depositRefunded) : '' },
-                ]}
-              />
-            </Section>
+            <DepositSection h={h} canFees={canFees} />
             <Section title="Notes">
               <p className="whitespace-pre-wrap text-sm text-slate-700">{h.notes || <span className="text-slate-400">No notes.</span>}</p>
             </Section>

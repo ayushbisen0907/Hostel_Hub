@@ -38,7 +38,7 @@ export default function ReceiptPrint() {
 
   const { payment: p, invoice: inv, organization: org, hostel, hosteler: h } = query.data
   const against = inv
-    ? `Invoice ${inv.number} · ${formatMonth(inv.month)}`
+    ? `${isDeposit(p) ? 'Security deposit · ' : ''}Invoice ${inv.number} · ${formatMonth(inv.month)}`
     : isDeposit(p)
       ? 'Security deposit'
       : p.invoiceId

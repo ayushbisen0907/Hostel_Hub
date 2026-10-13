@@ -52,14 +52,27 @@ export interface RecordPaymentInput {
 /**
  * Records a payment and, if it's against an invoice, increases the invoice's
  * paidAmount — refusing to overpay. Use inside a transaction.
+ * Returns the main receipt (see recordPaymentDocs for all of them).
  */
 export async function recordPayment(orgId: Id, input: RecordPaymentInput, session?: ClientSession) {
+  const docs = await recordPaymentDocs(orgId, input, session)
+  return docs.find((d) => d.kind !== 'deposit') ?? docs[0]!
+}
+
+/**
+ * Like recordPayment, but returns every receipt created. When a bill includes
+ * a "Security deposit" line, money paid on that bill goes to the deposit first
+ * and is recorded as a separate deposit receipt (so it counts as deposit held,
+ * not rent income); the rest is a rent receipt.
+ */
+export async function recordPaymentDocs(orgId: Id, input: RecordPaymentInput, session?: ClientSession) {
   const amount = Math.round(Number(input.amount))
   if (!(amount >= 1)) throw badRequest('Amount must be at least 1')
   const h = await Hosteler.findOne({ _id: input.hostelerId, orgId }).session(session ?? null)
   if (!h) throw notFound('Hosteler')
 
   let kind: 'rent' | 'deposit' | 'advance' = input.kind ?? 'advance'
+  let depositPart = 0
   if (input.invoiceId) {
     kind = 'rent'
     // atomic "paidAmount + amount <= total" guard against concurrent overpayment
@@ -80,30 +93,46 @@ export async function recordPayment(orgId: Id, input: RecordPaymentInput, sessio
       if (exists.cancelled) throw badRequest('Invoice is cancelled')
       throw conflict(`Amount is more than the balance (₹${exists.total - exists.paidAmount})`)
     }
+    const depositLines = inv.items.filter((i) => i.key === 'deposit').reduce((a, i) => a + i.amount, 0)
+    if (depositLines > 0) {
+      const alreadyPaid = (await Payment.find({ orgId, invoiceId: inv._id, kind: 'deposit' }).select('amount').session(session ?? null).lean()).reduce(
+        (a, p) => a + p.amount,
+        0,
+      )
+      depositPart = Math.min(amount, Math.max(depositLines - alreadyPaid, 0))
+    }
   }
 
-  const receiptNo = await nextReceiptNumber(orgId, session)
-  const [pay] = await Payment.create(
-    [
-      {
-        orgId,
-        hostelId: h.hostelId,
-        hostelerId: h._id,
-        invoiceId: input.invoiceId ?? null,
-        kind,
-        receiptNo,
-        amount,
-        mode: input.mode,
-        reference: input.reference ?? '',
-        date: input.date,
-        note: input.note ?? (kind === 'deposit' ? 'Security deposit' : ''),
-        recordedBy: input.recordedBy ?? 'staff',
-      },
-    ],
-    { session },
-  )
+  const parts: { kind: 'rent' | 'deposit' | 'advance'; amount: number; note: string }[] = []
+  if (depositPart > 0) parts.push({ kind: 'deposit', amount: depositPart, note: `Security deposit${input.note ? ` · ${input.note}` : ''}` })
+  if (amount - depositPart > 0) parts.push({ kind, amount: amount - depositPart, note: input.note ?? (kind === 'deposit' ? 'Security deposit' : '') })
+
+  const docs = []
+  for (const part of parts) {
+    const receiptNo = await nextReceiptNumber(orgId, session)
+    const [pay] = await Payment.create(
+      [
+        {
+          orgId,
+          hostelId: h.hostelId,
+          hostelerId: h._id,
+          invoiceId: input.invoiceId ?? null,
+          kind: part.kind,
+          receiptNo,
+          amount: part.amount,
+          mode: input.mode,
+          reference: input.reference ?? '',
+          date: input.date,
+          note: part.note,
+          recordedBy: input.recordedBy ?? 'staff',
+        },
+      ],
+      { session },
+    )
+    docs.push(pay!)
+  }
   await logActivity(orgId, `₹${amount.toLocaleString('en-IN')} received from ${h.name}`, 'payment', h.hostelId, session)
-  return pay!
+  return docs
 }
 
 /** Deletes a payment and rolls back the invoice's paidAmount. Use inside a transaction. */
@@ -141,11 +170,13 @@ export async function allocatePayment(
   if (dues <= 0) throw badRequest('This hosteler has no unpaid bills')
   if (remaining > dues) throw badRequest(`Amount is more than the total due (₹${dues.toLocaleString('en-IN')})`)
   const payments = []
+  const applied: { invoiceId: string; number: string; amount: number }[] = []
   for (const inv of open) {
     if (remaining <= 0) break
     const part = Math.min(remaining, inv.total - inv.paidAmount)
-    payments.push(await recordPayment(orgId, { ...input, invoiceId: inv._id, amount: part }, session))
+    payments.push(...(await recordPaymentDocs(orgId, { ...input, invoiceId: inv._id, amount: part }, session)))
+    applied.push({ invoiceId: String(inv._id), number: inv.number, amount: part })
     remaining -= part
   }
-  return { payments, applied: payments.map((p, i) => ({ invoiceId: String(open[i]!._id), number: open[i]!.number, amount: p.amount })) }
+  return { payments, applied }
 }

@@ -2,7 +2,7 @@ import { Schema, model, type InferSchemaType } from 'mongoose'
 import { baseOptions, orgField, ref } from './_base.js'
 
 /** Bill line categories. 'other' covers custom lines added by staff. */
-export const CHARGE_KEYS = ['rent', 'mess', 'electricity', 'water', 'internet', 'laundry', 'maintenance', 'late_fee', 'other'] as const
+export const CHARGE_KEYS = ['rent', 'mess', 'electricity', 'deposit', 'water', 'internet', 'laundry', 'maintenance', 'late_fee', 'other'] as const
 export type ChargeKey = (typeof CHARGE_KEYS)[number]
 
 const itemSchema = new Schema(

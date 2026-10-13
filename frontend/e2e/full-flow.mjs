@@ -68,7 +68,10 @@ async function apiCall(method, url, body, token) {
   return j
 }
 
-const today = new Date().toISOString().slice(0, 10)
+const today = (() => {
+  const d = new Date() // local date, same as the app
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+})()
 const month = today.slice(0, 7)
 
 const rs = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
@@ -131,6 +134,17 @@ try {
   const a1 = await admit('Aarav Sharma', '9876543210', vacant[0])
   const a2 = await admit('Rohan Gupta', '9876543211', vacant[1])
   ok('check-in via API returns Hosteler ID + temp password', /^SBH-0001$/.test(a1.credentials.loginId) && a1.credentials.tempPassword.length === 8, a1.credentials.loginId)
+  // deposit not paid at check-in -> it goes on the first bill by default; paying that bill fills the deposit first
+  const a3 = await apiCall('POST', '/hostelers', {
+    name: 'Kabir Jain', phone: '9876543212', gender: 'male', guardianName: 'Mr Jain', guardianPhone: '9876500001', guardianRelation: 'Father',
+    hostelId: hostel.id, bedId: vacant[2].id, reserveOnly: false, checkInDate: today, monthlyRent: 6500, securityDeposit: 5000,
+    messOpted: false, depositPayment: null, generateFirstInvoice: true,
+  }, token)
+  const a3Bill = (await apiCall('GET', `/invoices?hostelerId=${a3.hosteler.id}`, null, token)).items[0]
+  ok('unpaid deposit is added to the first bill', a3Bill.items.some((i) => i.key === 'deposit' && i.amount === 5000) && a3Bill.total === 11500, a3Bill.items.map((i) => i.key).join(','))
+  await apiCall('POST', '/payments', { hostelerId: a3.hosteler.id, invoiceId: a3Bill.id, amount: 11500, mode: 'cash', date: today }, token)
+  const a3Detail = await apiCall('GET', `/hostelers/${a3.hosteler.id}`, null, token)
+  ok('paying that bill counts as deposit collected', a3Detail.depositCollected === 5000, `collected ₹${a3Detail.depositCollected}`)
   await apiCall('POST', '/notices', { title: 'Rent due by 5th', body: 'Please pay on time.', priority: 'high', pinned: true, hostelId: null }, token)
   await apiCall('POST', '/expenses', { hostelId: hostel.id, category: 'electricity', amount: 12000, date: today, paidTo: 'MPEB', mode: 'bank', note: '' }, token)
   await apiCall('PUT', '/mess/menu', { hostelId: hostel.id, day: new Date().getDay(), meal: 'dinner', items: 'Paneer, Roti, Dal' }, token)
@@ -298,15 +312,16 @@ try {
 
   // next month's bill shows the carried-over balance
   const nextMonth = (() => {
+    // local calendar month (toISOString would shift 1st-of-month midnight IST back into the previous month)
     const d = new Date()
-    d.setDate(1)
-    d.setMonth(d.getMonth() + 1)
-    return d.toISOString().slice(0, 7)
+    const y = d.getMonth() === 11 ? d.getFullYear() + 1 : d.getFullYear()
+    const m = (d.getMonth() + 1) % 12
+    return `${y}-${String(m + 1).padStart(2, '0')}`
   })()
   await apiCall('POST', '/invoices/generate', { month: nextMonth }, token)
   const nextInfo = await apiCall('GET', '/portal/payment-info', null, hTok)
   const newBill = nextInfo.bills.find((b) => b.month === nextMonth)
-  ok('next month: previous balance + new bill', nextInfo.bills.length === 2 && nextInfo.totalDue === 1000 + (newBill?.total ?? 0), `₹1,000 + ₹${newBill?.total}`)
+  ok('next month: previous balance + new bill', nextInfo.bills.length === 2 && nextInfo.totalDue === 1000 + (newBill?.total ?? 0), `₹1,000 + ₹${newBill?.total} · bills: ${nextInfo.bills.map((b) => `${b.month}:${b.balance}[${b.items.map((i) => i.key + '=' + i.amount).join('/')}]`).join(' ; ')} · due ₹${nextInfo.totalDue}`)
   const detail = await apiCall('GET', `/invoices/${newBill.id}`, null, token)
   ok('new bill shows the previous balance', detail.previousBalance.amount === 1000)
   await visit(page, `/print/invoice/${newBill.id}`, 'print (with previous balance)')

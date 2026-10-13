@@ -49,7 +49,7 @@ describe('visitors', () => {
     const w = await makeWorld({ plan: 'basic' })
     const now = Date.now()
     await Visitor.create([
-      { orgId: w.org._id, hostelId: w.hostel._id, hostelerId: w.hosteler._id, name: 'Inside', inTime: new Date(now - 10 * 60_000) },
+      { orgId: w.org._id, hostelId: w.hostel._id, hostelerId: w.hosteler._id, name: 'Inside', inTime: new Date(now - 1000) }, // seconds ago, so it's 'today' even right after midnight
       { orgId: w.org._id, hostelId: w.hostel._id, hostelerId: w.hosteler._id, name: 'Done', inTime: new Date(now - 90 * 60_000), outTime: new Date(now - 30 * 60_000) },
       { orgId: w.org._id, hostelId: w.hostel._id, hostelerId: w.hosteler._id, name: 'Old', inTime: new Date('2020-01-01T10:00:00'), outTime: new Date('2020-01-01T10:30:00') },
     ])

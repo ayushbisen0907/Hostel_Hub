@@ -294,7 +294,7 @@ router.post(
         ...(hostelId ? { hostelId } : {}),
         checkInDate: { $lte: `${body.month}-31` },
       })
-        .select('hostelId monthlyRent messOpted')
+        .select('hostelId monthlyRent messOpted depositToBill')
         .session(session)
         .lean()
       const billedIds = await Invoice.distinct('hostelerId', {
@@ -313,6 +313,10 @@ router.post(
       const monthLabel = new Date(`${body.month}-01T00:00:00Z`).toLocaleString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' })
       for (const h of targets) {
         const items = monthlyBillItems(h, chargesByHostel.get(String(h.hostelId)), settings.messMonthlyCharge)
+        if (h.depositToBill > 0) {
+          items.push({ key: 'deposit', label: 'Security deposit', amount: h.depositToBill })
+          await Hosteler.updateOne({ _id: h._id }, { $set: { depositToBill: 0 } }, { session })
+        }
         let inv = await createInvoice(orgId, { hostelerId: h._id, month: body.month, items, dueDate }, session)
         // electricity readings entered before the bill existed
         if (await applyElectricityToBill(orgId, h._id, body.month, session)) inv = (await Invoice.findById(inv._id).session(session))!

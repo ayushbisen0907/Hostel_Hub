@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   AlertTriangle,
   BadgeCheck,
@@ -1093,7 +1093,7 @@ const KIND_OPTIONS: { value: Payment['kind'] | ''; label: string }[] = [
 ]
 
 function againstLabel(p: { kind: Payment['kind']; invoiceId: ID | null; note: string; invoice: { number: string; month: string } | null }) {
-  if (p.invoice) return `${p.invoice.number} · ${formatMonth(p.invoice.month)}`
+  if (p.invoice) return `${p.kind === 'deposit' ? 'Security deposit · ' : ''}${p.invoice.number} · ${formatMonth(p.invoice.month)}`
   if (p.kind === 'deposit') return 'Security deposit'
   if (p.invoiceId) return 'Deleted invoice'
   return p.note || 'Advance'
@@ -1254,7 +1254,14 @@ function PaymentsTab() {
                       <p className="text-xs text-slate-500">{p.hosteler?.phone}</p>
                     </TD>
                     <TD>
-                      {p.invoice ? (
+                      {p.invoice && p.kind === 'deposit' ? (
+                        <span className="flex flex-wrap items-center gap-1.5 whitespace-nowrap">
+                          <Badge tone="violet">Deposit</Badge>
+                          <span className="text-xs text-slate-500">
+                            {p.invoice.number} · {formatMonth(p.invoice.month)}
+                          </span>
+                        </span>
+                      ) : p.invoice ? (
                         <span className="whitespace-nowrap">{againstLabel(p)}</span>
                       ) : p.kind === 'deposit' ? (
                         <Badge tone="violet">Deposit</Badge>
@@ -1545,7 +1552,13 @@ function DepositsTab({ onCollect }: { onCollect: (hostelerId: ID) => void }) {
                 {held.map((r) => (
                   <TR key={r.hostelerId}>
                     <TD>
-                      <p className="font-medium text-slate-800">{r.hosteler?.name ?? 'Removed hosteler'}</p>
+                      {r.hosteler ? (
+                        <Link to={`/app/hostelers/${r.hostelerId}`} className="font-medium text-slate-800 hover:text-brand-600 hover:underline">
+                          {r.hosteler.name}
+                        </Link>
+                      ) : (
+                        <p className="font-medium text-slate-800">Removed hosteler</p>
+                      )}
                       <p className="text-xs text-slate-500">{r.hosteler?.phone}</p>
                     </TD>
                     <TD>{shortRoom(r.roomLabel)}</TD>

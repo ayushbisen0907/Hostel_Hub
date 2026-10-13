@@ -24,7 +24,7 @@ import { useCan } from '@/api/session'
 import { useVacantBeds, type VacantBed } from '@/api/rooms'
 import { documentsApi } from '@/api/documents'
 import { feesApi } from '@/api/fees'
-import { HOSTELER_INVALIDATE, hostelersApi, useHostelers, type HostelerRow } from '@/api/hostelers'
+import { HOSTELER_INVALIDATE, hostelersApi, useHostelers, type DepositOption, type HostelerRow } from '@/api/hostelers'
 import type { DocumentType, ID, PaymentMode } from '@/api/types'
 import {
   Avatar,
@@ -249,7 +249,7 @@ export default function CheckIn() {
   const [rent, setRent] = useState('')
   const [deposit, setDeposit] = useState('')
   const [depTouched, setDepTouched] = useState(false)
-  const [collect, setCollect] = useState(true)
+  const [depOption, setDepOption] = useState<DepositOption>('collected')
   const [depAmount, setDepAmount] = useState('')
   const [depMode, setDepMode] = useState<PaymentMode>('upi')
   const [depRef, setDepRef] = useState('')
@@ -314,6 +314,23 @@ export default function CheckIn() {
   const selected = vacant.find((v) => v.id === bedId)
   const depositNum = Math.max(0, Number(deposit) || 0)
 
+  // security deposit: collected now (a part-payment's remainder goes on the first bill), on the first bill, or on next month's bill
+  const firstBillOn = genInvoice && !reserveOnly
+  const depCollectNow = depositNum > 0 && depOption === 'collected' ? Math.min(Math.max(0, Number(depAmount) || 0), depositNum) : 0
+  const depLeft = Math.max(depositNum - depCollectNow, 0)
+  const depSendOption: DepositOption = depLeft <= 0 ? 'collected' : depOption === 'collected' ? 'first_bill' : depOption
+  const depOnFirstBill = depSendOption === 'first_bill' && firstBillOn ? depLeft : 0
+  const depOnNextBill = depSendOption !== 'collected' && !depOnFirstBill ? depLeft : 0
+  const firstBillTotal = firstMonth + depOnFirstBill
+  const depPlan = (() => {
+    if (depositNum <= 0) return 'No deposit'
+    const parts: string[] = []
+    if (depCollectNow > 0) parts.push(`${formatMoney(depCollectNow)} collected now (${depMode.toUpperCase()})`)
+    if (depOnFirstBill > 0) parts.push(`${formatMoney(depOnFirstBill)} on the first bill`)
+    if (depOnNextBill > 0) parts.push(`${formatMoney(depOnNextBill)} on the next monthly bill`)
+    return parts.join(' · ')
+  })()
+
   const set: SetProfile = (k, v) => {
     setProfile((p) => ({ ...p, [k]: v }))
     if (errors[k]) setErrors((e) => ({ ...e, [k]: undefined }))
@@ -348,7 +365,10 @@ export default function CheckIn() {
       if (rent === '' || !(Number(rent) >= 0)) return fail('Enter the monthly rent')
       if (!checkInDate) return fail('Choose a check-in date')
       if (expectedOut && expectedOut <= checkInDate) return fail('Expected check-out must be after check-in')
-      if (collect && !(Number(depAmount) > 0)) return fail('Enter the deposit amount collected')
+      if (depositNum > 0 && depOption === 'collected') {
+        if (!(Number(depAmount) > 0)) return fail('Enter the deposit amount collected')
+        if (Number(depAmount) > depositNum) return fail(`Amount collected can't be more than the deposit (${formatMoney(depositNum)})`)
+      }
     }
     return true
   }
@@ -415,7 +435,7 @@ export default function CheckIn() {
         return
       }
     }
-    const depositPayment = collect && Number(depAmount) > 0 ? { amount: Number(depAmount), mode: depMode, reference: depRef.trim() } : null
+    const depositPayment = depCollectNow > 0 ? { amount: depCollectNow, mode: depMode, reference: depRef.trim() } : null
     let res: Awaited<ReturnType<typeof hostelersApi.admit>>
     try {
       setSaving(reserveOnly ? 'Reserving…' : 'Checking in…')
@@ -431,7 +451,8 @@ export default function CheckIn() {
         messOpted,
         notes: notes.trim(),
         depositPayment,
-        generateFirstInvoice: genInvoice && !reserveOnly,
+        generateFirstInvoice: firstBillOn,
+        depositOption: depSendOption,
       })
     } catch {
       setSaving(null)
@@ -507,7 +528,7 @@ export default function CheckIn() {
     setRent('')
     setDepTouched(false)
     setDeposit(String(settings.defaultSecurityDeposit))
-    setCollect(true)
+    setDepOption('collected')
     setDepAmount(String(settings.defaultSecurityDeposit))
     setDepMode('upi')
     setDepRef('')
@@ -581,10 +602,7 @@ export default function CheckIn() {
                   label: 'Security deposit',
                   value: formatMoney(h.securityDeposit),
                 },
-                {
-                  label: 'Deposit collected',
-                  value: collect ? `${formatMoney(Number(depAmount) || 0)} (${depMode.toUpperCase()})` : 'Not yet',
-                },
+                { label: 'Deposit', value: depPlan },
                 {
                   label: 'Documents uploaded',
                   value: String(done.docsUploaded),
@@ -866,46 +884,111 @@ export default function CheckIn() {
                 <span>{elecNote ? 'Total per month + electricity' : 'Total per month'}</span>
                 <span className="tabular-nums">{formatMoney(firstMonth)}</span>
               </li>
+              {depOnFirstBill > 0 && (
+                <>
+                  <li className="flex justify-between gap-3 text-slate-600">
+                    <span className="min-w-0 truncate">Security deposit (first bill only)</span>
+                    <span className="tabular-nums text-slate-800">{formatMoney(depOnFirstBill)}</span>
+                  </li>
+                  <li className="flex justify-between gap-3 border-t border-slate-200 pt-1.5 font-semibold text-slate-900">
+                    <span>{elecNote ? 'First bill + electricity' : 'First bill total'}</span>
+                    <span className="tabular-nums">{formatMoney(firstBillTotal)}</span>
+                  </li>
+                </>
+              )}
             </ul>
             <p className="mt-2 text-xs text-slate-500">
               Rent{messOpted ? ' and mess' : ''} (rent includes water, Wi-Fi, cleaning and maintenance).
               {elecNote
                 ? ` Electricity is added each month from the meter reading (${electricityText(elecRate, hostel?.electricityBasis)}${hostel?.electricityBasis === 'bed' ? '' : ', split equally among the room'}).`
                 : ''}{' '}
-              Deposit is collected separately.
+              {depOnFirstBill > 0
+                ? 'The security deposit is added to the first bill only.'
+                : depOnNextBill > 0
+                  ? 'The security deposit is added to the next monthly bill.'
+                  : 'Deposit is collected separately.'}
             </p>
           </div>
         </section>
         <section>
-          <SectionTitle>Deposit payment</SectionTitle>
-          <Switch
-            checked={collect}
-            onChange={(v) => {
-              setCollect(v)
-              setDepTouched(true)
-            }}
-            label="Collect security deposit now"
-          />
-          {collect && (
-            <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
-              <Field label="Amount received" required>
-                <Input
-                  type="number"
-                  min={1}
-                  value={depAmount}
-                  onChange={(e) => {
-                    setDepTouched(true)
-                    setDepAmount(e.target.value)
-                  }}
-                />
-              </Field>
-              <Field label="Mode">
-                <Select value={depMode} options={PAYMENT_MODE_OPTIONS} onChange={(e) => setDepMode(e.target.value as PaymentMode)} />
-              </Field>
-              <Field label="Reference" hint="UTR / txn id">
-                <Input value={depRef} maxLength={100} onChange={(e) => setDepRef(e.target.value)} />
-              </Field>
-            </div>
+          <SectionTitle>Security deposit</SectionTitle>
+          {depositNum <= 0 ? (
+            <p className="text-sm text-slate-500">No security deposit for this resident.</p>
+          ) : (
+            <>
+              <fieldset>
+                <legend className="mb-1.5 text-sm font-medium text-slate-700">How will {formatMoney(depositNum)} be paid?</legend>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {(
+                    [
+                      { value: 'collected', title: 'Collected now', hint: 'Received today in cash / UPI — a receipt is created.' },
+                      {
+                        value: 'first_bill',
+                        title: 'Add to first bill',
+                        hint: firstBillOn
+                          ? 'Billed with the first month’s rent and mess.'
+                          : reserveOnly
+                            ? 'No bill is made for a reservation, so it goes on the next monthly bill.'
+                            : 'First bill is off, so it goes on the next monthly bill.',
+                      },
+                      { value: 'next_bill', title: 'Add to next month’s bill', hint: 'Not paying now — billed with next month’s rent.' },
+                    ] as { value: DepositOption; title: string; hint: string }[]
+                  ).map((o) => (
+                    <label
+                      key={o.value}
+                      className={cn(
+                        'flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors',
+                        depOption === o.value ? 'border-brand-500 bg-brand-50 ring-1 ring-brand-500' : 'border-slate-200 hover:bg-slate-50',
+                      )}
+                    >
+                      <input
+                        type="radio"
+                        name="depositOption"
+                        value={o.value}
+                        checked={depOption === o.value}
+                        onChange={() => {
+                          setDepOption(o.value)
+                          setDepTouched(true)
+                        }}
+                        className="mt-0.5 h-4 w-4 accent-brand-600"
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-sm font-medium text-slate-900">{o.title}</span>
+                        <span className="block text-xs text-slate-500">{o.hint}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              {depOption === 'collected' && (
+                <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  <Field label="Amount received" required>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={depositNum}
+                      value={depAmount}
+                      onChange={(e) => {
+                        setDepTouched(true)
+                        setDepAmount(e.target.value)
+                      }}
+                    />
+                  </Field>
+                  <Field label="Mode">
+                    <Select value={depMode} options={PAYMENT_MODE_OPTIONS} onChange={(e) => setDepMode(e.target.value as PaymentMode)} />
+                  </Field>
+                  <Field label="Reference" hint="UTR / txn id">
+                    <Input value={depRef} maxLength={100} onChange={(e) => setDepRef(e.target.value)} />
+                  </Field>
+                </div>
+              )}
+              {depOption === 'collected' && depCollectNow > 0 && depLeft > 0 && (
+                <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  {formatMoney(depCollectNow)} collected now. The remaining {formatMoney(depLeft)} will be added to{' '}
+                  {depOnFirstBill > 0 ? 'the first bill' : 'the next monthly bill'}.
+                </p>
+              )}
+            </>
           )}
         </section>
         <section>
@@ -1013,16 +1096,14 @@ export default function CheckIn() {
                 value: messOpted ? `Yes (${formatMoney(messCharge)})` : 'No',
               },
               { label: 'Security deposit', value: formatMoney(depositNum) },
-              {
-                label: 'Collected now',
-                value: collect ? `${formatMoney(Number(depAmount) || 0)} via ${depMode.toUpperCase()}` : 'No',
-              },
+              { label: 'Deposit', value: depPlan },
               {
                 label: 'First invoice',
-                value:
-                  genInvoice && !reserveOnly
-                    ? `${formatMoney(firstMonth)} (${billItems.map((i) => `${i.label} ${formatMoney(i.amount)}`).join(' + ')})${elecNote ? ' + electricity as per meter' : ''}`
-                    : 'Not generated',
+                value: firstBillOn
+                  ? `${formatMoney(firstBillTotal)} (${[...billItems, ...(depOnFirstBill ? [{ label: 'Security deposit', amount: depOnFirstBill }] : [])]
+                      .map((i) => `${i.label} ${formatMoney(i.amount)}`)
+                      .join(' + ')})${elecNote ? ' + electricity as per meter' : ''}`
+                  : 'Not generated',
               },
             ]}
           />

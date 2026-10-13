@@ -40,6 +40,12 @@ const hostelSchema = new Schema(
     qrMimeType: { type: String, default: null },
 
     charges: { type: chargesSchema, default: () => ({}) },
+
+    // ---- electricity: metered, billed per unit ----
+    /** ₹ per unit (0 = electricity not charged) */
+    electricityRate: { type: Number, default: 0, min: 0 },
+    /** 'room' = one meter per room, split equally among its hostelers; 'bed' = a meter per bed */
+    electricityBasis: { type: String, enum: ['room', 'bed'], default: 'room' },
   },
   baseOptions(['qrStorageKey', 'qrMimeType']),
 )

@@ -11,7 +11,8 @@
  *   DELETE /api/hostels/:id/qr
  *
  * Every hostel has its own UPI ID + payee name (required when creating) where
- * hostelers pay rent, and its own monthly charge heads (all optional).
+ * hostelers pay rent, a mess charge, and an electricity rate per unit with
+ * metering per room (split among its hostelers) or per bed.
  */
 import { Router } from 'express'
 import mongoose, { type Types } from 'mongoose'
@@ -64,6 +65,8 @@ const createSchema = z.object({
   upiId,
   payeeName: z.string().trim().min(2, 'Enter the name shown on the UPI account').max(80),
   charges: chargesSchema.default({}),
+  electricityRate: charge.default(0),
+  electricityBasis: z.enum(['room', 'bed']).default('room'),
 })
 const patchSchema = z
   .object({
@@ -76,6 +79,8 @@ const patchSchema = z
     upiId,
     payeeName: z.string().trim().min(2).max(80),
     charges: chargesSchema,
+    electricityRate: charge,
+    electricityBasis: z.enum(['room', 'bed']),
   })
   .partial()
   .strict()

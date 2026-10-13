@@ -81,6 +81,10 @@ export interface Hostel {
   /** an uploaded QR image exists (GET /hostels/:id/qr); otherwise draw one from upiId */
   hasQr?: boolean
   charges: HostelCharges
+  /** ₹ per unit of electricity (0 = not charged) */
+  electricityRate: number
+  /** 'room': one meter per room, amount split equally among its hostelers; 'bed': one meter per bed */
+  electricityBasis: 'room' | 'bed'
   createdAt: string
   counts?: { rooms: number; beds: number; occupied: number; vacant: number; activeHostelers: number }
 }
@@ -88,6 +92,7 @@ export interface Hostel {
 /** Monthly charge heads of a hostel (0 = not charged). Mess only applies to hostelers who opted in. */
 export interface HostelCharges {
   mess: number
+  /** legacy fixed amount — no longer billed (electricity is metered: Hostel.electricityRate) */
   electricity: number
   water: number
   internet: number
@@ -222,16 +227,7 @@ export interface Payment {
   createdAt: string
 }
 
-export type DocumentType =
-  | 'aadhaar'
-  | 'pan'
-  | 'photo'
-  | 'college_id'
-  | 'office_id'
-  | 'police_verification'
-  | 'rent_agreement'
-  | 'medical'
-  | 'other'
+export type DocumentType = 'aadhaar' | 'pan' | 'photo' | 'college_id' | 'office_id' | 'police_verification' | 'rent_agreement' | 'medical' | 'other'
 
 export interface HDocument {
   id: ID

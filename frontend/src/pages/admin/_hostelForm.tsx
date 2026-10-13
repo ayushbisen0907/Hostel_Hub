@@ -3,14 +3,14 @@
  * hostelers pay rent (+ optional QR image) and the monthly charge heads.
  */
 import { useEffect, useState } from 'react'
-import { QrCode, Receipt, Trash2, Upload } from 'lucide-react'
+import { QrCode, Receipt, Trash2, Upload, Zap } from 'lucide-react'
 import { errorMessage } from '@/api/client'
 import { hostelQrUrl, useCreateHostel, useRemoveHostelQr, useUpdateHostel, useUploadHostelQr, type HostelInput } from '@/api/hostels'
 import type { Hostel, HostelCharges, HostelType } from '@/api/types'
 import { Badge, Button, Field, FileDrop, Input, Modal, Select, Textarea, confirm, toast } from '@/components/ui'
 import { UpiQr } from '@/components/UpiQr'
-import { FIXED_CHARGES, INCLUDED_IN_RENT, UPI_ID_RE, configuredCharges } from '@/lib/charges'
-import { cn, formatMoney } from '@/lib/utils'
+import { INCLUDED_IN_RENT, UPI_ID_RE, configuredCharges, type ElectricityBasis } from '@/lib/charges'
+import { cn } from '@/lib/utils'
 
 export const HOSTEL_TYPES: { value: HostelType; label: string }[] = [
   { value: 'boys', label: 'Boys' },
@@ -28,32 +28,67 @@ interface HostelForm {
   upiId: string
   payeeName: string
 }
-const blankHostel: HostelForm = { name: '', type: 'boys', address: '', city: '', phone: '', code: '', upiId: '', payeeName: '' }
-
-type FixedKey = (typeof FIXED_CHARGES)[number]['key']
-type ChargeDraft = Record<'mess' | FixedKey, string>
-const QR_MAX = 2 * 1024 * 1024
-const MAX_CHARGE = 1_000_000
-
-function chargeDraft(c: HostelCharges | undefined): ChargeDraft {
-  const v = (n: number | undefined) => (n && n > 0 ? String(n) : '')
-  return { mess: v(c?.mess), electricity: v(c?.electricity) }
+const blankHostel: HostelForm = {
+  name: '',
+  type: 'boys',
+  address: '',
+  city: '',
+  phone: '',
+  code: '',
+  upiId: '',
+  payeeName: '',
 }
 
-/** Configured monthly charges as small chips (hostel cards). */
-export function HostelChargeChips({ charges }: { charges: HostelCharges | undefined }) {
-  const list = configuredCharges(charges)
+interface ChargeDraft {
+  mess: string
+  /** ₹ per unit */
+  electricityRate: string
+  electricityBasis: ElectricityBasis | ''
+}
+const QR_MAX = 2 * 1024 * 1024
+const MAX_CHARGE = 1_000_000
+const MAX_UNIT_RATE = 1000
+
+function chargeDraft(h: Hostel | null): ChargeDraft {
+  const v = (n: number | undefined) => (n && n > 0 ? String(n) : '')
+  return {
+    mess: v(h?.charges?.mess),
+    electricityRate: v(h?.electricityRate),
+    electricityBasis: h && h.electricityRate > 0 ? (h.electricityBasis ?? 'room') : '',
+  }
+}
+
+/** Configured charges besides rent as small chips (hostel cards). */
+export function HostelChargeChips({ hostel }: { hostel: Hostel }) {
+  const list = configuredCharges(hostel)
   if (!list.length) return <p className="mt-3 text-xs text-slate-500">Monthly bill: room rent only (no extra charges set)</p>
   return (
     <div className="mt-3 flex flex-wrap gap-1.5">
       {list.map((x, i) => (
         <Badge key={i}>
-          {x.label}: {formatMoney(x.amount)}
+          {x.label} {x.value}
         </Badge>
       ))}
     </div>
   )
 }
+
+const BASIS_CHOICES: {
+  value: ElectricityBasis
+  title: string
+  hint: string
+}[] = [
+  {
+    value: 'room',
+    title: 'Meter per room',
+    hint: "Bill split equally among the room's hostelers",
+  },
+  {
+    value: 'bed',
+    title: 'Meter per bed',
+    hint: 'Each bed has its own meter; that hosteler pays all of it',
+  },
+]
 
 function AmountInput({ value, onChange, className, label }: { value: string; onChange: (v: string) => void; className?: string; label?: string }) {
   return (
@@ -74,7 +109,7 @@ function AmountInput({ value, onChange, className, label }: { value: string; onC
   )
 }
 
-type Errors = Partial<Record<keyof HostelForm | 'charges' | 'qr', string>>
+type Errors = Partial<Record<keyof HostelForm | 'charges' | 'electricityRate' | 'electricityBasis' | 'qr', string>>
 
 export function HostelModal({ editing, onClose }: { editing: Hostel | null; onClose: () => void }) {
   const [form, setForm] = useState<HostelForm>(
@@ -91,7 +126,7 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
         }
       : blankHostel,
   )
-  const [charges, setCharges] = useState<ChargeDraft>(() => chargeDraft(editing?.charges))
+  const [charges, setCharges] = useState<ChargeDraft>(() => chargeDraft(editing))
   const [errors, setErrors] = useState<Errors>({})
   const [apiError, setApiError] = useState('')
   // QR: for a new hostel the file is uploaded right after the hostel is created;
@@ -163,23 +198,33 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
     })
   }
 
-  /** Parsed charges, or an error message. */
+  /** Parsed charges, or an error message. The old fixed electricity amount is always cleared (electricity is metered). */
   const buildCharges = (): HostelCharges | string => {
-    const parse = (v: string): number | null => {
-      if (!v.trim()) return 0
-      const n = Number(v)
-      return Number.isFinite(n) && n >= 0 && n <= MAX_CHARGE ? Math.round(n) : null
+    let mess = 0
+    if (charges.mess.trim()) {
+      const n = Number(charges.mess)
+      if (!Number.isFinite(n) || n < 0 || n > MAX_CHARGE) return 'Enter a valid amount for mess.'
+      mess = Math.round(n)
     }
-    const mess = parse(charges.mess)
-    if (mess === null) return 'Enter a valid amount for mess.'
-    const out: HostelCharges = { mess, electricity: 0, water: 0, internet: 0, laundry: 0, maintenance: 0, others: [] }
-    for (const f of FIXED_CHARGES) {
-      const n = parse(charges[f.key])
-      if (n === null) return `Enter a valid amount for ${f.label.toLowerCase()}.`
-      out[f.key] = n
+    return {
+      mess,
+      electricity: 0,
+      water: 0,
+      internet: 0,
+      laundry: 0,
+      maintenance: 0,
+      others: [],
     }
-    return out
   }
+
+  /** ₹ per unit (up to 2 decimals), or null if invalid. */
+  const parseRate = (): number | null => {
+    if (!charges.electricityRate.trim()) return 0
+    const n = Number(charges.electricityRate)
+    return Number.isFinite(n) && n >= 0 && n <= MAX_UNIT_RATE ? Math.round(n * 100) / 100 : null
+  }
+  const rateNum = Number(charges.electricityRate)
+  const rateOn = Number.isFinite(rateNum) && rateNum > 0
 
   const save = () => {
     const e: Errors = {}
@@ -193,9 +238,12 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
     if (payeeName.length < 2) e.payeeName = 'Enter the name shown on the UPI account.'
     const built = buildCharges()
     if (typeof built === 'string') e.charges = built
+    const rate = parseRate()
+    if (rate === null) e.electricityRate = `Enter a rate between ₹0 and ₹${MAX_UNIT_RATE} per unit.`
+    else if (rate > 0 && !charges.electricityBasis) e.electricityBasis = 'Choose how the meters are read.'
     setErrors((prev) => ({ ...e, qr: prev.qr }))
     setApiError('')
-    if (Object.keys(e).length || typeof built === 'string') return
+    if (Object.keys(e).length || typeof built === 'string' || rate === null) return
 
     const body: HostelInput = {
       name: form.name.trim(),
@@ -206,10 +254,19 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
       upiId,
       payeeName,
       charges: built,
+      electricityRate: rate,
+      electricityBasis: charges.electricityBasis || 'room',
     }
     const onError = (err: unknown) => setApiError(errorMessage(err))
     if (editing) {
-      update.mutate({ id: editing.id, ...body, ...(!codeLocked && code !== editing.code ? { code } : {}) }, { onError })
+      update.mutate(
+        {
+          id: editing.id,
+          ...body,
+          ...(!codeLocked && code !== editing.code ? { code } : {}),
+        },
+        { onError },
+      )
       return
     }
     create.mutate(
@@ -257,7 +314,13 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
       <div className="grid gap-4 sm:grid-cols-2">
         {apiError && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 sm:col-span-2">{apiError}</p>}
         <Field label="Hostel name" required error={errors.name} className="sm:col-span-2">
-          <Input value={form.name} maxLength={120} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Sunrise Boys Hostel" autoFocus />
+          <Input
+            value={form.name}
+            maxLength={120}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            placeholder="e.g. Sunrise Boys Hostel"
+            autoFocus
+          />
         </Field>
         <Field label="Type" required>
           <Select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value as HostelType })} options={HOSTEL_TYPES} />
@@ -284,7 +347,12 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
             value={form.code}
             maxLength={8}
             disabled={codeLocked}
-            onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '') })}
+            onChange={(e) =>
+              setForm({
+                ...form,
+                code: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''),
+              })
+            }
             placeholder="e.g. SBH"
             className="font-mono uppercase"
           />
@@ -381,19 +449,84 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
             <Receipt className="h-4 w-4 text-brand-600" /> Monthly charges besides rent (optional)
           </p>
           <p className="mt-0.5 text-sm text-slate-500">
-            Room rent (set per room) already includes {INCLUDED_IN_RENT}. Only mess and electricity are billed separately. Leave blank if you don't charge them.
+            Room rent (set per room) already includes {INCLUDED_IN_RENT}. Only mess and electricity are billed separately.
           </p>
         </div>
-        <div className="grid grid-cols-2 gap-3 sm:col-span-2">
-          <Field label="Mess" hint="Mess members only">
-            <AmountInput label="Mess" value={charges.mess} onChange={(v) => setCharges({ ...charges, mess: v })} />
-          </Field>
-          {FIXED_CHARGES.map((f) => (
-            <Field key={f.key} label={f.label}>
-              <AmountInput label={f.label} value={charges[f.key]} onChange={(v) => setCharges({ ...charges, [f.key]: v })} />
-            </Field>
-          ))}
+        <Field label="Mess (per month)" hint="Mess members only. Leave blank if you don't run a mess.">
+          <AmountInput label="Mess" value={charges.mess} onChange={(v) => setCharges({ ...charges, mess: v })} />
+        </Field>
+        <div className="hidden sm:block" />
+
+        <div className="sm:col-span-2">
+          <p className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+            <Zap className="h-4 w-4 text-amber-500" /> Electricity (as per meter)
+          </p>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Every month staff enter the units used (Rooms &amp; Beds → Electricity). Amount = units × rate, added to each hosteler's bill. Leave the rate blank
+            if you don't charge electricity.
+          </p>
         </div>
+        <Field label="Electricity rate (₹ per unit)" error={errors.electricityRate} hint={errors.electricityRate ? undefined : 'e.g. 10'}>
+          <div className="relative">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">₹</span>
+            <Input
+              type="number"
+              inputMode="decimal"
+              min={0}
+              max={MAX_UNIT_RATE}
+              step="0.01"
+              value={charges.electricityRate}
+              placeholder="0"
+              aria-label="Electricity rate per unit"
+              onChange={(e) => {
+                const v = e.target.value
+                setCharges((c) => ({
+                  ...c,
+                  electricityRate: v,
+                  electricityBasis: c.electricityBasis || (Number(v) > 0 ? 'room' : ''),
+                }))
+              }}
+              className="pl-7 pr-14 text-right"
+            />
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">/unit</span>
+          </div>
+        </Field>
+        <div className="hidden sm:block" />
+        <fieldset className="sm:col-span-2" disabled={!rateOn}>
+          <legend className="mb-1.5 text-sm font-medium text-slate-700">How are the meters? {rateOn && <span className="text-red-500">*</span>}</legend>
+          <div className={cn('grid gap-2 sm:grid-cols-2', !rateOn && 'opacity-50')}>
+            {BASIS_CHOICES.map((b) => (
+              <label
+                key={b.value}
+                className={cn(
+                  'flex items-start gap-3 rounded-xl border p-3 transition-colors',
+                  rateOn ? 'cursor-pointer' : 'cursor-not-allowed',
+                  charges.electricityBasis === b.value ? 'border-brand-500 bg-brand-50 ring-1 ring-brand-500' : 'border-slate-200 hover:bg-slate-50',
+                )}
+              >
+                <input
+                  type="radio"
+                  name="electricityBasis"
+                  value={b.value}
+                  checked={charges.electricityBasis === b.value}
+                  onChange={() => setCharges((c) => ({ ...c, electricityBasis: b.value }))}
+                  className="mt-0.5 h-4 w-4 accent-brand-600"
+                />
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium text-slate-900">{b.title}</span>
+                  <span className="block text-xs text-slate-500">{b.hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {errors.electricityBasis && <p className="mt-1 text-xs text-red-600">{errors.electricityBasis}</p>}
+          {rateOn && charges.electricityBasis === 'room' && (
+            <p className="mt-2 text-xs text-slate-500">
+              Example: 100 units × ₹{rateNum.toLocaleString('en-IN')} = ₹{Math.round(100 * rateNum).toLocaleString('en-IN')}. With 2 hostelers in the room, each
+              pays ₹{Math.ceil(Math.round(100 * rateNum) / 2).toLocaleString('en-IN')}.
+            </p>
+          )}
+        </fieldset>
         {errors.charges && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 sm:col-span-2">{errors.charges}</p>}
       </div>
     </Modal>

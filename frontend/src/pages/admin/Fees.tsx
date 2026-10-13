@@ -184,13 +184,7 @@ export default function Fees() {
       {/* Overview */}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Overview · {formatMonth(month)}</h2>
-        <Input
-          type="month"
-          value={month}
-          onChange={(e) => e.target.value && setMonth(e.target.value)}
-          className="h-9 w-44"
-          aria-label="Overview month"
-        />
+        <Input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} className="h-9 w-44" aria-label="Overview month" />
       </div>
       {summaryQ.error && !s ? (
         <Card>
@@ -250,7 +244,11 @@ export default function Fees() {
         value={tab}
         onChange={setTab}
         tabs={[
-          { value: 'verify', label: 'Verify payments', count: pending || undefined },
+          {
+            value: 'verify',
+            label: 'Verify payments',
+            count: pending || undefined,
+          },
           { value: 'invoices', label: 'Invoices' },
           { value: 'payments', label: 'Payments' },
           { value: 'dues', label: 'Dues', count: duesQ.data?.totals.hostelers },
@@ -299,15 +297,7 @@ const STATUS_OPTIONS: { value: InvoiceStatus | ''; label: string }[] = [
   { value: 'cancelled', label: 'Cancelled' },
 ]
 
-function InvoicesTab({
-  onPay,
-  onRemindAll,
-  overdueCount,
-}: {
-  onPay: (inv: InvoiceRow) => void
-  onRemindAll: () => void
-  overdueCount: number
-}) {
+function InvoicesTab({ onPay, onRemindAll, overdueCount }: { onPay: (inv: InvoiceRow) => void; onRemindAll: () => void; overdueCount: number }) {
   const scope = useScope()
   const settings = useSettings()
   const hostelName = useHostelName()
@@ -510,12 +500,42 @@ function InvoicesTab({
                         <RowMenu
                           disabled={busyId === inv.id}
                           items={[
-                            { label: 'Record payment', icon: <Banknote />, onClick: () => onPay(inv), hidden: inv.balance <= 0 },
-                            { label: 'View / print', icon: <Printer />, onClick: () => openInNewTab(`/print/invoice/${inv.id}`) },
-                            { label: 'Edit items', icon: <Pencil />, onClick: () => setEditing(inv), hidden: inv.cancelled },
-                            { label: 'Add late fee', icon: <Timer />, onClick: () => void addLateFee(inv), hidden: st !== 'overdue' },
-                            { label: 'Send reminder', icon: <MessageCircle />, onClick: () => remind(inv), hidden: inv.balance <= 0 },
-                            { label: 'Cancel invoice', icon: <Ban />, onClick: () => void cancel(inv), danger: true, hidden: inv.cancelled },
+                            {
+                              label: 'Record payment',
+                              icon: <Banknote />,
+                              onClick: () => onPay(inv),
+                              hidden: inv.balance <= 0,
+                            },
+                            {
+                              label: 'View / print',
+                              icon: <Printer />,
+                              onClick: () => openInNewTab(`/print/invoice/${inv.id}`),
+                            },
+                            {
+                              label: 'Edit items',
+                              icon: <Pencil />,
+                              onClick: () => setEditing(inv),
+                              hidden: inv.cancelled,
+                            },
+                            {
+                              label: 'Add late fee',
+                              icon: <Timer />,
+                              onClick: () => void addLateFee(inv),
+                              hidden: st !== 'overdue',
+                            },
+                            {
+                              label: 'Send reminder',
+                              icon: <MessageCircle />,
+                              onClick: () => remind(inv),
+                              hidden: inv.balance <= 0,
+                            },
+                            {
+                              label: 'Cancel invoice',
+                              icon: <Ban />,
+                              onClick: () => void cancel(inv),
+                              danger: true,
+                              hidden: inv.cancelled,
+                            },
                           ]}
                         />
                       </div>
@@ -563,8 +583,18 @@ interface DraftItem {
 
 let draftKey = 0
 const toDraft = (items: InvoiceItem[]): DraftItem[] =>
-  items.map((i) => ({ key: ++draftKey, cat: i.key ?? guessKey(i.label), label: i.label, amount: String(i.amount) }))
-const blankDraft = (cat: ChargeKey = 'other', label = ''): DraftItem => ({ key: ++draftKey, cat, label, amount: '' })
+  items.map((i) => ({
+    key: ++draftKey,
+    cat: i.key ?? guessKey(i.label),
+    label: i.label,
+    amount: String(i.amount),
+  }))
+const blankDraft = (cat: ChargeKey = 'other', label = ''): DraftItem => ({
+  key: ++draftKey,
+  cat,
+  label,
+  amount: '',
+})
 
 function ItemsEditor({ items, onChange }: { items: DraftItem[]; onChange: (v: DraftItem[]) => void }) {
   const total = sum(items, (i) => Number(i.amount) || 0)
@@ -582,7 +612,10 @@ function ItemsEditor({ items, onChange }: { items: DraftItem[]; onChange: (v: Dr
                 const cat = e.target.value as ChargeKey
                 // fill / follow the description while it is blank or still the old category's name
                 const auto = !it.label.trim() || it.label === CHARGE_KEY_LABELS[it.cat]
-                update(it.key, { cat, ...(auto && cat !== 'other' ? { label: CHARGE_KEY_LABELS[cat] } : {}) })
+                update(it.key, {
+                  cat,
+                  ...(auto && cat !== 'other' ? { label: CHARGE_KEY_LABELS[cat] } : {}),
+                })
               }}
               className="w-full sm:w-40 sm:shrink-0"
             />
@@ -620,7 +653,10 @@ function ItemsEditor({ items, onChange }: { items: DraftItem[]; onChange: (v: Dr
   )
 }
 
-function parseItems(items: DraftItem[]): { items: InvoiceItem[]; error?: string } {
+function parseItems(items: DraftItem[]): {
+  items: InvoiceItem[]
+  error?: string
+} {
   const out: InvoiceItem[] = []
   for (const it of items) {
     if (!it.label.trim() && !it.amount) continue
@@ -787,34 +823,40 @@ function GenerateModal({ open, onClose, initialMonth }: { open: boolean; onClose
             <Select
               value={hostelId}
               onChange={(e) => setHostelId(e.target.value)}
-              options={[{ value: 'all', label: 'All hostels' }, ...(hostels.data ?? []).map((h) => ({ value: h.id, label: h.name }))]}
+              options={[
+                { value: 'all', label: 'All hostels' },
+                ...(hostels.data ?? []).map((h) => ({
+                  value: h.id,
+                  label: h.name,
+                })),
+              ]}
             />
           </Field>
         </div>
         <ul className="space-y-1.5 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
           <li>
-            • Each active hosteler gets an itemised bill: room rent, mess fees for mess members, and the monthly charges set for their hostel
-            (mess and electricity; everything else is part of room rent) in Settings → Hostels.
-            {settings.messMonthlyCharge
-              ? ` Hostels without their own mess charge use the default ${formatMoney(settings.messMonthlyCharge)}.`
-              : ''}
+            • Each active hosteler gets an itemised bill: room rent (includes water, Wi-Fi, cleaning and maintenance), mess fees for mess members, and their
+            share of electricity from the month's meter readings (Rooms &amp; Beds → Electricity). Rates are set in Settings → Hostels.
+            {settings.messMonthlyCharge ? ` Hostels without their own mess charge use the default ${formatMoney(settings.messMonthlyCharge)}.` : ''}
           </li>
           {selectedHostel && (
             <li>
               • {selectedHostel.name}:{' '}
-              {configuredCharges(selectedHostel.charges).length
-                ? configuredCharges(selectedHostel.charges)
-                    .map((c) => `${c.label} ${formatMoney(c.amount)}`)
+              {configuredCharges(selectedHostel).length
+                ? configuredCharges(selectedHostel)
+                    .map((c) => `${c.label} ${c.value}`)
                     .join(', ')
                 : 'room rent only (no extra charges set)'}
               .
             </li>
           )}
+          <li>
+            • Electricity readings already entered for this month are added to the bills. Readings entered later are added to the existing bills automatically.
+          </li>
           <li>• Unpaid amounts from earlier bills are not copied in — they show as "previous balance" on the bill.</li>
           <li>• Hostelers are notified and pay to their hostel's UPI ID, then report the payment for you to verify.</li>
           <li>
-            • Due date: {month ? formatDate(dueDateFor(month, settings.rentDueDay)) : '—'} (day {settings.rentDueDay} of the month, set in
-            Settings).
+            • Due date: {month ? formatDate(dueDateFor(month, settings.rentDueDay)) : '—'} (day {settings.rentDueDay} of the month, set in Settings).
           </li>
           <li>• Hostelers who already have an invoice for this month are skipped, so it's safe to run again.</li>
         </ul>
@@ -949,24 +991,26 @@ function CustomInvoiceModal({ open, onClose }: { open: boolean; onClose: () => v
 /* Overdue reminders                                                   */
 /* ------------------------------------------------------------------ */
 
-function OverdueRemindersModal({
-  open,
-  onClose,
-  query,
-}: {
-  open: boolean
-  onClose: () => void
-  query: UseQueryResult<DuesResponse>
-}) {
+function OverdueRemindersModal({ open, onClose, query }: { open: boolean; onClose: () => void; query: UseQueryResult<DuesResponse> }) {
   const hostelName = useHostelName()
   const [sent, setSent] = useState<Set<ID>>(new Set())
 
   const groups = useMemo(() => {
-    const out: { d: DueRow; invs: DueRow['invoices']; amount: number; oldest: string }[] = []
+    const out: {
+      d: DueRow
+      invs: DueRow['invoices']
+      amount: number
+      oldest: string
+    }[] = []
     for (const d of query.data?.items ?? []) {
       const invs = d.invoices.filter((i) => i.status === 'overdue')
       if (!invs.length || !d.phone) continue
-      out.push({ d, invs, amount: sum(invs, (i) => i.balance), oldest: invs.reduce((m, i) => (i.dueDate < m ? i.dueDate : m), invs[0]!.dueDate) })
+      out.push({
+        d,
+        invs,
+        amount: sum(invs, (i) => i.balance),
+        oldest: invs.reduce((m, i) => (i.dueDate < m ? i.dueDate : m), invs[0]!.dueDate),
+      })
     }
     return out.sort((a, b) => b.amount - a.amount)
   }, [query.data])
@@ -1010,7 +1054,8 @@ function OverdueRemindersModal({
               <div className="min-w-0 flex-1">
                 <p className="truncate font-medium text-slate-800">{g.d.name}</p>
                 <p className="text-xs text-slate-500">
-                  {g.d.phone} · {g.invs.length} invoice{g.invs.length === 1 ? '' : 's'} · {daysOverdue(g.oldest)} days overdue
+                  {g.d.phone} · {g.invs.length} invoice
+                  {g.invs.length === 1 ? '' : 's'} · {daysOverdue(g.oldest)} days overdue
                 </p>
               </div>
               <p className="font-semibold tabular-nums text-red-600">{formatMoney(g.amount)}</p>
@@ -1096,7 +1141,17 @@ function PaymentsTab() {
       const all = await fetchAllPages(feesApi.payments, { ...filters })
       downloadCsv(`payments-${from || 'start'}-to-${to || 'today'}.csv`, [
         ['Receipt', 'Date', 'Hosteler', 'Phone', 'Hostel', 'Against', 'Mode', 'Reference', 'Amount'],
-        ...all.map((p) => [p.receiptNo, p.date, p.hosteler?.name ?? '', p.hosteler?.phone ?? '', p.hostelName, againstLabel(p), modeLabel(p.mode), p.reference, p.amount]),
+        ...all.map((p) => [
+          p.receiptNo,
+          p.date,
+          p.hosteler?.name ?? '',
+          p.hosteler?.phone ?? '',
+          p.hostelName,
+          againstLabel(p),
+          modeLabel(p.mode),
+          p.reference,
+          p.amount,
+        ]),
       ])
     } catch (e) {
       toastError(e, 'Export failed')
@@ -1111,9 +1166,7 @@ function PaymentsTab() {
         <Card className="col-span-2 p-4 sm:col-span-3 lg:col-span-1">
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Total received</p>
           <p className="mt-1 text-xl font-bold text-slate-900">{data ? formatMoney(total) : '…'}</p>
-          <p className="text-xs text-slate-500">
-            {data ? `${data.totals.count} payment${data.totals.count === 1 ? '' : 's'}` : 'Loading…'}
-          </p>
+          <p className="text-xs text-slate-500">{data ? `${data.totals.count} payment${data.totals.count === 1 ? '' : 's'}` : 'Loading…'}</p>
         </Card>
         {PAYMENT_MODES.map((m) => {
           const amount = data?.totals.byMode[m.value] ?? 0
@@ -1255,13 +1308,22 @@ function DuesTab({ query, onPay }: { query: UseQueryResult<DuesResponse>; onPay:
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase()
     return (query.data?.items ?? [])
-      .map((d) => ({ ...d, room: shortRoom(d.roomLabel), status: d.hosteler?.status ?? 'active' }))
+      .map((d) => ({
+        ...d,
+        room: shortRoom(d.roomLabel),
+        status: d.hosteler?.status ?? 'active',
+      }))
       .filter((d) => !needle || d.name.toLowerCase().includes(needle) || d.phone.includes(needle) || d.room.toLowerCase().includes(needle))
       .sort((a, b) => (sortBy === 'amount' ? b.amount - a.amount : b.daysOverdue - a.daysOverdue))
   }, [query.data, q, sortBy])
 
   const total = sum(rows, (r) => r.amount)
-  const overdueTotal = sum(rows, (r) => sum(r.invoices.filter((i) => i.status === 'overdue'), (i) => i.balance))
+  const overdueTotal = sum(rows, (r) =>
+    sum(
+      r.invoices.filter((i) => i.status === 'overdue'),
+      (i) => i.balance,
+    ),
+  )
 
   const exportCsv = () =>
     downloadCsv(`dues-${today()}.csv`, [
@@ -1274,9 +1336,7 @@ function DuesTab({ query, onPay }: { query: UseQueryResult<DuesResponse>; onPay:
       <CardHeader
         title="Outstanding dues"
         subtitle={
-          query.data
-            ? `${rows.length} hosteler${rows.length === 1 ? '' : 's'} owe ${formatMoney(total)} · ${formatMoney(overdueTotal)} past due`
-            : 'Loading…'
+          query.data ? `${rows.length} hosteler${rows.length === 1 ? '' : 's'} owe ${formatMoney(total)} · ${formatMoney(overdueTotal)} past due` : 'Loading…'
         }
         action={
           <Button variant="outline" size="sm" icon={<Download className="h-4 w-4" />} onClick={exportCsv} disabled={!rows.length}>
@@ -1328,7 +1388,8 @@ function DuesTab({ query, onPay }: { query: UseQueryResult<DuesResponse>; onPay:
                     <div className="min-w-0">
                       <p className="truncate font-medium text-slate-800">{r.name || 'Removed hosteler'}</p>
                       <p className="text-xs text-slate-500">
-                        {r.invoices.length} open invoice{r.invoices.length === 1 ? '' : 's'}
+                        {r.invoices.length} open invoice
+                        {r.invoices.length === 1 ? '' : 's'}
                         {r.status === 'checked_out' && ' · checked out'}
                       </p>
                     </div>
@@ -1357,7 +1418,12 @@ function DuesTab({ query, onPay }: { query: UseQueryResult<DuesResponse>; onPay:
                       <a
                         href={whatsappUrl(
                           r.phone,
-                          reminderText({ name: r.name, amount: r.amount, dueDate: r.oldestDueDate, hostelName: hostelName(r.hostelId) }),
+                          reminderText({
+                            name: r.name,
+                            amount: r.amount,
+                            dueDate: r.oldestDueDate,
+                            hostelName: hostelName(r.hostelId),
+                          }),
                         )}
                         target="_blank"
                         rel="noopener noreferrer"
@@ -1404,7 +1470,14 @@ function DepositsTab({ onCollect }: { onCollect: (hostelerId: ID) => void }) {
         : ['Hosteler', 'Phone', 'Checked out', 'Deposit', 'Refunded', 'Deducted'],
       ...(view === 'held'
         ? held.map((r) => [r.hosteler?.name ?? '', r.hosteler?.phone ?? '', shortRoom(r.roomLabel), r.status, r.agreed, r.collected, r.pending])
-        : refunded.map((r) => [r.hosteler?.name ?? '', r.hosteler?.phone ?? '', r.checkOutDate ?? '', r.collected, r.refundRecorded ? r.refunded : '', r.deducted])),
+        : refunded.map((r) => [
+            r.hosteler?.name ?? '',
+            r.hosteler?.phone ?? '',
+            r.checkOutDate ?? '',
+            r.collected,
+            r.refundRecorded ? r.refunded : '',
+            r.deducted,
+          ])),
     ])
 
   return (
@@ -1528,9 +1601,7 @@ function DepositsTab({ onCollect }: { onCollect: (hostelerId: ID) => void }) {
           </Table>
         )}
       </Card>
-      <p className="text-xs text-slate-500">
-        Deposits are payments recorded as “{DEPOSIT_NOTE}” (no invoice). They are not counted as rent income.
-      </p>
+      <p className="text-xs text-slate-500">Deposits are payments recorded as “{DEPOSIT_NOTE}” (no invoice). They are not counted as rent income.</p>
     </div>
   )
 }

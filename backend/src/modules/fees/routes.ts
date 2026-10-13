@@ -34,6 +34,7 @@ import { Hostel } from '../../models/Hostel.js'
 import { Hosteler } from '../../models/Hosteler.js'
 import { CHARGE_KEYS, Invoice, invoiceStatus, type ChargeKey, type InvoiceStatus } from '../../models/Invoice.js'
 import { monthlyBillItems, previousBalance } from '../../lib/billing.js'
+import { applyElectricityToBill } from '../../lib/electricity.js'
 import { notifyHostelers } from '../../lib/notify.js'
 import { Organization } from '../../models/Organization.js'
 import { Payment, PAYMENT_MODES } from '../../models/Payment.js'
@@ -312,7 +313,9 @@ router.post(
       const monthLabel = new Date(`${body.month}-01T00:00:00Z`).toLocaleString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' })
       for (const h of targets) {
         const items = monthlyBillItems(h, chargesByHostel.get(String(h.hostelId)), settings.messMonthlyCharge)
-        const inv = await createInvoice(orgId, { hostelerId: h._id, month: body.month, items, dueDate }, session)
+        let inv = await createInvoice(orgId, { hostelerId: h._id, month: body.month, items, dueDate }, session)
+        // electricity readings entered before the bill existed
+        if (await applyElectricityToBill(orgId, h._id, body.month, session)) inv = (await Invoice.findById(inv._id).session(session))!
         await notifyHostelers(
           orgId,
           [h._id],

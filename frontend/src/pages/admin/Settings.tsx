@@ -226,7 +226,14 @@ function OrgProfileForm({ org }: { org: OrgDetails }) {
         <p className="text-xs text-slate-500">Member since {formatDate(org.createdAt)}</p>
         <div className="flex gap-2">
           {dirty && (
-            <Button variant="ghost" onClick={() => { setForm(initial); setErrors({}) }} disabled={save.isPending}>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setForm(initial)
+                setErrors({})
+              }}
+              disabled={save.isPending}
+            >
               Discard
             </Button>
           )}
@@ -358,7 +365,9 @@ function HostelsTab() {
                           <div className="min-w-0">
                             <p className="truncate font-semibold text-slate-900">{h.name}</p>
                             <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                              <Badge tone={h.type === 'girls' ? 'violet' : h.type === 'boys' ? 'blue' : 'green'}>{HOSTEL_TYPES.find((t) => t.value === h.type)?.label}</Badge>
+                              <Badge tone={h.type === 'girls' ? 'violet' : h.type === 'boys' ? 'blue' : 'green'}>
+                                {HOSTEL_TYPES.find((t) => t.value === h.type)?.label}
+                              </Badge>
                               <Badge>IDs: {h.code}-0001</Badge>
                             </div>
                           </div>
@@ -387,7 +396,7 @@ function HostelsTab() {
                             )}
                           </p>
                         </div>
-                        <HostelChargeChips charges={h.charges} />
+                        <HostelChargeChips hostel={h} />
                         <div className="mt-4 grid grid-cols-3 gap-2 rounded-lg bg-slate-50 p-3 text-center">
                           <div>
                             <p className="text-lg font-bold text-slate-900">{c.rooms}</p>
@@ -462,8 +471,17 @@ function HostelsTab() {
 
 const ROLE_INFO: Record<StaffRole, { label: string; tone: BadgeTone; access: string }> = {
   owner: { label: 'Owner', tone: 'blue', access: 'Everything, including plan, team, settings and backups.' },
-  manager: { label: 'Manager', tone: 'violet', access: 'Runs the hostels: rooms, hostelers, check-in/out, fees, expenses, mess, attendance, complaints, visitors, notices, staff and reports. No plan, team or settings.' },
-  warden: { label: 'Warden', tone: 'green', access: 'Day-to-day: rooms, hostelers, check-in/out, documents, mess, attendance, complaints, visitors and notices. No money screens.' },
+  manager: {
+    label: 'Manager',
+    tone: 'violet',
+    access:
+      'Runs the hostels: rooms, hostelers, check-in/out, fees, expenses, mess, attendance, complaints, visitors, notices, staff and reports. No plan, team or settings.',
+  },
+  warden: {
+    label: 'Warden',
+    tone: 'green',
+    access: 'Day-to-day: rooms, hostelers, check-in/out, documents, mess, attendance, complaints, visitors and notices. No money screens.',
+  },
   accountant: { label: 'Accountant', tone: 'amber', access: 'Money: hostelers (view), fees & payments, expenses and reports.' },
 }
 const TEAM_ROLES: TeamRole[] = ['manager', 'warden', 'accountant']
@@ -674,7 +692,11 @@ function InviteModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
           <Input value={form.phone} maxLength={20} inputMode="tel" onChange={(e) => setForm({ ...form, phone: e.target.value })} />
         </Field>
         <Field label="Role" required className="sm:col-span-2" hint={ROLE_INFO[form.role].access}>
-          <Select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as TeamRole })} options={TEAM_ROLES.map((r) => ({ value: r, label: ROLE_INFO[r].label }))} />
+          <Select
+            value={form.role}
+            onChange={(e) => setForm({ ...form, role: e.target.value as TeamRole })}
+            options={TEAM_ROLES.map((r) => ({ value: r, label: ROLE_INFO[r].label }))}
+          />
         </Field>
       </div>
     </Modal>
@@ -720,10 +742,18 @@ function EditUserModal({ user, onClose }: { user: User; onClose: () => void }) {
           </Field>
         </div>
         <Field label="Role" hint={ROLE_INFO[form.role].access}>
-          <Select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as TeamRole })} options={TEAM_ROLES.map((r) => ({ value: r, label: ROLE_INFO[r].label }))} />
+          <Select
+            value={form.role}
+            onChange={(e) => setForm({ ...form, role: e.target.value as TeamRole })}
+            options={TEAM_ROLES.map((r) => ({ value: r, label: ROLE_INFO[r].label }))}
+          />
         </Field>
         <div>
-          <Switch checked={form.active} onChange={(v) => setForm({ ...form, active: v })} label={form.active ? 'Active — can sign in' : 'Inactive — sign-in blocked'} />
+          <Switch
+            checked={form.active}
+            onChange={(v) => setForm({ ...form, active: v })}
+            label={form.active ? 'Active — can sign in' : 'Inactive — sign-in blocked'}
+          />
           {user.active && !form.active && <p className="mt-1.5 text-xs text-amber-700">They will be signed out on every device.</p>}
         </div>
       </div>
@@ -770,7 +800,12 @@ function CredentialsModal({ result, reset, onClose }: { result: UserWithPassword
           <Button variant="outline" icon={copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />} onClick={() => void copy()}>
             {copied ? 'Copied' : 'Copy details'}
           </Button>
-          <a href={waUrl} target="_blank" rel="noreferrer" className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-medium text-white shadow-sm hover:bg-emerald-700">
+          <a
+            href={waUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-medium text-white shadow-sm hover:bg-emerald-700"
+          >
             <MessageCircle className="h-4 w-4" />
             Share on WhatsApp
           </a>
@@ -867,7 +902,8 @@ function BillingTab() {
                       <span className="text-sm text-slate-500"> / bed / month</span>
                     </p>
                     <p className="mt-1 text-xs text-slate-500">
-                      {p.maxBeds ? `Up to ${p.maxBeds} beds` : 'Unlimited beds'} · your estimate <span className="font-semibold text-slate-700">{formatMoney(monthly(p))}/mo</span>
+                      {p.maxBeds ? `Up to ${p.maxBeds} beds` : 'Unlimited beds'} · your estimate{' '}
+                      <span className="font-semibold text-slate-700">{formatMoney(monthly(p))}/mo</span>
                     </p>
                     <ul className="mt-5 flex-1 space-y-2">
                       {p.features.map((f) => (
@@ -894,7 +930,8 @@ function BillingTab() {
             <Card className="p-5">
               <p className="font-medium text-slate-900">Payments for subscriptions coming soon</p>
               <p className="mt-1 text-sm text-slate-500">
-                Plan changes apply immediately. Online billing and invoices for your HostelHub subscription will be added here later — you won't be charged until then.
+                Plan changes apply immediately. Online billing and invoices for your HostelHub subscription will be added here later — you won't be charged
+                until then.
               </p>
             </Card>
           </div>
@@ -952,7 +989,14 @@ function PreferencesForm({ settings }: { settings: SettingsT }) {
     if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(form.nightCurfew)) e.nightCurfew = 'Enter a time.'
     setErrors(e)
     if (Object.keys(e).length) return
-    save.mutate({ rentDueDay: due, lateFeePerDay: late, receiptPrefix: prefix, defaultSecurityDeposit: dep, messMonthlyCharge: mess, nightCurfew: form.nightCurfew })
+    save.mutate({
+      rentDueDay: due,
+      lateFeePerDay: late,
+      receiptPrefix: prefix,
+      defaultSecurityDeposit: dep,
+      messMonthlyCharge: mess,
+      nightCurfew: form.nightCurfew,
+    })
   }
 
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [k]: e.target.value })
@@ -1047,7 +1091,8 @@ function DataTab() {
           <div className="flex-1">
             <p className="font-medium text-slate-900">Export full backup</p>
             <p className="text-sm text-slate-500">
-              Download every record of your organization (hostels, rooms, hostelers, invoices, payments, expenses and more) as a JSON file. Uploaded document files are not included. Passwords are never exported.
+              Download every record of your organization (hostels, rooms, hostelers, invoices, payments, expenses and more) as a JSON file. Uploaded document
+              files are not included. Passwords are never exported.
             </p>
           </div>
           <Button variant="outline" icon={<Download className="h-4 w-4" />} loading={exporting} onClick={() => void exportBackup()}>

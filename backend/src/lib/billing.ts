@@ -27,16 +27,16 @@ interface HostelCharges {
   others?: { label: string; amount: number }[] | null
 }
 
-/**
+/*
  * Everything else (water, internet, cleaning, maintenance…) is included in the
- * room rent, so electricity is the only extra monthly charge besides mess.
- * (The other charge fields still exist in the schema for older data but are not billed.)
+ * room rent. Electricity is metered: it is added to bills from the monthly
+ * meter readings (see lib/electricity.ts), not as a fixed charge.
+ * (The old fixed charge fields still exist in the schema but are not billed.)
  */
-const FIXED: { key: 'electricity'; label: string }[] = [{ key: 'electricity', label: 'Electricity' }]
 
 /**
- * Lines for one hosteler's monthly bill: room rent (includes water, internet, cleaning…),
- * mess fees (if opted) and electricity (if the hostel charges it).
+ * Fixed lines of a hosteler's monthly bill: room rent (includes water, internet,
+ * cleaning…) and mess fees (if opted). Electricity is added from meter readings.
  * `fallbackMess` = organization-wide mess charge, used when the hostel has none set.
  */
 export function monthlyBillItems(
@@ -48,10 +48,6 @@ export function monthlyBillItems(
   const items: BillItem[] = [{ key: 'rent', label: 'Room rent', amount: hosteler.monthlyRent }]
   const mess = c.mess && c.mess > 0 ? c.mess : fallbackMess
   if (hosteler.messOpted && mess > 0) items.push({ key: 'mess', label: 'Mess fees', amount: mess })
-  for (const f of FIXED) {
-    const amount = Number(c[f.key] ?? 0)
-    if (amount > 0) items.push({ key: f.key, label: f.label, amount })
-  }
   return items
 }
 

@@ -118,7 +118,7 @@ try {
   /* 2. Setup through the API with the owner's token               */
   /* ------------------------------------------------------------ */
   await apiCall('PATCH', '/org/plan', { plan: 'pro' }, token)
-  const hostel = await apiCall('POST', '/hostels', { name: 'Sunrise Boys Hostel', type: 'boys', city: 'Indore', address: '12 Vijay Nagar', phone: '9826012345', code: 'SBH', upiId: 'sunrise.hostel@okhdfc', payeeName: 'Sunrise Hostels', charges: { mess: 3000, electricity: 500, water: 200 } }, token)
+  const hostel = await apiCall('POST', '/hostels', { name: 'Sunrise Boys Hostel', type: 'boys', city: 'Indore', address: '12 Vijay Nagar', phone: '9826012345', code: 'SBH', upiId: 'sunrise.hostel@okhdfc', payeeName: 'Sunrise Hostels', charges: { mess: 3000 }, electricityRate: 10, electricityBasis: 'room' }, token)
   await apiCall('POST', '/rooms/bulk', { hostelId: hostel.id, numbers: ['101', '102', '103'], floor: 1, type: 'ac', sharing: 2, rentPerBed: 6500, amenities: ['AC', 'Wi-Fi'] }, token)
   const vacant = (await apiCall('GET', `/beds/vacant?hostelId=${hostel.id}`, null, token)).items
   const admit = (name, phone, bed) =>
@@ -129,7 +129,7 @@ try {
       messOpted: true, depositPayment: { amount: 5000, mode: 'upi', reference: 'UTR123' }, generateFirstInvoice: true,
     }, token)
   const a1 = await admit('Aarav Sharma', '9876543210', vacant[0])
-  await admit('Rohan Gupta', '9876543211', vacant[1])
+  const a2 = await admit('Rohan Gupta', '9876543211', vacant[1])
   ok('check-in via API returns Hosteler ID + temp password', /^SBH-0001$/.test(a1.credentials.loginId) && a1.credentials.tempPassword.length === 8, a1.credentials.loginId)
   await apiCall('POST', '/notices', { title: 'Rent due by 5th', body: 'Please pay on time.', priority: 'high', pinned: true, hostelId: null }, token)
   await apiCall('POST', '/expenses', { hostelId: hostel.id, category: 'electricity', amount: 12000, date: today, paidTo: 'MPEB', mode: 'bank', note: '' }, token)
@@ -140,7 +140,7 @@ try {
   /* ------------------------------------------------------------ */
   /* 3. Open every owner screen                                    */
   /* ------------------------------------------------------------ */
-  const ADMIN = ['/app/dashboard', '/app/rooms', '/app/hostelers', `/app/hostelers/${a1.hosteler.id}`, '/app/check-in', `/app/check-out?h=${a1.hosteler.id}`,
+  const ADMIN = ['/app/dashboard', '/app/rooms', '/app/rooms?view=electricity', '/app/hostelers', `/app/hostelers/${a1.hosteler.id}`, '/app/check-in', `/app/check-out?h=${a1.hosteler.id}`,
     '/app/gate-log', '/app/documents', '/app/fees', '/app/fees?tab=verify', '/app/fees?tab=invoices', '/app/fees?tab=payments', '/app/fees?tab=dues', '/app/fees?tab=deposits',
     '/app/expenses', '/app/mess', '/app/attendance', '/app/attendance?tab=leaves', '/app/complaints', '/app/visitors', '/app/notices', '/app/staff',
     '/app/reports', '/app/settings', '/app/settings?tab=hostels', '/app/settings?tab=team', '/app/settings?tab=billing', '/app/settings?tab=preferences', '/app/settings?tab=data']
@@ -177,6 +177,20 @@ try {
   const invs = (await apiCall('GET', '/invoices', null, token)).items
   await visit(page, `/print/receipt/${pays[0].id}`, 'print')
   await visit(page, `/print/invoice/${invs[0].id}`, 'print')
+
+  /* ------------------------------------------------------------ */
+  /* 3b. Electricity: owner enters a room's meter reading in the UI */
+  /* ------------------------------------------------------------ */
+  await page.setViewportSize({ width: 1280, height: 860 })
+  await page.goto(`${WEB}/app/rooms?view=electricity`, { waitUntil: 'networkidle' })
+  await page.getByLabel(/Units for Room 101/).fill('100')
+  await page.getByRole('button', { name: /Save readings/ }).click()
+  await page.getByText(/Saved —/).first().waitFor({ timeout: 15000 })
+  const elecLines = async (hostelerId) =>
+    (await apiCall('GET', `/invoices?hostelerId=${hostelerId}`, null, token)).items.flatMap((i) => i.items.filter((x) => x.key === 'electricity'))
+  const e1 = await elecLines(a1.hosteler.id)
+  const e2 = await elecLines(a2.hosteler.id)
+  ok('room reading 100 units × ₹10 split equally on both bills (UI)', e1.length === 1 && e2.length === 1 && e1[0].amount === 500 && e2[0].amount === 500, e1[0]?.label)
 
   /* ------------------------------------------------------------ */
   /* 4. Hosteler: temp password -> forced password change -> portal */
@@ -247,7 +261,7 @@ try {
   const hTok = await pp.evaluate(() => JSON.parse(localStorage.getItem('hostelhub-session') || '{}').state?.session?.token)
   const info = await apiCall('GET', '/portal/payment-info', null, hTok)
   const keys = info.bills[0]?.items.map((i) => i.key).sort().join(',')
-  ok('first bill: rent + mess (on by default) + electricity; water is part of rent', keys === 'electricity,mess,rent', `${keys} = ₹${info.totalDue}`)
+  ok('first bill: rent + mess (on by default); electricity comes from meter readings', keys === 'mess,rent', `${keys} = ₹${info.totalDue}`)
   ok('hosteler sees the hostel UPI ID', info.upiId === 'sunrise.hostel@okhdfc')
 
   // hosteler pays by UPI outside the app, then reports it

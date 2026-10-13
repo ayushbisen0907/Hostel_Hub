@@ -18,6 +18,9 @@ export interface HostelInput {
   upiId: string
   payeeName: string
   charges?: HostelCharges
+  /** ₹ per unit (0 = electricity not charged) */
+  electricityRate?: number
+  electricityBasis?: 'room' | 'bed'
 }
 
 export const hostelsApi = {

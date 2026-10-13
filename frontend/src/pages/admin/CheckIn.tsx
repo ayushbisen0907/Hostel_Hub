@@ -48,7 +48,7 @@ import {
   toast,
 } from '@/components/ui'
 import { cn, formatBytes, formatDate, formatMoney, titleCase, today } from '@/lib/utils'
-import { monthlyBillItems } from '@/lib/charges'
+import { electricityText, monthlyBillItems } from '@/lib/charges'
 import {
   AcademicFields,
   DOC_TYPE_LABELS,
@@ -136,7 +136,11 @@ function Reservations() {
   if (q.error || !reserved.length) return null
 
   const doConfirm = async (id: ID, name: string) => {
-    const ok = await confirm({ title: `Check in ${name}?`, message: 'The reservation will become an active stay starting today.', confirmText: 'Confirm check-in' })
+    const ok = await confirm({
+      title: `Check in ${name}?`,
+      message: 'The reservation will become an active stay starting today.',
+      confirmText: 'Confirm check-in',
+    })
     if (ok) confirmIn.mutate({ id, date: today() })
   }
 
@@ -274,6 +278,9 @@ export default function CheckIn() {
   const messCharge = hostel?.charges?.mess && hostel.charges.mess > 0 ? hostel.charges.mess : settings.messMonthlyCharge
   const billItems = monthlyBillItems({ monthlyRent: Number(rent) || 0, messOpted }, hostel?.charges, settings.messMonthlyCharge)
   const firstMonth = billItems.reduce((a, i) => a + i.amount, 0)
+  // electricity is metered: units entered each month (Rooms & Beds → Electricity) × the hostel's rate
+  const elecRate = hostel?.electricityRate ?? 0
+  const elecNote = elecRate > 0 ? `As per meter (₹${elecRate.toLocaleString('en-IN')}/unit)` : null
   const nextLoginId = hostel ? `${hostel.code}-${String(hostel.hostelerSeq + 1).padStart(4, '0')}` : '—'
 
   const vacantQ = useVacantBeds(hostelId || 'all', !!hostelId)
@@ -354,7 +361,10 @@ export default function CheckIn() {
       const r = await hostelersApi.list({ q: phone, limit: 5 })
       const clash = r.items.find((h) => cleanPhone(h.phone) === phone)
       if (clash) {
-        setErrors((e) => ({ ...e, phone: `${clash.name} (${clash.loginId}) already uses this number` }))
+        setErrors((e) => ({
+          ...e,
+          phone: `${clash.name} (${clash.loginId}) already uses this number`,
+        }))
         toast.error('A current resident already uses this number')
         return true
       }
@@ -378,7 +388,12 @@ export default function CheckIn() {
     const out: PendingDoc[] = []
     for (const f of files) {
       if (!acceptFile(f)) continue
-      out.push({ key: `${Date.now()}-${Math.random()}`, type: guessDocType(f.name), file: f, preview: f.type.startsWith('image/') ? URL.createObjectURL(f) : null })
+      out.push({
+        key: `${Date.now()}-${Math.random()}`,
+        type: guessDocType(f.name),
+        file: f,
+        preview: f.type.startsWith('image/') ? URL.createObjectURL(f) : null,
+      })
     }
     if (out.length) setDocs((d) => [...d, ...out])
   }
@@ -389,7 +404,9 @@ export default function CheckIn() {
       return all.filter((x) => x.key !== key)
     })
 
-  const admit = useApiMutation(hostelersApi.admit, { invalidate: HOSTELER_INVALIDATE })
+  const admit = useApiMutation(hostelersApi.admit, {
+    invalidate: HOSTELER_INVALIDATE,
+  })
 
   const submit = async () => {
     for (let i = 0; i < 5; i++) {
@@ -436,7 +453,11 @@ export default function CheckIn() {
     for (const [i, d] of docs.entries()) {
       setSaving(`Uploading documents (${i + 1}/${docs.length})…`)
       try {
-        await documentsApi.upload({ file: d.file, hostelerId: id, type: d.type })
+        await documentsApi.upload({
+          file: d.file,
+          hostelerId: id,
+          type: d.type,
+        })
         docsUploaded++
       } catch (e) {
         failed.push(`${d.file.name}: ${errorMessage(e)}`)
@@ -445,14 +466,29 @@ export default function CheckIn() {
     let receiptId: ID | null = null
     if (depositPayment && can('fees')) {
       try {
-        receiptId = (await feesApi.payments({ hostelerId: id, kind: 'deposit', limit: 1 })).items[0]?.id ?? null
+        receiptId =
+          (
+            await feesApi.payments({
+              hostelerId: id,
+              kind: 'deposit',
+              limit: 1,
+            })
+          ).items[0]?.id ?? null
       } catch {
         receiptId = null
       }
     }
     setSaving(null)
     for (const d of docs) if (d.preview) URL.revokeObjectURL(d.preview)
-    setDone({ hosteler, loginId: res.credentials.loginId, tempPassword: res.credentials.tempPassword, reserved: reserveOnly, receiptId, docsUploaded, failed })
+    setDone({
+      hosteler,
+      loginId: res.credentials.loginId,
+      tempPassword: res.credentials.tempPassword,
+      reserved: reserveOnly,
+      receiptId,
+      docsUploaded,
+      failed,
+    })
     toast.success(reserveOnly ? `Bed reserved for ${hosteler.name}` : `${hosteler.name} checked in`)
     if (failed.length) toast.error(`${failed.length} upload(s) failed — add them from the profile`)
     if (params.get('bed')) setParams({}, { replace: true })
@@ -509,7 +545,13 @@ export default function CheckIn() {
   /* ---------------- success screen ---------------- */
   if (done) {
     const h = done.hosteler
-    const invite = { name: h.name, phone: h.phone, loginId: done.loginId, tempPassword: done.tempPassword, hostelName: h.hostelName ?? hostel?.name ?? 'the hostel' }
+    const invite = {
+      name: h.name,
+      phone: h.phone,
+      loginId: done.loginId,
+      tempPassword: done.tempPassword,
+      hostelName: h.hostelName ?? hostel?.name ?? 'the hostel',
+    }
     return (
       <>
         <PageHeader title={done.reserved ? 'Bed reserved' : 'Check-in complete'} />
@@ -526,12 +568,27 @@ export default function CheckIn() {
           <div className="mt-6 rounded-xl border border-slate-200 p-5">
             <DescriptionList
               items={[
-                { label: 'Status', value: done.reserved ? 'Reserved – check in later' : 'Checked in' },
-                { label: done.reserved ? 'Expected check-in' : 'Check-in date', value: formatDate(h.checkInDate) },
+                {
+                  label: 'Status',
+                  value: done.reserved ? 'Reserved – check in later' : 'Checked in',
+                },
+                {
+                  label: done.reserved ? 'Expected check-in' : 'Check-in date',
+                  value: formatDate(h.checkInDate),
+                },
                 { label: 'Monthly rent', value: formatMoney(h.monthlyRent) },
-                { label: 'Security deposit', value: formatMoney(h.securityDeposit) },
-                { label: 'Deposit collected', value: collect ? `${formatMoney(Number(depAmount) || 0)} (${depMode.toUpperCase()})` : 'Not yet' },
-                { label: 'Documents uploaded', value: String(done.docsUploaded) },
+                {
+                  label: 'Security deposit',
+                  value: formatMoney(h.securityDeposit),
+                },
+                {
+                  label: 'Deposit collected',
+                  value: collect ? `${formatMoney(Number(depAmount) || 0)} (${depMode.toUpperCase()})` : 'Not yet',
+                },
+                {
+                  label: 'Documents uploaded',
+                  value: String(done.docsUploaded),
+                },
               ]}
             />
           </div>
@@ -551,8 +608,8 @@ export default function CheckIn() {
           <div className="mt-4 rounded-xl bg-brand-50 p-4 sm:p-5">
             <p className="text-sm font-semibold text-brand-900">Hosteler portal login</p>
             <p className="mt-1 text-xs text-brand-700">
-              Send these to {h.name.split(' ')[0]}. On first login they'll be asked to create their own password, and the temporary one stops working.
-              This password is shown only once.
+              Send these to {h.name.split(' ')[0]}. On first login they'll be asked to create their own password, and the temporary one stops working. This
+              password is shown only once.
             </p>
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="rounded-lg bg-white px-3 py-2.5">
@@ -674,7 +731,10 @@ export default function CheckIn() {
           <Field label="Hostel" required>
             <Select
               value={hostelId}
-              options={hostels.map((h) => ({ value: h.id, label: `${h.name} (${titleCase(h.type)})` }))}
+              options={hostels.map((h) => ({
+                value: h.id,
+                label: `${h.name} (${titleCase(h.type)})`,
+              }))}
               onChange={(e) => {
                 setHostelId(e.target.value)
                 setBedId('')
@@ -697,7 +757,10 @@ export default function CheckIn() {
         ) : grouped.length ? (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {grouped.map(({ room, beds }) => (
-              <div key={room.id} className={cn('rounded-xl border p-3', beds.some((b) => b.id === bedId) ? 'border-brand-400 bg-brand-50/40' : 'border-slate-200')}>
+              <div
+                key={room.id}
+                className={cn('rounded-xl border p-3', beds.some((b) => b.id === bedId) ? 'border-brand-400 bg-brand-50/40' : 'border-slate-200')}
+              >
                 <div className="mb-2 flex items-center justify-between">
                   <p className="font-semibold text-slate-900">Room {room.number}</p>
                   <p className="text-sm font-medium text-slate-700">{formatMoney(room.rentPerBed)}</p>
@@ -793,13 +856,23 @@ export default function CheckIn() {
                   <span className="tabular-nums text-slate-800">{formatMoney(it.amount)}</span>
                 </li>
               ))}
+              {elecNote && (
+                <li className="flex justify-between gap-3 text-slate-600">
+                  <span className="min-w-0 truncate">Electricity</span>
+                  <span className="text-right text-slate-800">{elecNote}</span>
+                </li>
+              )}
               <li className="flex justify-between gap-3 border-t border-slate-200 pt-1.5 font-semibold text-slate-900">
-                <span>Total per month</span>
+                <span>{elecNote ? 'Total per month + electricity' : 'Total per month'}</span>
                 <span className="tabular-nums">{formatMoney(firstMonth)}</span>
               </li>
             </ul>
             <p className="mt-2 text-xs text-slate-500">
-              Rent{messOpted ? ', mess' : ''} and {hostel?.name ?? 'the hostel'}'s monthly charges (Settings → Hostels). Deposit is collected separately.
+              Rent{messOpted ? ' and mess' : ''} (rent includes water, Wi-Fi, cleaning and maintenance).
+              {elecNote
+                ? ` Electricity is added each month from the meter reading (${electricityText(elecRate, hostel?.electricityBasis)}${hostel?.electricityBasis === 'bed' ? '' : ', split equally among the room'}).`
+                : ''}{' '}
+              Deposit is collected separately.
             </p>
           </div>
         </section>
@@ -871,7 +944,10 @@ export default function CheckIn() {
             cols={3}
             items={[
               { label: 'Gender', value: titleCase(profile.gender) },
-              { label: 'Date of birth', value: profile.dob ? formatDate(profile.dob) : '' },
+              {
+                label: 'Date of birth',
+                value: profile.dob ? formatDate(profile.dob) : '',
+              },
               { label: 'Blood group', value: profile.bloodGroup },
               { label: 'Address', value: profile.permanentAddress },
             ]}
@@ -882,9 +958,18 @@ export default function CheckIn() {
             cols={3}
             items={[
               { label: 'Occupation', value: titleCase(profile.occupation) },
-              { label: profile.occupation === 'working' ? 'Company' : 'Institution', value: profile.institution },
-              { label: profile.occupation === 'working' ? 'Designation' : 'Course', value: profile.course },
-              { label: 'Guardian', value: `${profile.guardianName} (${profile.guardianRelation})` },
+              {
+                label: profile.occupation === 'working' ? 'Company' : 'Institution',
+                value: profile.institution,
+              },
+              {
+                label: profile.occupation === 'working' ? 'Designation' : 'Course',
+                value: profile.course,
+              },
+              {
+                label: 'Guardian',
+                value: `${profile.guardianName} (${profile.guardianRelation})`,
+              },
               { label: 'Guardian phone', value: profile.guardianPhone },
             ]}
           />
@@ -893,9 +978,15 @@ export default function CheckIn() {
           <DescriptionList
             cols={3}
             items={[
-              { label: 'ID proof', value: profile.idProofNumber ? `${profile.idProofType} · ${profile.idProofNumber}` : '' },
+              {
+                label: 'ID proof',
+                value: profile.idProofNumber ? `${profile.idProofType} · ${profile.idProofNumber}` : '',
+              },
               { label: 'Photo', value: photo ? 'Added' : 'None' },
-              { label: 'Documents', value: docs.length ? docs.map((d) => DOC_TYPE_LABELS[d.type]).join(', ') : 'None' },
+              {
+                label: 'Documents',
+                value: docs.length ? docs.map((d) => DOC_TYPE_LABELS[d.type]).join(', ') : 'None',
+              },
             ]}
           />
         </ReviewBlock>
@@ -904,18 +995,33 @@ export default function CheckIn() {
             cols={3}
             items={[
               { label: 'Hostel', value: hostel?.name ?? '' },
-              { label: 'Bed', value: selected ? `Room ${selected.room.number} · Bed ${selected.label}` : 'Not allotted' },
-              { label: 'Type', value: reserveOnly ? <Badge tone="amber">Reservation</Badge> : <Badge tone="green">Check in now</Badge> },
-              { label: reserveOnly ? 'Expected check-in' : 'Check-in date', value: formatDate(checkInDate) },
+              {
+                label: 'Bed',
+                value: selected ? `Room ${selected.room.number} · Bed ${selected.label}` : 'Not allotted',
+              },
+              {
+                label: 'Type',
+                value: reserveOnly ? <Badge tone="amber">Reservation</Badge> : <Badge tone="green">Check in now</Badge>,
+              },
+              {
+                label: reserveOnly ? 'Expected check-in' : 'Check-in date',
+                value: formatDate(checkInDate),
+              },
               { label: 'Monthly rent', value: formatMoney(Number(rent) || 0) },
-              { label: 'Mess', value: messOpted ? `Yes (${formatMoney(messCharge)})` : 'No' },
+              {
+                label: 'Mess',
+                value: messOpted ? `Yes (${formatMoney(messCharge)})` : 'No',
+              },
               { label: 'Security deposit', value: formatMoney(depositNum) },
-              { label: 'Collected now', value: collect ? `${formatMoney(Number(depAmount) || 0)} via ${depMode.toUpperCase()}` : 'No' },
+              {
+                label: 'Collected now',
+                value: collect ? `${formatMoney(Number(depAmount) || 0)} via ${depMode.toUpperCase()}` : 'No',
+              },
               {
                 label: 'First invoice',
                 value:
                   genInvoice && !reserveOnly
-                    ? `${formatMoney(firstMonth)} (${billItems.map((i) => `${i.label} ${formatMoney(i.amount)}`).join(' + ')})`
+                    ? `${formatMoney(firstMonth)} (${billItems.map((i) => `${i.label} ${formatMoney(i.amount)}`).join(' + ')})${elecNote ? ' + electricity as per meter' : ''}`
                     : 'Not generated',
               },
             ]}

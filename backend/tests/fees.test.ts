@@ -332,7 +332,7 @@ describe('isolation and permissions', () => {
 describe('itemized monthly bills', () => {
   const lines = (inv: { items: { key?: string | null; label: string; amount: number }[] }) => inv.items.map((i) => ({ key: i.key, label: i.label, amount: i.amount }))
 
-  it('bills rent + mess (opted only) + electricity; other heads are included in rent', async () => {
+  it('bills rent + mess (opted only); old fixed charges (incl. electricity) are not billed', async () => {
     const w = await makeWorld()
     await Hostel.updateOne(
       { _id: w.hostel._id },
@@ -365,15 +365,14 @@ describe('itemized monthly bills', () => {
     expect(lines(a)).toEqual([
       { key: 'rent', label: 'Room rent', amount: 6000 },
       { key: 'mess', label: 'Mess fees', amount: 2500 }, // hostel's mess charge wins over the org setting (3000)
-      { key: 'electricity', label: 'Electricity', amount: 400 },
-      // internet / maintenance / custom heads are part of the room rent now, never billed separately
+      // electricity is metered (added from readings); internet / maintenance / custom heads are part of the room rent
     ])
-    expect(a.total).toBe(8900)
+    expect(a.total).toBe(8500)
     expect(a.dueDate).toBe('2026-10-05')
 
     const b = of(noMess._id)
-    expect(lines(b).map((l) => l.key)).toEqual(['rent', 'electricity'])
-    expect(b.total).toBe(5500 + 400)
+    expect(lines(b).map((l) => l.key)).toEqual(['rent'])
+    expect(b.total).toBe(5500)
 
     const c = of(elsewhere._id)
     expect(lines(c)).toEqual([

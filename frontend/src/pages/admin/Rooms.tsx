@@ -1,19 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import {
-  BedDouble,
-  Building2,
-  DoorOpen,
-  LayoutGrid,
-  List,
-  Pencil,
-  Plus,
-  Rows3,
-  Snowflake,
-  Trash2,
-  UserCheck,
-  Wrench,
-} from 'lucide-react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { BedDouble, Building2, DoorOpen, LayoutGrid, List, Pencil, Plus, Rows3, Snowflake, Trash2, UserCheck, Wrench, Zap } from 'lucide-react'
 import { ApiError, errorMessage } from '@/api/client'
 import { useHostelName, useHostels, useScope } from '@/api/common'
 import { useApiMutation } from '@/api/query'
@@ -37,6 +24,7 @@ import {
   StatusBadge,
   Switch,
   Table,
+  Tabs,
   TD,
   TH,
   THead,
@@ -46,6 +34,7 @@ import {
 } from '@/components/ui'
 import { cn, formatMoney } from '@/lib/utils'
 import { AMENITIES, Chip, FilterBar, firstName } from './_residents'
+import { ElectricityPanel } from './_electricity'
 
 type View = 'grid' | 'table'
 type RoomType = Room['type']
@@ -69,7 +58,10 @@ interface FormErr {
 }
 
 function toFormErr(e: unknown): FormErr {
-  return { message: errorMessage(e), planLimit: e instanceof ApiError && (e.code === 'PLAN_LIMIT' || e.status === 402) }
+  return {
+    message: errorMessage(e),
+    planLimit: e instanceof ApiError && (e.code === 'PLAN_LIMIT' || e.status === 402),
+  }
 }
 
 function reportError(e: unknown, setError: (e: FormErr) => void) {
@@ -101,7 +93,11 @@ function FormError({ error }: { error: FormErr | null }) {
 /* Room forms                                                          */
 /* ------------------------------------------------------------------ */
 
-type RoomForm = Omit<RoomInput, 'floor' | 'sharing' | 'rentPerBed'> & { floor: string; sharing: string; rentPerBed: string }
+type RoomForm = Omit<RoomInput, 'floor' | 'sharing' | 'rentPerBed'> & {
+  floor: string
+  sharing: string
+  rentPerBed: string
+}
 
 function AmenityPicker({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
   return (
@@ -126,23 +122,25 @@ const STATUS_OPTIONS = [
   { value: 'active', label: 'Active' },
   { value: 'maintenance', label: 'Under maintenance' },
 ]
-const SHARING_OPTIONS = [1, 2, 3, 4, 5, 6, 8].map((n) => ({ value: String(n), label: n === 1 ? 'Single' : `${n} sharing` }))
+const SHARING_OPTIONS = [1, 2, 3, 4, 5, 6, 8].map((n) => ({
+  value: String(n),
+  label: n === 1 ? 'Single' : `${n} sharing`,
+}))
 
 function blankRoom(hostelId: ID): RoomForm {
-  return { hostelId, number: '', floor: '1', type: 'non-ac', sharing: '2', rentPerBed: '6000', status: 'active', amenities: ['WiFi'] }
+  return {
+    hostelId,
+    number: '',
+    floor: '1',
+    type: 'non-ac',
+    sharing: '2',
+    rentPerBed: '6000',
+    status: 'active',
+    amenities: ['WiFi'],
+  }
 }
 
-function RoomModal({
-  open,
-  onClose,
-  room,
-  defaultHostelId,
-}: {
-  open: boolean
-  onClose: () => void
-  room: RoomWithBeds | null
-  defaultHostelId: ID
-}) {
+function RoomModal({ open, onClose, room, defaultHostelId }: { open: boolean; onClose: () => void; room: RoomWithBeds | null; defaultHostelId: ID }) {
   const { data: hostels = [] } = useHostels()
   const [f, setF] = useState<RoomForm>(() => blankRoom(defaultHostelId))
   const [error, setError] = useState<FormErr | null>(null)
@@ -195,7 +193,15 @@ function RoomModal({
     if (!Number.isInteger(floor) || floor < 0 || floor > 200) return fail('Enter a valid floor (0 for ground)')
     if (!(Number.isInteger(sharing) && sharing >= 1 && sharing <= 20)) return fail('Sharing must be between 1 and 20')
     if (f.rentPerBed.trim() === '' || !(rent >= 0)) return fail('Enter a valid rent')
-    const data = { number, floor, type: f.type, sharing, rentPerBed: rent, status: f.status, amenities: f.amenities }
+    const data = {
+      number,
+      floor,
+      type: f.type,
+      sharing,
+      rentPerBed: rent,
+      status: f.status,
+      amenities: f.amenities,
+    }
     const onError = (e: unknown) => reportError(e, setError)
     if (room) update.mutate({ id: room.id, ...data }, { onError })
     else create.mutate({ hostelId: f.hostelId, ...data }, { onError })
@@ -415,6 +421,18 @@ export default function Rooms() {
   const hostelName = useHostelName()
 
   const [view, setView] = useState<View>('grid')
+  const [params, setParams] = useSearchParams()
+  const tab: 'rooms' | 'electricity' = params.get('view') === 'electricity' && can('rooms') ? 'electricity' : 'rooms'
+  const setTab = (t: 'rooms' | 'electricity') =>
+    setParams(
+      (p) => {
+        const next = new URLSearchParams(p)
+        if (t === 'electricity') next.set('view', 'electricity')
+        else next.delete('view')
+        return next
+      },
+      { replace: true },
+    )
   const [hostelFilter, setHostelFilter] = useState<string>('')
   const [floorFilter, setFloorFilter] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
@@ -425,7 +443,10 @@ export default function Rooms() {
   const [editing, setEditing] = useState<RoomWithBeds | null>(null)
   const [roomModal, setRoomModal] = useState(false)
   const [bulkModal, setBulkModal] = useState(false)
-  const [vacantBed, setVacantBed] = useState<{ bed: RoomBed; room: RoomWithBeds } | null>(null)
+  const [vacantBed, setVacantBed] = useState<{
+    bed: RoomBed
+    room: RoomWithBeds
+  } | null>(null)
 
   useEffect(() => {
     setHostelFilter('')
@@ -450,7 +471,13 @@ export default function Rooms() {
       occupied += o
       if (r.status === 'active') vacant += r.beds.length - o
     }
-    return { rooms: hostelRooms.length, beds: total, occupied, vacant, maintenance: hostelRooms.filter((r) => r.status === 'maintenance').length }
+    return {
+      rooms: hostelRooms.length,
+      beds: total,
+      occupied,
+      vacant,
+      maintenance: hostelRooms.filter((r) => r.status === 'maintenance').length,
+    }
   }, [hostelRooms])
 
   const floors = useMemo(() => [...new Set(hostelRooms.map((r) => r.floor))].sort((a, b) => a - b), [hostelRooms])
@@ -469,15 +496,18 @@ export default function Rooms() {
         })
         .sort(
           (a, b) =>
-            hostelName(a.hostelId).localeCompare(hostelName(b.hostelId)) ||
-            a.floor - b.floor ||
-            a.number.localeCompare(b.number, undefined, { numeric: true }),
+            hostelName(a.hostelId).localeCompare(hostelName(b.hostelId)) || a.floor - b.floor || a.number.localeCompare(b.number, undefined, { numeric: true }),
         ),
     [hostelRooms, floorFilter, typeFilter, sharingFilter, statusFilter, onlyVacant, hostelName],
   )
 
   const groups = useMemo(() => {
-    const g: { key: string; hostelId: ID; floor: number; rooms: RoomWithBeds[] }[] = []
+    const g: {
+      key: string
+      hostelId: ID
+      floor: number
+      rooms: RoomWithBeds[]
+    }[] = []
     for (const r of filtered) {
       const key = `${r.hostelId}|${r.floor}`
       const last = g[g.length - 1]
@@ -523,8 +553,7 @@ export default function Rooms() {
   }
 
   const remove = async (room: RoomWithBeds) => {
-    if (room.beds.some((b) => b.hostelerId))
-      return toast.error(`Room ${room.number} has occupied beds. Move or check out hostelers first.`)
+    if (room.beds.some((b) => b.hostelerId)) return toast.error(`Room ${room.number} has occupied beds. Move or check out hostelers first.`)
     const ok = await confirm({
       title: `Delete room ${room.number}?`,
       message: `This removes the room and its ${room.beds.length} bed(s). This can't be undone.`,
@@ -532,7 +561,9 @@ export default function Rooms() {
       confirmText: 'Delete room',
     })
     if (!ok) return
-    del.mutate(room.id, { onSuccess: () => toast.success(`Room ${room.number} deleted`) })
+    del.mutate(room.id, {
+      onSuccess: () => toast.success(`Room ${room.number} deleted`),
+    })
   }
 
   const anyFilter = floorFilter !== '' || !!typeFilter || !!sharingFilter || !!statusFilter || onlyVacant
@@ -559,247 +590,284 @@ export default function Rooms() {
     <>
       <PageHeader
         title="Rooms & beds"
-        subtitle="Floor-wise view of every room and who is in each bed."
+        subtitle={
+          tab === 'electricity'
+            ? 'Monthly electricity meter readings, split into each hosteler’s bill.'
+            : 'Floor-wise view of every room and who is in each bed.'
+        }
         actions={
-          <>
-            <Button variant="outline" icon={<Rows3 className="h-4 w-4" />} onClick={() => setBulkModal(true)}>
-              Add rooms in bulk
-            </Button>
-            <Button
-              icon={<Plus className="h-4 w-4" />}
-              onClick={() => {
-                setEditing(null)
-                setRoomModal(true)
-              }}
-            >
-              Add room
-            </Button>
-          </>
+          tab === 'electricity' ? undefined : (
+            <>
+              <Button variant="outline" icon={<Zap className="h-4 w-4 text-amber-500" />} onClick={() => setTab('electricity')}>
+                Enter electricity readings
+              </Button>
+              <Button variant="outline" icon={<Rows3 className="h-4 w-4" />} onClick={() => setBulkModal(true)}>
+                Add rooms in bulk
+              </Button>
+              <Button
+                icon={<Plus className="h-4 w-4" />}
+                onClick={() => {
+                  setEditing(null)
+                  setRoomModal(true)
+                }}
+              >
+                Add room
+              </Button>
+            </>
+          )
         }
       />
 
-      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
-        <StatCard label="Rooms" value={roomsQ.isLoading ? '…' : stats.rooms} icon={<DoorOpen className="h-5 w-5" />} />
-        <StatCard label="Beds" value={roomsQ.isLoading ? '…' : stats.beds} icon={<BedDouble className="h-5 w-5" />} tone="violet" />
-        <StatCard
-          label="Occupied"
-          value={roomsQ.isLoading ? '…' : stats.occupied}
-          icon={<UserCheck className="h-5 w-5" />}
-          tone="brand"
-          hint={stats.beds ? `${Math.round((stats.occupied / stats.beds) * 100)}% occupancy` : undefined}
-        />
-        <StatCard
-          label="Vacant"
-          value={roomsQ.isLoading ? '…' : stats.vacant}
-          icon={<BedDouble className="h-5 w-5" />}
-          tone="green"
-          onClick={() => setOnlyVacant(true)}
-          hint="Click to filter"
-        />
-        <StatCard label="Under maintenance" value={roomsQ.isLoading ? '…' : stats.maintenance} icon={<Wrench className="h-5 w-5" />} tone="amber" />
-      </div>
+      <Tabs
+        className="mb-6"
+        value={tab}
+        onChange={setTab}
+        tabs={[
+          { value: 'rooms', label: 'Rooms & beds' },
+          { value: 'electricity', label: 'Electricity' },
+        ]}
+      />
 
-      <Card className="mb-6 p-4">
-        <FilterBar>
-          {scope === 'all' && hostels.length > 1 && (
-            <Select
-              className="sm:w-48"
-              value={hostelFilter}
-              placeholder="All hostels"
-              options={hostels.map((h) => ({ value: h.id, label: h.name }))}
-              onChange={(e) => {
-                setHostelFilter(e.target.value)
-                setFloorFilter('')
-              }}
+      {tab === 'electricity' ? (
+        <ElectricityPanel />
+      ) : (
+        <>
+          <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
+            <StatCard label="Rooms" value={roomsQ.isLoading ? '…' : stats.rooms} icon={<DoorOpen className="h-5 w-5" />} />
+            <StatCard label="Beds" value={roomsQ.isLoading ? '…' : stats.beds} icon={<BedDouble className="h-5 w-5" />} tone="violet" />
+            <StatCard
+              label="Occupied"
+              value={roomsQ.isLoading ? '…' : stats.occupied}
+              icon={<UserCheck className="h-5 w-5" />}
+              tone="brand"
+              hint={stats.beds ? `${Math.round((stats.occupied / stats.beds) * 100)}% occupancy` : undefined}
             />
-          )}
-          <Select
-            className="sm:w-36"
-            value={floorFilter}
-            placeholder="All floors"
-            options={floors.map((f) => ({ value: String(f), label: floorName(f) }))}
-            onChange={(e) => setFloorFilter(e.target.value)}
-          />
-          <Select className="sm:w-36" value={typeFilter} placeholder="AC & non-AC" options={TYPE_OPTIONS} onChange={(e) => setTypeFilter(e.target.value)} />
-          <Select
-            className="sm:w-36"
-            value={sharingFilter}
-            placeholder="Any sharing"
-            options={sharings.map((n) => ({ value: String(n), label: n === 1 ? 'Single' : `${n} sharing` }))}
-            onChange={(e) => setSharingFilter(e.target.value)}
-          />
-          <Select className="sm:w-44" value={statusFilter} placeholder="Any status" options={STATUS_OPTIONS} onChange={(e) => setStatusFilter(e.target.value)} />
-          <div className="flex items-center">
-            <Switch checked={onlyVacant} onChange={setOnlyVacant} label="Only vacant" />
+            <StatCard
+              label="Vacant"
+              value={roomsQ.isLoading ? '…' : stats.vacant}
+              icon={<BedDouble className="h-5 w-5" />}
+              tone="green"
+              onClick={() => setOnlyVacant(true)}
+              hint="Click to filter"
+            />
+            <StatCard label="Under maintenance" value={roomsQ.isLoading ? '…' : stats.maintenance} icon={<Wrench className="h-5 w-5" />} tone="amber" />
           </div>
-          {anyFilter && (
-            <Button variant="ghost" size="sm" onClick={clearFilters}>
-              Clear filters
-            </Button>
-          )}
-          <div className="col-span-2 flex justify-end sm:ml-auto">
-            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
-              {(['grid', 'table'] as View[]).map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => setView(v)}
-                  className={cn(
-                    'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium',
-                    view === v ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800',
-                  )}
-                >
-                  {v === 'grid' ? <LayoutGrid className="h-3.5 w-3.5" /> : <List className="h-3.5 w-3.5" />}
-                  {v === 'grid' ? 'Grid' : 'Table'}
-                </button>
-              ))}
-            </div>
-          </div>
-        </FilterBar>
-        <div className="mt-3 flex flex-wrap gap-4 text-xs text-slate-500">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" /> Vacant
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full bg-brand-500" /> Occupied
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full bg-amber-400" /> Reserved
-          </span>
-        </div>
-      </Card>
 
-      {roomsQ.isLoading ? (
-        <Card>
-          <LoadingState label="Loading rooms…" />
-        </Card>
-      ) : roomsQ.error ? (
-        <Card>
-          <ErrorState error={roomsQ.error} onRetry={() => void roomsQ.refetch()} />
-        </Card>
-      ) : !filtered.length ? (
-        <Card>
-          <EmptyState
-            icon={<DoorOpen className="h-6 w-6" />}
-            title={hostelRooms.length ? 'No rooms match these filters' : 'No rooms yet'}
-            description={hostelRooms.length ? 'Try clearing a filter.' : 'Add rooms one at a time or create a whole floor at once.'}
-            action={
-              hostelRooms.length ? (
-                <Button variant="outline" onClick={clearFilters}>
+          <Card className="mb-6 p-4">
+            <FilterBar>
+              {scope === 'all' && hostels.length > 1 && (
+                <Select
+                  className="sm:w-48"
+                  value={hostelFilter}
+                  placeholder="All hostels"
+                  options={hostels.map((h) => ({ value: h.id, label: h.name }))}
+                  onChange={(e) => {
+                    setHostelFilter(e.target.value)
+                    setFloorFilter('')
+                  }}
+                />
+              )}
+              <Select
+                className="sm:w-36"
+                value={floorFilter}
+                placeholder="All floors"
+                options={floors.map((f) => ({
+                  value: String(f),
+                  label: floorName(f),
+                }))}
+                onChange={(e) => setFloorFilter(e.target.value)}
+              />
+              <Select className="sm:w-36" value={typeFilter} placeholder="AC & non-AC" options={TYPE_OPTIONS} onChange={(e) => setTypeFilter(e.target.value)} />
+              <Select
+                className="sm:w-36"
+                value={sharingFilter}
+                placeholder="Any sharing"
+                options={sharings.map((n) => ({
+                  value: String(n),
+                  label: n === 1 ? 'Single' : `${n} sharing`,
+                }))}
+                onChange={(e) => setSharingFilter(e.target.value)}
+              />
+              <Select
+                className="sm:w-44"
+                value={statusFilter}
+                placeholder="Any status"
+                options={STATUS_OPTIONS}
+                onChange={(e) => setStatusFilter(e.target.value)}
+              />
+              <div className="flex items-center">
+                <Switch checked={onlyVacant} onChange={setOnlyVacant} label="Only vacant" />
+              </div>
+              {anyFilter && (
+                <Button variant="ghost" size="sm" onClick={clearFilters}>
                   Clear filters
                 </Button>
-              ) : (
-                <Button icon={<Rows3 className="h-4 w-4" />} onClick={() => setBulkModal(true)}>
-                  Add rooms in bulk
-                </Button>
-              )
-            }
-          />
-        </Card>
-      ) : view === 'grid' ? (
-        <div className="space-y-8">
-          {groups.map((g) => (
-            <section key={g.key}>
-              <div className="mb-3 flex items-baseline gap-2">
-                <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
-                  {showHostelName && <span className="text-slate-800">{hostelName(g.hostelId)} · </span>}
-                  {floorName(g.floor)}
-                </h2>
-                <span className="text-xs text-slate-400">{g.rooms.length} rooms</span>
+              )}
+              <div className="col-span-2 flex justify-end sm:ml-auto">
+                <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+                  {(['grid', 'table'] as View[]).map((v) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => setView(v)}
+                      className={cn(
+                        'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium',
+                        view === v ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800',
+                      )}
+                    >
+                      {v === 'grid' ? <LayoutGrid className="h-3.5 w-3.5" /> : <List className="h-3.5 w-3.5" />}
+                      {v === 'grid' ? 'Grid' : 'Table'}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                {g.rooms.map((r) => {
-                  const occ = r.beds.filter((b) => b.hostelerId).length
-                  return (
-                    <Card key={r.id} className={cn('flex flex-col p-4', r.status === 'maintenance' && 'border-amber-200 bg-amber-50/40')}>
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <h3 className="text-lg font-bold text-slate-900">Room {r.number}</h3>
-                            {r.type === 'ac' && <Snowflake className="h-4 w-4 text-cyan-500" aria-label="AC" />}
-                          </div>
-                          <p className="text-xs text-slate-500">
-                            {r.type === 'ac' ? 'AC' : 'Non-AC'} · {r.sharing === 1 ? 'Single' : `${r.sharing} sharing`} · {formatMoney(r.rentPerBed)}/bed
-                          </p>
-                        </div>
-                        {roomActions(r)}
-                      </div>
-                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                        {r.status === 'maintenance' ? (
-                          <StatusBadge status="maintenance" label="Under maintenance" />
-                        ) : (
-                          <Badge tone={occ === r.beds.length ? 'blue' : 'green'}>
-                            {occ}/{r.beds.length} occupied
-                          </Badge>
-                        )}
-                        {r.amenities.slice(0, 3).map((a) => (
-                          <Badge key={a}>{a}</Badge>
-                        ))}
-                        {r.amenities.length > 3 && <Badge>+{r.amenities.length - 3}</Badge>}
-                      </div>
-                      <div className="mt-3 grid grid-cols-2 gap-2">
-                        {r.beds.map((b) => (
-                          <BedChip key={b.id} bed={b} disabled={!b.hostelerId && r.status === 'maintenance'} onClick={() => openBed(b, r)} />
-                        ))}
-                      </div>
-                    </Card>
+            </FilterBar>
+            <div className="mt-3 flex flex-wrap gap-4 text-xs text-slate-500">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" /> Vacant
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="h-2.5 w-2.5 rounded-full bg-brand-500" /> Occupied
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="h-2.5 w-2.5 rounded-full bg-amber-400" /> Reserved
+              </span>
+            </div>
+          </Card>
+
+          {roomsQ.isLoading ? (
+            <Card>
+              <LoadingState label="Loading rooms…" />
+            </Card>
+          ) : roomsQ.error ? (
+            <Card>
+              <ErrorState error={roomsQ.error} onRetry={() => void roomsQ.refetch()} />
+            </Card>
+          ) : !filtered.length ? (
+            <Card>
+              <EmptyState
+                icon={<DoorOpen className="h-6 w-6" />}
+                title={hostelRooms.length ? 'No rooms match these filters' : 'No rooms yet'}
+                description={hostelRooms.length ? 'Try clearing a filter.' : 'Add rooms one at a time or create a whole floor at once.'}
+                action={
+                  hostelRooms.length ? (
+                    <Button variant="outline" onClick={clearFilters}>
+                      Clear filters
+                    </Button>
+                  ) : (
+                    <Button icon={<Rows3 className="h-4 w-4" />} onClick={() => setBulkModal(true)}>
+                      Add rooms in bulk
+                    </Button>
                   )
-                })}
-              </div>
-            </section>
-          ))}
-        </div>
-      ) : (
-        <Card>
-          <Table>
-            <THead>
-              <tr>
-                <TH>Room</TH>
-                {showHostelName && <TH>Hostel</TH>}
-                <TH>Floor</TH>
-                <TH>Type</TH>
-                <TH>Sharing</TH>
-                <TH>Rent / bed</TH>
-                <TH>Beds</TH>
-                <TH>Status</TH>
-                <TH className="text-right">Actions</TH>
-              </tr>
-            </THead>
-            <tbody>
-              {filtered.map((r) => (
-                <TR key={r.id}>
-                  <TD className="font-semibold text-slate-900">{r.number}</TD>
-                  {showHostelName && <TD>{hostelName(r.hostelId)}</TD>}
-                  <TD className="whitespace-nowrap">{floorName(r.floor)}</TD>
-                  <TD>{r.type === 'ac' ? 'AC' : 'Non-AC'}</TD>
-                  <TD>{r.sharing}</TD>
-                  <TD>{formatMoney(r.rentPerBed)}</TD>
-                  <TD>
-                    <div className="flex min-w-[12rem] max-w-sm flex-wrap gap-1">
-                      {r.beds.map((b) => (
-                        <button
-                          key={b.id}
-                          type="button"
-                          disabled={!b.hostelerId && r.status === 'maintenance'}
-                          onClick={() => openBed(b, r)}
-                          className={cn('rounded-md border px-1.5 py-0.5 text-xs font-medium disabled:opacity-60', bedTone(b.hosteler))}
-                        >
-                          {b.label}: {occupantName(b)}
-                        </button>
-                      ))}
-                    </div>
-                  </TD>
-                  <TD>
-                    <StatusBadge status={r.status} />
-                  </TD>
-                  <TD className="text-right">
-                    <div className="inline-flex">{roomActions(r)}</div>
-                  </TD>
-                </TR>
+                }
+              />
+            </Card>
+          ) : view === 'grid' ? (
+            <div className="space-y-8">
+              {groups.map((g) => (
+                <section key={g.key}>
+                  <div className="mb-3 flex items-baseline gap-2">
+                    <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+                      {showHostelName && <span className="text-slate-800">{hostelName(g.hostelId)} · </span>}
+                      {floorName(g.floor)}
+                    </h2>
+                    <span className="text-xs text-slate-400">{g.rooms.length} rooms</span>
+                  </div>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                    {g.rooms.map((r) => {
+                      const occ = r.beds.filter((b) => b.hostelerId).length
+                      return (
+                        <Card key={r.id} className={cn('flex flex-col p-4', r.status === 'maintenance' && 'border-amber-200 bg-amber-50/40')}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <h3 className="text-lg font-bold text-slate-900">Room {r.number}</h3>
+                                {r.type === 'ac' && <Snowflake className="h-4 w-4 text-cyan-500" aria-label="AC" />}
+                              </div>
+                              <p className="text-xs text-slate-500">
+                                {r.type === 'ac' ? 'AC' : 'Non-AC'} · {r.sharing === 1 ? 'Single' : `${r.sharing} sharing`} · {formatMoney(r.rentPerBed)}/bed
+                              </p>
+                            </div>
+                            {roomActions(r)}
+                          </div>
+                          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                            {r.status === 'maintenance' ? (
+                              <StatusBadge status="maintenance" label="Under maintenance" />
+                            ) : (
+                              <Badge tone={occ === r.beds.length ? 'blue' : 'green'}>
+                                {occ}/{r.beds.length} occupied
+                              </Badge>
+                            )}
+                            {r.amenities.slice(0, 3).map((a) => (
+                              <Badge key={a}>{a}</Badge>
+                            ))}
+                            {r.amenities.length > 3 && <Badge>+{r.amenities.length - 3}</Badge>}
+                          </div>
+                          <div className="mt-3 grid grid-cols-2 gap-2">
+                            {r.beds.map((b) => (
+                              <BedChip key={b.id} bed={b} disabled={!b.hostelerId && r.status === 'maintenance'} onClick={() => openBed(b, r)} />
+                            ))}
+                          </div>
+                        </Card>
+                      )
+                    })}
+                  </div>
+                </section>
               ))}
-            </tbody>
-          </Table>
-        </Card>
+            </div>
+          ) : (
+            <Card>
+              <Table>
+                <THead>
+                  <tr>
+                    <TH>Room</TH>
+                    {showHostelName && <TH>Hostel</TH>}
+                    <TH>Floor</TH>
+                    <TH>Type</TH>
+                    <TH>Sharing</TH>
+                    <TH>Rent / bed</TH>
+                    <TH>Beds</TH>
+                    <TH>Status</TH>
+                    <TH className="text-right">Actions</TH>
+                  </tr>
+                </THead>
+                <tbody>
+                  {filtered.map((r) => (
+                    <TR key={r.id}>
+                      <TD className="font-semibold text-slate-900">{r.number}</TD>
+                      {showHostelName && <TD>{hostelName(r.hostelId)}</TD>}
+                      <TD className="whitespace-nowrap">{floorName(r.floor)}</TD>
+                      <TD>{r.type === 'ac' ? 'AC' : 'Non-AC'}</TD>
+                      <TD>{r.sharing}</TD>
+                      <TD>{formatMoney(r.rentPerBed)}</TD>
+                      <TD>
+                        <div className="flex min-w-[12rem] max-w-sm flex-wrap gap-1">
+                          {r.beds.map((b) => (
+                            <button
+                              key={b.id}
+                              type="button"
+                              disabled={!b.hostelerId && r.status === 'maintenance'}
+                              onClick={() => openBed(b, r)}
+                              className={cn('rounded-md border px-1.5 py-0.5 text-xs font-medium disabled:opacity-60', bedTone(b.hosteler))}
+                            >
+                              {b.label}: {occupantName(b)}
+                            </button>
+                          ))}
+                        </div>
+                      </TD>
+                      <TD>
+                        <StatusBadge status={r.status} />
+                      </TD>
+                      <TD className="text-right">
+                        <div className="inline-flex">{roomActions(r)}</div>
+                      </TD>
+                    </TR>
+                  ))}
+                </tbody>
+              </Table>
+            </Card>
+          )}
+        </>
       )}
 
       <RoomModal open={roomModal} onClose={() => setRoomModal(false)} room={editing} defaultHostelId={defaultHostelId} />

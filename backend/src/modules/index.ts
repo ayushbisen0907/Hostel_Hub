@@ -27,6 +27,7 @@ import { router as staffRouter } from './staff/routes.js'
 import { router as portalRouter } from './portal/routes.js'
 import { router as claimsRouter } from './claims/routes.js'
 import { router as notificationsRouter } from './notifications/routes.js'
+import { router as electricityRouter } from './electricity/routes.js'
 
 export const apiRouter = Router()
 
@@ -49,6 +50,7 @@ apiRouter.use('/gate-logs', gateRouter)
 apiRouter.use('/', feesRouter) // /invoices, /payments, /dues, /deposits
 apiRouter.use('/payment-claims', claimsRouter) // hosteler UPI payments waiting for verification
 apiRouter.use('/notifications', notificationsRouter)
+apiRouter.use('/electricity', electricityRouter) // monthly meter readings, split per bed
 apiRouter.use('/expenses', expensesRouter)
 apiRouter.use('/mess', messRouter)
 apiRouter.use('/', attendanceRouter) // /attendance, /leaves

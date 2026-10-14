@@ -48,6 +48,8 @@ const hostelerSchema = new Schema(
     passwordChangedAt: { type: Date, default: null },
     lastLoginAt: { type: Date, default: null },
     tokenVersion: { type: Number, default: 0 },
+    /** hostel rulesVersion this hosteler last signed (see RulesConsent) */
+    consentVersion: { type: Number, default: 0, min: 0 },
   },
   baseOptions(['passwordHash', 'tokenVersion']),
 )

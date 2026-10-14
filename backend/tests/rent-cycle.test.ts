@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { makeHostel, makeHosteler, makeOrg, makeRoom } from './helpers.js'
-import { addDays, addMonthsAnchored, daysInclusive, overlapDays, periodLabel } from '../src/lib/dates.js'
+import { addDays, addMonthsAnchored, daysInclusive, overlapDays, periodLabel, shortDate } from '../src/lib/dates.js'
 import { cycleEnd, cycleIndexOf, cycleStart, generateDueBills } from '../src/lib/rentCycle.js'
 import { saveReading, splitByWeight } from '../src/lib/electricity.js'
 import { Hostel } from '../src/models/Hostel.js'
@@ -263,7 +263,7 @@ describe('generateDueBills', () => {
     expect(kabir.title).toBe('New bill: ₹5,500')
     expect(kabir.body).toContain(inv.number)
     expect(kabir.body).toContain('1 Oct – 31 Oct 2026')
-    expect(kabir.body).toContain(inv.dueDate)
+    expect(kabir.body).toContain(`Due by ${shortDate(inv.dueDate, true)}`)
 
     await generateDueBills(w.org._id, { today: '2026-11-01', notify: false })
     expect(await Invoice.countDocuments({ orgId: w.org._id })).toBe(5)

@@ -1,6 +1,19 @@
 import { Schema, model, type InferSchemaType } from 'mongoose'
 import { baseOptions, optionalRef, orgField } from './_base.js'
 
+export const NOTIFICATION_TYPES = [
+  'payment_submitted',
+  'payment_verified',
+  'payment_rejected',
+  'bill_generated',
+  'move_out_requested',
+  'move_out_approved',
+  'move_out_rejected',
+  'consent_required',
+  'general',
+] as const
+export type NotificationType = (typeof NOTIFICATION_TYPES)[number]
+
 /** In-app notification for one staff user or one hosteler. */
 const notificationSchema = new Schema(
   {
@@ -11,7 +24,7 @@ const notificationSchema = new Schema(
     recipientId: { type: Schema.Types.ObjectId, required: true },
     type: {
       type: String,
-      enum: ['payment_submitted', 'payment_verified', 'payment_rejected', 'bill_generated', 'general'],
+      enum: NOTIFICATION_TYPES,
       default: 'general',
     },
     title: { type: String, required: true, maxlength: 140 },

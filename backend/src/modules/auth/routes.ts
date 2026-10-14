@@ -10,14 +10,20 @@
  * Hosteler portal:
  *   POST /api/portal/auth/login         Hosteler ID + password
  *   POST /api/portal/auth/set-password  replace temporary password (first login) or change password
- *   GET  /api/portal/auth/me            works even while on the temporary password
+ *   GET  /api/portal/auth/me            works even while on the temporary password / rules unsigned
+ *                                       (+ consentRequired, rulesVersion)
+ *   GET  /api/portal/auth/rules         { hostelName, rulesText, rulesVersion, signed, signedAt } (after the password step)
+ *   POST /api/portal/auth/consent       { signedName, signature (PNG data URL ≤ 200 KB), accept: true }
+ *
+ * Gate order for every other portal endpoint: temporary password
+ * (PASSWORD_CHANGE_REQUIRED) first, then unsigned rules (CONSENT_REQUIRED).
  */
 import { Router } from 'express'
 import rateLimit from 'express-rate-limit'
 import { z } from 'zod'
 import { env } from '../../config/env.js'
 import { ah, parse } from '../../lib/http.js'
-import { badRequest, conflict, unauthorized } from '../../lib/errors.js'
+import { badRequest, conflict, notFound, unauthorized } from '../../lib/errors.js'
 import {
   hashPassword,
   isStrongPassword,
@@ -31,7 +37,8 @@ import { Organization } from '../../models/Organization.js'
 import { User } from '../../models/User.js'
 import { Hosteler } from '../../models/Hosteler.js'
 import { Hostel } from '../../models/Hostel.js'
-import { hostelerOf, requireHosteler, requireStaff, staffOf } from '../../middleware/auth.js'
+import { consentPending, hostelerOf, requireHosteler, requireStaff, staffOf } from '../../middleware/auth.js'
+import { RulesConsent } from '../../models/RulesConsent.js'
 import { logActivity } from '../../lib/org.js'
 
 const loginLimiter = rateLimit({
@@ -144,8 +151,10 @@ function hostelerToken(h: { _id: unknown; orgId: unknown; hostelId: unknown; mus
 }
 
 async function portalProfile(h: InstanceType<typeof Hosteler>) {
-  const hostel = await Hostel.findById(h.hostelId).select('name code city phone').lean()
+  const hostel = await Hostel.findById(h.hostelId).select('name code city phone rulesVersion rulesText').lean()
   return {
+    consentRequired: !!hostel && !!hostel.rulesText && (hostel.rulesVersion ?? 0) > (h.consentVersion ?? 0),
+    rulesVersion: hostel && hostel.rulesText ? (hostel.rulesVersion ?? 0) : 0,
     hosteler: h.toJSON(),
     hostel: hostel ? { id: String(hostel._id), name: hostel.name, code: hostel.code, city: hostel.city, phone: hostel.phone } : null,
   }
@@ -167,7 +176,7 @@ portalAuthRouter.post(
 
 portalAuthRouter.get(
   '/me',
-  requireHosteler({ allowTempPassword: true }),
+  requireHosteler({ allowTempPassword: true, allowConsentPending: true }),
   ah(async (req, res) => {
     const h = await Hosteler.findById(hostelerOf(req).hostelerId)
     if (!h) throw unauthorized()
@@ -181,7 +190,7 @@ portalAuthRouter.get(
  */
 portalAuthRouter.post(
   '/set-password',
-  requireHosteler({ allowTempPassword: true }),
+  requireHosteler({ allowTempPassword: true, allowConsentPending: true }),
   ah(async (req, res) => {
     const body = parse(z.object({ currentPassword: z.string().min(1), newPassword: strongPassword }), req.body)
     const h = await Hosteler.findById(hostelerOf(req).hostelerId)
@@ -196,6 +205,92 @@ portalAuthRouter.post(
     h.tokenVersion += 1
     await h.save()
     if (wasFirst) await logActivity(h.orgId, `${h.name} activated their portal account`, 'general', h.hostelId)
-    res.json({ token: hostelerToken(h), mustChangePassword: false })
+    res.json({ token: hostelerToken(h), mustChangePassword: false, consentRequired: await consentPending(h) })
+  }),
+)
+
+/* ---------------- consent to the hostel's rules ---------------- */
+
+const SIGNATURE_MAX_BYTES = 200 * 1024
+const PNG_DATA_URL = /^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+/** "  Aarav   SHARMA " ~ "aarav sharma" (case and spaces ignored) */
+const looseName = (s: string) => s.toLowerCase().replace(/\s+/g, '')
+
+const consentSchema = z.object({
+  signedName: z.string().trim().min(2, 'Type your full name').max(80),
+  // base64 is 4/3 of the bytes; the decoded size is checked below
+  signature: z.string().max(Math.ceil((SIGNATURE_MAX_BYTES * 4) / 3) + 64, 'Signature image must be 200 KB or smaller'),
+  accept: z.literal(true, { errorMap: () => ({ message: 'You must accept the rules' }) }),
+})
+
+async function rulesOf(hostelId: unknown) {
+  const hostel = await Hostel.findById(hostelId).select('name rulesText rulesVersion').lean()
+  if (!hostel) throw notFound('Hostel')
+  return hostel
+}
+
+portalAuthRouter.get(
+  '/rules',
+  requireHosteler({ allowConsentPending: true }),
+  ah(async (req, res) => {
+    const me = hostelerOf(req)
+    const h = await Hosteler.findById(me.hostelerId).select('hostelId consentVersion').lean()
+    if (!h) throw unauthorized()
+    const hostel = await rulesOf(h.hostelId)
+    const rulesVersion = hostel.rulesText ? (hostel.rulesVersion ?? 0) : 0
+    const signed = rulesVersion > 0 && (h.consentVersion ?? 0) >= rulesVersion
+    const last = signed ? await RulesConsent.findOne({ hostelerId: h._id, rulesVersion: h.consentVersion }).select('acceptedAt').lean() : null
+    res.json({ hostelName: hostel.name, rulesText: hostel.rulesText ?? '', rulesVersion, signed, signedAt: last?.acceptedAt ?? null })
+  }),
+)
+
+portalAuthRouter.post(
+  '/consent',
+  requireHosteler({ allowConsentPending: true }),
+  ah(async (req, res) => {
+    const body = parse(consentSchema, req.body)
+    const m = PNG_DATA_URL.exec(body.signature)
+    if (!m) throw badRequest('Signature must be a PNG image (data:image/png;base64,…)')
+    const bytes = Buffer.from(m[1]!, 'base64')
+    if (bytes.length > SIGNATURE_MAX_BYTES) throw badRequest('Signature image must be 200 KB or smaller')
+    if (bytes.length < PNG_MAGIC.length + 16 || !bytes.subarray(0, 8).equals(PNG_MAGIC)) throw badRequest('Signature is not a valid PNG image')
+
+    const me = hostelerOf(req)
+    const result = await withTransaction(async (session) => {
+      const h = await Hosteler.findById(me.hostelerId).session(session)
+      if (!h) throw unauthorized()
+      if (looseName(body.signedName) !== looseName(h.name)) throw badRequest(`Type your name exactly as registered: ${h.name}`)
+      const hostel = await Hostel.findById(h.hostelId).select('name rulesText rulesVersion').session(session).lean()
+      if (!hostel) throw notFound('Hostel')
+      const version = hostel.rulesVersion ?? 0
+      if (!hostel.rulesText || version < 1) throw conflict('Your hostel has no rules to sign')
+      if ((h.consentVersion ?? 0) >= version) throw conflict('You have already signed the current rules')
+      const [consent] = await RulesConsent.create(
+        [
+          {
+            orgId: h.orgId,
+            hostelId: h.hostelId,
+            hostelerId: h._id,
+            rulesVersion: version,
+            rulesText: hostel.rulesText,
+            signedName: body.signedName,
+            signature: body.signature,
+            acceptedAt: new Date(),
+            ip: (req.ip ?? '').slice(0, 64),
+            userAgent: String(req.headers['user-agent'] ?? '').slice(0, 500),
+          },
+        ],
+        { session },
+      )
+      h.consentVersion = version
+      await h.save({ session })
+      await logActivity(h.orgId, `${h.name} signed the hostel rules (version ${version})`, 'general', h.hostelId, session)
+      return consent!
+    })
+    const { signature: _sig, rulesText: _text, ...rest } = result.toJSON() as Record<string, unknown>
+    void _sig
+    void _text
+    res.status(201).json({ consent: rest, consentRequired: false, rulesVersion: result.rulesVersion })
   }),
 )

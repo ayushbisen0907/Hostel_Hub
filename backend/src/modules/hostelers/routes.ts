@@ -7,7 +7,9 @@
  *   POST   /                      admission / check-in (module 'checkin') -> returns temp credentials once
  *   POST   /:id/confirm-check-in  reserved -> active
  *   POST   /:id/transfer          move to another vacant bed
- *   POST   /:id/check-out         settlement, frees bed, closes portal account
+ *   GET    /:id/check-out-preview ?date= settlement preview (dues, unpaid bills, forfeiture, canCheckOut, blockers)
+ *   POST   /:id/check-out         settlement, frees bed, closes portal account (409 DUES_PENDING while dues remain)
+ *   GET    /:id/consents          signed hostel-rules consents, newest first (with signature)
  *   POST   /:id/reset-password    new temporary password (returned once)
  *   POST   /:id/photo             multipart "file" (image ≤ 2 MB) -> profile photo (a 'photo' document)
  *   GET    /:id/photo             the latest 'photo' document (image)
@@ -26,7 +28,7 @@ import { formatLoginId, generateTempPassword, hashPassword } from '../../lib/aut
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../lib/errors.js'
 import { ah, dateStr, escapeRegex, idParam, money, objectId, paginate, paginationQuery, parse, phone, todayStr } from '../../lib/http.js'
 import { recordPayment } from '../../lib/money.js'
-import { billHostelerNow } from '../../lib/rentCycle.js'
+import { billHostelerNow, cycleIndexOf } from '../../lib/rentCycle.js'
 import { closeStay, ensureStay, moveStay, openStay } from '../../lib/stays.js'
 import { RoomStay } from '../../models/RoomStay.js'
 import { assertHostel, getSettings, hostelScope, logActivity } from '../../lib/org.js'
@@ -40,6 +42,8 @@ import { Hosteler } from '../../models/Hosteler.js'
 import { Invoice } from '../../models/Invoice.js'
 import { Payment, PAYMENT_MODES } from '../../models/Payment.js'
 import { Room } from '../../models/Room.js'
+import { MoveOutRequest } from '../../models/MoveOutRequest.js'
+import { RulesConsent } from '../../models/RulesConsent.js'
 import { Attendance, Complaint, GateLog, Leave, MealOptOut, MessFeedback, Visitor } from '../../models/Operations.js'
 
 export const router = Router()
@@ -262,7 +266,7 @@ router.get(
     const { orgId } = staffOf(req)
     const id = idParam(req)
     const hosteler = await decorateOne(orgId, id)
-    const [documents, invoices, payments, complaints, leaves, visitors, depositAgg, lastGate] = await Promise.all([
+    const [documents, invoices, payments, complaints, leaves, visitors, depositAgg, lastGate, hostel, lastConsent] = await Promise.all([
       HDocument.countDocuments({ orgId, hostelerId: id }),
       Invoice.countDocuments({ orgId, hostelerId: id, cancelled: false }),
       Payment.countDocuments({ orgId, hostelerId: id }),
@@ -274,9 +278,19 @@ router.get(
         { $group: { _id: null, total: { $sum: '$amount' } } },
       ]),
       GateLog.findOne({ orgId, hostelerId: id }).sort({ time: -1 }).lean(),
+      Hostel.findOne({ orgId, _id: (hosteler as { hostelId?: unknown }).hostelId }).select('rulesVersion rulesText').lean(),
+      RulesConsent.findOne({ orgId, hostelerId: id }).sort({ acceptedAt: -1, _id: -1 }).select('rulesVersion acceptedAt').lean(),
     ])
+    const signedVersion = ((hosteler as { consentVersion?: number }).consentVersion) ?? 0
+    const rulesVersion = hostel?.rulesText ? (hostel.rulesVersion ?? 0) : 0
     res.json({
       ...hosteler,
+      consentStatus: {
+        required: rulesVersion > signedVersion,
+        rulesVersion,
+        signedVersion,
+        signedAt: lastConsent?.acceptedAt ?? null,
+      },
       depositCollected: depositAgg[0]?.total ?? 0,
       lastGateLog: lastGate ? toApi(lastGate) : null,
       counts: { documents, invoices, payments, complaints, leaves, visitors },
@@ -462,6 +476,177 @@ const checkOutSchema = z.object({
   depositRefund: money.optional(),
   note: text(1000).default(''),
 })
+type CheckOutInput = z.infer<typeof checkOutSchema>
+
+const previewQuery = z.object({
+  date: dateStr.optional(),
+  adjustDuesFromDeposit: z.enum(['true', 'false']).optional(),
+  depositHeld: money.optional(),
+})
+
+type HostelerDocT = Awaited<ReturnType<typeof loadHosteler>>
+
+/**
+ * Works out the check-out settlement without writing anything.
+ *
+ *  - held: deposit payments (+ a deposit still unpaid on a bill, which is also
+ *    part of dues so they net out), else the agreed deposit for older records.
+ *  - monthsStayed = full rent cycles completed by the check-out date. When the
+ *    hostel has depositMinStayMonths and the stay is shorter, the deposit is
+ *    FORFEITED: no refund, and it is not used to adjust dues.
+ *  - Check-out is allowed only when nothing is left to collect: every unpaid
+ *    bill is paid (or adjusted from a refundable deposit) and deductions fit in
+ *    what is left of the deposit.
+ */
+async function planSettlement(orgId: string, h: HostelerDocT, input: CheckOutInput, session?: ClientSession) {
+  const date = input.date
+  const s = session ?? null
+  // sequential: a transaction session must not run concurrent operations
+  const hostel = await Hostel.findOne({ _id: h.hostelId, orgId }).select('depositMinStayMonths').session(s).lean()
+  const bed = h.bedId ? await Bed.findOne({ _id: h.bedId, orgId }).session(s).lean() : null
+  const room = h.roomId ? await Room.findOne({ _id: h.roomId, orgId }).session(s).lean() : null
+  const depositPayments = await Payment.find({ orgId, hostelerId: h._id, kind: 'deposit' }).session(s).lean()
+  const invoices = await Invoice.find({ orgId, hostelerId: h._id, cancelled: false }).session(s).lean()
+  const moveOut = await MoveOutRequest.findOne({ orgId, hostelerId: h._id, active: true }).session(s).lean()
+
+  const collected = depositPayments.reduce((a, p) => a + p.amount, 0)
+  // A deposit line still unpaid on a bill is part of `dues` below, so it also
+  // counts as held (they net out — never charged twice). Once a deposit is
+  // tracked in the app (received, billed or waiting for the next bill), an
+  // uncollected deposit is not held; only older records fall back to the agreed amount.
+  const billedDeposit = invoices.reduce((a, inv) => a + inv.items.filter((i) => i.key === 'deposit').reduce((x, i) => x + i.amount, 0), 0)
+  const billIds = new Set(invoices.map((inv) => String(inv._id)))
+  const paidOnBills = depositPayments.filter((p) => p.invoiceId && billIds.has(String(p.invoiceId))).reduce((a, p) => a + p.amount, 0)
+  const unpaidBilledDeposit = Math.max(billedDeposit - paidOnBills, 0)
+  const tracked = collected > 0 || billedDeposit > 0 || (h.depositToBill ?? 0) > 0
+  const held = Math.round(input.depositHeld ?? (tracked ? collected + unpaidBilledDeposit : h.securityDeposit))
+
+  const unpaid = invoices
+    .map((inv) => ({ inv, balance: Math.max(inv.total - inv.paidAmount, 0) }))
+    .filter((x) => x.balance > 0)
+    .sort((a, b) => a.inv.dueDate.localeCompare(b.inv.dueDate))
+  const dues = unpaid.reduce((a, x) => a + x.balance, 0)
+
+  // minimum stay for a deposit refund
+  const minStayMonths = hostel?.depositMinStayMonths ?? 0
+  const monthsStayed = date >= h.checkInDate ? cycleIndexOf(h.checkInDate, date) : 0
+  const depositForfeited = minStayMonths > 0 && monthsStayed < minStayMonths && held > 0
+  const forfeitReason = depositForfeited
+    ? `Stayed ${monthsStayed} of the ${minStayMonths} month${minStayMonths === 1 ? '' : 's'} required for a deposit refund, so the deposit of ${fmt(held)} is kept by the hostel and is not adjusted against dues`
+    : null
+  const refundable = depositForfeited ? 0 : held
+
+  const deductions = input.deductions.map((d) => ({ label: d.label || 'Deduction', amount: Math.round(d.amount) })).filter((d) => d.amount > 0)
+  const totalDeductions = deductions.reduce((a, d) => a + d.amount, 0)
+
+  // dues settled from a refundable deposit, oldest bill first
+  const adjustments: { invoiceId: Types.ObjectId; number: string; amount: number }[] = []
+  if (input.adjustDuesFromDeposit) {
+    let left = Math.min(dues, refundable)
+    for (const { inv, balance: b } of unpaid) {
+      if (left < 1) break
+      const amt = Math.min(b, left)
+      if (amt < 1) continue
+      adjustments.push({ invoiceId: inv._id, number: inv.number, amount: amt })
+      left -= amt
+    }
+  }
+  const adjusted = adjustments.reduce((a, x) => a + x.amount, 0)
+  const remainingDues = Math.max(dues - adjusted, 0)
+  // a forfeited deposit already covers deductions (damages); otherwise they come out of what is left
+  const afterDeductions = depositForfeited ? 0 : refundable - adjusted - totalDeductions
+  const deductionShortfall = Math.max(-afterDeductions, 0)
+  const toCollect = remainingDues + deductionShortfall
+  const computedRefund = Math.max(afterDeductions, 0)
+  if (input.depositRefund !== undefined && input.depositRefund > held) throw badRequest(`Refund cannot be more than the deposit held (${fmt(held)})`)
+  const refund = input.depositRefund !== undefined ? Math.round(input.depositRefund) : computedRefund
+
+  const adjustedBy = new Map(adjustments.map((a) => [String(a.invoiceId), a.amount]))
+  const unpaidBills = unpaid.map(({ inv, balance }) => {
+    const adj = adjustedBy.get(String(inv._id)) ?? 0
+    return {
+      id: String(inv._id),
+      number: inv.number,
+      month: inv.month,
+      periodStart: inv.periodStart ?? null,
+      periodEnd: inv.periodEnd ?? null,
+      dueDate: inv.dueDate,
+      total: inv.total,
+      paidAmount: inv.paidAmount,
+      balance,
+      adjustFromDeposit: adj,
+      remaining: balance - adj,
+    }
+  })
+
+  const blockers: string[] = []
+  if (remainingDues > 0) {
+    const n = unpaidBills.filter((b) => b.remaining > 0).length
+    const why = depositForfeited
+      ? ' (the forfeited deposit cannot be adjusted)'
+      : !input.adjustDuesFromDeposit && refundable > 0
+        ? ' (not adjusted from the deposit)'
+        : ''
+    blockers.push(`${fmt(remainingDues)} is still due on ${n} bill${n === 1 ? '' : 's'}${why}. Record the payment first.`)
+  }
+  if (deductionShortfall > 0)
+    blockers.push(`Deductions are ${fmt(deductionShortfall)} more than the deposit left. Raise a bill for the extra charges and collect it, or reduce the deductions.`)
+
+  return {
+    hostelerId: String(h._id),
+    name: h.name,
+    loginId: h.loginId,
+    bed: room && bed ? `Room ${room.number}-${bed.label}` : null,
+    checkIn: h.checkInDate,
+    checkOut: date,
+    days: Math.max(Math.round((Date.parse(date) - Date.parse(h.checkInDate)) / 86_400_000), 0),
+    monthsStayed,
+    minStayMonths,
+    depositForfeited,
+    forfeitReason,
+    held,
+    dues,
+    unpaidBills,
+    adjusted,
+    adjustments,
+    remainingDues,
+    deductions,
+    totalDeductions,
+    refund,
+    toCollect,
+    canCheckOut: toCollect <= 0,
+    blockers,
+    moveOutRequest: moveOut ? { id: String(moveOut._id), moveOutDate: moveOut.moveOutDate, status: moveOut.status } : null,
+  }
+}
+
+/**
+ * GET /api/hostelers/:id/check-out-preview?date=&adjustDuesFromDeposit=&depositHeld=
+ * The settlement a check-out on `date` (default today) would make, without
+ * deductions, and whether it is allowed. Nothing is saved.
+ */
+router.get(
+  '/:id/check-out-preview',
+  requireStaff('checkin'),
+  requirePlan('checkin'),
+  ah(async (req, res) => {
+    const { orgId } = staffOf(req)
+    const q = parse(previewQuery, req.query)
+    const h = await loadHosteler(orgId, idParam(req))
+    if (h.status === 'checked_out') throw conflict('Already checked out')
+    const date = q.date ?? todayStr()
+    if (date < h.checkInDate) throw badRequest('Checkout date cannot be before check-in')
+    const { adjustments, ...preview } = await planSettlement(orgId, h, {
+      date,
+      deductions: [],
+      adjustDuesFromDeposit: q.adjustDuesFromDeposit !== 'false',
+      depositHeld: q.depositHeld,
+      note: '',
+    })
+    void adjustments
+    res.json(preview)
+  }),
+)
 
 router.post(
   '/:id/check-out',
@@ -476,95 +661,74 @@ router.post(
       const h = await loadHosteler(orgId, id, session)
       if (h.status === 'checked_out') throw conflict('Already checked out')
       if (body.date < h.checkInDate) throw badRequest('Checkout date cannot be before check-in')
+
+      const plan = await planSettlement(orgId, h, body, session)
+      if (!plan.canCheckOut) {
+        throw new AppError(409, `${fmt(plan.toCollect)} must be collected before check-out. ${plan.blockers.join(' ')}`, 'DUES_PENDING', {
+          toCollect: plan.toCollect,
+          remainingDues: plan.remainingDues,
+          depositForfeited: plan.depositForfeited,
+          unpaidBills: plan.unpaidBills.filter((b) => b.remaining > 0),
+          blockers: plan.blockers,
+        })
+      }
+
       await ensureStay(orgId, h, session) // older data: record the stay before the bed is freed
-
-      const bed = h.bedId ? await Bed.findOne({ _id: h.bedId, orgId }).session(session).lean() : null
-      const room = h.roomId ? await Room.findOne({ _id: h.roomId, orgId }).session(session).lean() : null
-      const depositPayments = await Payment.find({ orgId, hostelerId: h._id, kind: 'deposit' }).session(session).lean()
-      const collected = depositPayments.reduce((a, p) => a + p.amount, 0)
-      const invoices = await Invoice.find({ orgId, hostelerId: h._id, cancelled: false }).session(session).lean()
-      // A deposit line still unpaid on a bill is part of `dues` below, so it also
-      // counts as held (they net out — never charged twice). Once a deposit is
-      // tracked in the app (received, billed or waiting for the next bill), an
-      // uncollected deposit is not held; only older records fall back to the agreed amount.
-      const billedDeposit = invoices.reduce((a, inv) => a + inv.items.filter((i) => i.key === 'deposit').reduce((x, i) => x + i.amount, 0), 0)
-      const billIds = new Set(invoices.map((inv) => String(inv._id)))
-      const paidOnBills = depositPayments.filter((p) => p.invoiceId && billIds.has(String(p.invoiceId))).reduce((a, p) => a + p.amount, 0)
-      const unpaidBilledDeposit = Math.max(billedDeposit - paidOnBills, 0)
-      const tracked = collected > 0 || billedDeposit > 0 || (h.depositToBill ?? 0) > 0
-      const held = Math.round(body.depositHeld ?? (tracked ? collected + unpaidBilledDeposit : h.securityDeposit))
-      const unpaid = invoices
-        .map((inv) => ({ inv, balance: Math.max(inv.total - inv.paidAmount, 0) }))
-        .filter((x) => x.balance > 0)
-        .sort((a, b) => a.inv.dueDate.localeCompare(b.inv.dueDate))
-      const dues = unpaid.reduce((a, x) => a + x.balance, 0)
-      const deductions = body.deductions
-        .map((d) => ({ label: d.label || 'Deduction', amount: Math.round(d.amount) }))
-        .filter((d) => d.amount > 0)
-      const totalDeductions = deductions.reduce((a, d) => a + d.amount, 0)
-      const balance = held - dues - totalDeductions
-      const toCollect = Math.max(-balance, 0)
-      if (body.depositRefund !== undefined && body.depositRefund > held)
-        throw badRequest(`Refund cannot be more than the deposit held (${fmt(held)})`)
-      const refund = body.depositRefund !== undefined ? Math.round(body.depositRefund) : Math.max(balance, 0)
-
-      let adjusted = 0
-      if (body.adjustDuesFromDeposit) {
-        let left = Math.min(dues, held)
-        for (const { inv, balance: b } of unpaid) {
-          if (left < 1) break
-          const amt = Math.min(b, left)
-          if (amt < 1) continue
-          await recordPayment(
-            orgId,
-            { hostelerId: h._id, invoiceId: inv._id, amount: amt, mode: 'cash', date: body.date, note: 'Adjusted from security deposit' },
-            session,
-          )
-          left -= amt
-          adjusted += amt
-        }
+      for (const a of plan.adjustments) {
+        await recordPayment(
+          orgId,
+          { hostelerId: h._id, invoiceId: a.invoiceId, amount: a.amount, mode: 'cash', date: body.date, note: 'Adjusted from security deposit' },
+          session,
+        )
       }
 
       const noteParts = [
-        `Deposit held ${fmt(held)}`,
-        dues > 0 ? `dues ${fmt(dues)}${adjusted ? ` (${fmt(adjusted)} adjusted)` : ' (not adjusted)'}` : null,
-        ...deductions.map((d) => `${d.label} ${fmt(d.amount)}`),
-        toCollect > 0 ? `to collect ${fmt(toCollect)}` : `refund ${fmt(refund)}`,
+        `Deposit held ${fmt(plan.held)}`,
+        plan.depositForfeited ? `forfeited (stayed ${plan.monthsStayed} of ${plan.minStayMonths} months)` : null,
+        plan.dues > 0 ? `dues ${fmt(plan.dues)}${plan.adjusted ? ` (${fmt(plan.adjusted)} adjusted)` : ''}` : null,
+        ...plan.deductions.map((d) => `${d.label} ${fmt(d.amount)}`),
+        `refund ${fmt(plan.refund)}`,
       ].filter(Boolean)
       const deductionNote = `${noteParts.join('; ')}${body.note ? `. ${body.note}` : ''}`
 
-      const checkIn = h.checkInDate
       h.status = 'checked_out'
       h.checkOutDate = body.date
-      h.depositRefunded = refund
+      h.depositRefunded = plan.refund
       h.set({ bedId: null, roomId: null })
       h.notes = `${h.notes ? h.notes + '\n' : ''}Checkout: ${deductionNote}`
       h.tokenVersion += 1 // logs the hosteler out of the portal
       await h.save({ session })
       await Bed.updateMany({ orgId, hostelerId: h._id }, { $set: { hostelerId: null } }, { session })
       await closeStay(orgId, h._id, body.date, session)
+      // the move-out notice (pending or approved) is done
+      await MoveOutRequest.updateMany({ orgId, hostelerId: h._id, active: true }, { $set: { status: 'completed', active: false } }, { session })
       await gateLog(h, 'out', 'Check-out', session)
       await logActivity(orgId, `${h.name} checked out`, 'checkout', h.hostelId, session)
 
-      return {
-        hostelerId: String(h._id),
-        name: h.name,
-        loginId: h.loginId,
-        bed: room && bed ? `Room ${room.number}-${bed.label}` : null,
-        checkIn,
-        checkOut: body.date,
-        days: Math.max(Math.round((Date.parse(body.date) - Date.parse(checkIn)) / 86_400_000), 0),
-        held,
-        dues,
-        adjusted,
-        deductions,
-        totalDeductions,
-        refund,
-        toCollect,
-        notes: body.note,
-      }
+      const { adjustments, canCheckOut, blockers, moveOutRequest, ...rest } = plan
+      void adjustments
+      void canCheckOut
+      void blockers
+      void moveOutRequest
+      return { ...rest, notes: body.note }
     })
     res.json({ settlement, hosteler: await decorateOne(orgId, id) })
+  }),
+)
+
+/* ------------------------------------------------------------------ */
+/* Consent to the hostel's rules (signed in the portal)                */
+/* ------------------------------------------------------------------ */
+
+router.get(
+  '/:id/consents',
+  requireStaff('hostelers'),
+  requirePlan('hostelers'),
+  ah(async (req, res) => {
+    const { orgId } = staffOf(req)
+    const h = await loadHosteler(orgId, idParam(req))
+    const items = await RulesConsent.find({ orgId, hostelerId: h._id }).sort({ acceptedAt: -1, _id: -1 })
+    res.json({ items: items.map((c) => c.toJSON()) })
   }),
 )
 

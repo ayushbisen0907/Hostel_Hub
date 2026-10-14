@@ -28,6 +28,7 @@ import { router as portalRouter } from './portal/routes.js'
 import { router as claimsRouter } from './claims/routes.js'
 import { router as notificationsRouter } from './notifications/routes.js'
 import { router as electricityRouter } from './electricity/routes.js'
+import { router as moveOutRouter } from './moveOut/routes.js'
 
 export const apiRouter = Router()
 
@@ -45,6 +46,7 @@ apiRouter.use('/', roomsRouter) // /rooms, /beds
 apiRouter.use('/dashboard', dashboardRouter)
 apiRouter.use('/reports', reportsRouter)
 apiRouter.use('/hostelers', hostelersRouter) // incl. check-in, check-out, transfer, reset-password
+apiRouter.use('/move-out-requests', moveOutRouter) // hostelers' notices to move out (portal side: /portal/move-out)
 apiRouter.use('/documents', documentsRouter)
 apiRouter.use('/gate-logs', gateRouter)
 apiRouter.use('/', feesRouter) // /invoices, /payments, /dues, /deposits

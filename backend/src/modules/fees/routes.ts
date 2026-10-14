@@ -5,7 +5,7 @@
  *   GET    /api/invoices                 ?month ?status ?hostelerId ?hostelId ?q ?page ?limit
  *   GET    /api/invoices/:id             everything the printable invoice needs
  *   POST   /api/invoices/generate        { hostelId? } -> { created, hostelers, skipped, errors } (bills every started rent cycle)
- *   POST   /api/invoices                 custom invoice { hostelerId, month, items[], dueDate }
+ *   POST   /api/invoices                 custom invoice { hostelerId, month, items[], dueDate } (notifies the hosteler)
  *   PATCH  /api/invoices/:id             { items?, dueDate? }
  *   POST   /api/invoices/:id/late-fee    add / replace "Late fee (N days)" line
  *   POST   /api/invoices/:id/cancel      only when nothing has been paid against it
@@ -35,6 +35,8 @@ import { Hosteler } from '../../models/Hosteler.js'
 import { CHARGE_KEYS, Invoice, invoiceStatus, type ChargeKey, type InvoiceStatus } from '../../models/Invoice.js'
 import { previousBalance } from '../../lib/billing.js'
 import { generateDueBills } from '../../lib/rentCycle.js'
+import { notifyNewBill } from '../../lib/notify.js'
+import { monthLabel } from '../../lib/dates.js'
 import { Organization } from '../../models/Organization.js'
 import { Payment, PAYMENT_MODES } from '../../models/Payment.js'
 import { PaymentClaim } from '../../models/PaymentClaim.js'
@@ -296,7 +298,11 @@ router.post(
   ah(async (req, res) => {
     const orgId = oid(staffOf(req).orgId)
     const body = parse(z.object({ hostelerId: objectId, month: validMonth, items: itemsSchema, dueDate: dateStr }), req.body)
-    const inv = await withTransaction((session) => createInvoice(orgId, body, session))
+    const inv = await withTransaction(async (session) => {
+      const created = await createInvoice(orgId, body, session)
+      await notifyNewBill(orgId, created, monthLabel(created.month), session)
+      return created
+    })
     res.status(201).json({
       ...inv.toJSON(),
       status: invoiceStatus(inv, todayStr()),

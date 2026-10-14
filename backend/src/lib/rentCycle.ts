@@ -17,7 +17,7 @@ import { addDays, addMonthsAnchored, periodLabel } from './dates.js'
 import { monthlyBillItems, type BillItem } from './billing.js'
 import { pendingElectricity } from './electricity.js'
 import { createInvoice } from './money.js'
-import { notifyHostelers } from './notify.js'
+import { notifyNewBill } from './notify.js'
 import { todayStr } from './http.js'
 import { logActivity } from './org.js'
 
@@ -104,19 +104,7 @@ export async function billDueCycles(
       session,
     )
     if (elec.lines.length) await elec.markBilled(inv._id)
-    if (ctx.notify)
-      await notifyHostelers(
-        orgId,
-        [h._id],
-        {
-          type: 'bill_generated',
-          hostelId: h.hostelId,
-          title: `New bill: ₹${inv.total.toLocaleString('en-IN')}`,
-          body: `Your bill ${inv.number} for ${label} is ready. Due by ${inv.dueDate}. Pay to the hostel's UPI and report the transaction ID in the app.`,
-          link: '/portal/fees',
-        },
-        session,
-      )
+    if (ctx.notify) await notifyNewBill(orgId, inv, label, session)
     created.push(inv)
     billed.add(k)
   }
@@ -129,8 +117,8 @@ async function billContext(orgId: Id, today: string, notify: boolean) {
   return { today, dueDays: Math.max(0, Math.min(s?.rentDueDay ?? 5, 28)), fallbackMess: s?.messMonthlyCharge ?? 0, notify }
 }
 
-/** Bills a single hosteler inside the caller's transaction (used at check-in). */
-export async function billHostelerNow(orgId: Id, h: BillTarget, session: ClientSession, notify = false) {
+/** Bills a single hosteler inside the caller's transaction (used at check-in; notifies the hosteler by default). */
+export async function billHostelerNow(orgId: Id, h: BillTarget, session: ClientSession, notify = true) {
   return billDueCycles(orgId, h, await billContext(orgId, todayStr(), notify), session)
 }
 

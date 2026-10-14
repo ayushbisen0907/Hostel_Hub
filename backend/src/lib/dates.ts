@@ -53,3 +53,8 @@ export function shortDate(d: string, withYear = false): string {
 export function periodLabel(from: string, to: string): string {
   return from.slice(0, 4) === to.slice(0, 4) ? `${shortDate(from)} – ${shortDate(to, true)}` : `${shortDate(from, true)} – ${shortDate(to, true)}`
 }
+
+/** "2026-10" -> "October 2026" */
+export function monthLabel(month: string): string {
+  return toUTC(`${month}-01`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+}

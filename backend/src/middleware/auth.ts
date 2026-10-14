@@ -3,6 +3,7 @@ import { verifyToken, type StaffRole } from '../lib/auth.js'
 import { AppError, forbidden, unauthorized } from '../lib/errors.js'
 import { User } from '../models/User.js'
 import { Hosteler } from '../models/Hosteler.js'
+import { Hostel } from '../models/Hostel.js'
 
 export interface StaffAuth {
   kind: 'staff'
@@ -16,6 +17,8 @@ export interface HostelerAuth {
   orgId: string
   hostelId: string
   mustChangePassword: boolean
+  /** the hostel's rules changed (or were never signed) — see consentPending() */
+  consentRequired: boolean
 }
 
 declare module 'express-serve-static-core' {
@@ -93,11 +96,21 @@ export function requireStaff(module?: Module) {
 }
 
 /**
+ * True when the hosteler must (re-)sign their hostel's rules: the hostel has
+ * rules and their version is newer than the one the hosteler signed.
+ */
+export async function consentPending(h: { hostelId: unknown; consentVersion?: number | null }) {
+  return !!(await Hostel.exists({ _id: h.hostelId, rulesVersion: { $gt: h.consentVersion ?? 0 }, rulesText: { $nin: ['', null] } }))
+}
+
+/**
  * Hosteler (resident portal) authentication. Loads the hosteler on every
  * request so check-out / password resets take effect immediately.
- * By default it blocks hostelers who are still on their temporary password.
+ * Gates, in order:
+ *  1. still on the temporary password -> 403 PASSWORD_CHANGE_REQUIRED (unless allowTempPassword)
+ *  2. hostel rules not signed yet     -> 403 CONSENT_REQUIRED        (unless allowConsentPending)
  */
-export function requireHosteler(opts: { allowTempPassword?: boolean } = {}) {
+export function requireHosteler(opts: { allowTempPassword?: boolean; allowConsentPending?: boolean } = {}) {
   return async (req: Request, _res: Response, next: NextFunction) => {
     try {
       const token = bearer(req)
@@ -109,19 +122,23 @@ export function requireHosteler(opts: { allowTempPassword?: boolean } = {}) {
         throw unauthorized('Session expired. Please log in again.')
       }
       if (payload.kind !== 'hosteler') throw forbidden('Hosteler access only')
-      const h = await Hosteler.findById(payload.sub).select('orgId hostelId status mustChangePassword tokenVersion').lean()
+      const h = await Hosteler.findById(payload.sub).select('orgId hostelId status mustChangePassword tokenVersion consentVersion').lean()
       if (!h || String(h.orgId) !== payload.orgId) throw unauthorized('Account not found')
       if (h.status === 'checked_out') throw unauthorized('This account was closed at check-out')
       if ((payload as { tv?: number }).tv !== h.tokenVersion) throw unauthorized('Session expired. Please log in again.')
+      const consentRequired = await consentPending(h)
       req.hosteler = {
         kind: 'hosteler',
         hostelerId: String(h._id),
         orgId: String(h.orgId),
         hostelId: String(h.hostelId),
         mustChangePassword: h.mustChangePassword,
+        consentRequired,
       }
       if (h.mustChangePassword && !opts.allowTempPassword)
         throw new AppError(403, 'Please set your own password first', 'PASSWORD_CHANGE_REQUIRED')
+      if (consentRequired && !opts.allowConsentPending)
+        throw new AppError(403, "Please read and sign the hostel's rules first", 'CONSENT_REQUIRED')
       next()
     } catch (e) {
       next(e)

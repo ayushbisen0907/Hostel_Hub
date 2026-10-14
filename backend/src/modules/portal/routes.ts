@@ -28,6 +28,10 @@
  *   GET    /documents, POST /documents, GET /documents/:id/file
  *   GET    /attendance?month=          (plan: attendance)
  *   GET    /gate-logs
+ *   GET    /move-out, POST /move-out, DELETE /move-out/:id   (see modules/moveOut/routes.ts)
+ *
+ * Every route needs the hosteler's own password (PASSWORD_CHANGE_REQUIRED) and
+ * a signature on the current hostel rules (CONSENT_REQUIRED, see /portal/auth/rules).
  */
 import { Router, type Request } from 'express'
 import { z } from 'zod'
@@ -65,11 +69,15 @@ import { Organization } from '../../models/Organization.js'
 import { Payment } from '../../models/Payment.js'
 import { Room } from '../../models/Room.js'
 import { clock, hhmm } from './clock.js'
+import { portalMoveOutRouter } from '../moveOut/routes.js'
 
 export const router = Router()
 
 // every portal route: logged-in hosteler (own password set) on a plan with the portal
 router.use(requireHosteler(), requirePlan('portal'))
+
+// move-out requests (notice period) — see modules/moveOut/routes.ts
+router.use('/move-out', portalMoveOutRouter)
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */

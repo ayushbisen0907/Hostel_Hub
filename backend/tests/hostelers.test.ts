@@ -212,6 +212,19 @@ describe('transfer, check-out, reset-password, delete', () => {
     await api().post(`/api/hostelers/${w.hosteler._id}/check-out`).set(w.auth).send({ date: '2026-08-01' }).expect(400) // before check-in
     await api().post(`/api/hostelers/${w.hosteler._id}/check-out`).set(w.auth).send({ date: '2026-10-10', deductions: [{ label: 'x', amount: -5 }] }).expect(400)
 
+    // dues 7000 > deposit 5000 -> 2000 (+500 deduction) still to collect: blocked, nothing changes
+    const blocked = await api()
+      .post(`/api/hostelers/${w.hosteler._id}/check-out`)
+      .set(w.auth)
+      .send({ date: '2026-10-10', deductions: [{ label: 'Broken chair', amount: 500 }], adjustDuesFromDeposit: true, note: 'Keys returned' })
+      .expect(409)
+    expect(blocked.body.error.code).toBe('DUES_PENDING')
+    expect(blocked.body.error.message).toContain('₹2,500')
+    expect(await Payment.countDocuments({ hostelerId: w.hosteler._id })).toBe(1)
+    expect((await Hosteler.findById(w.hosteler._id))!.status).toBe('active')
+
+    // the hosteler pays 2500 on the newer bill; the deposit covers the rest
+    await api().post('/api/payments').set(w.auth).send({ hostelerId: String(w.hosteler._id), invoiceId: String(inv2._id), amount: 2500, mode: 'cash' }).expect(201)
     const r = await api()
       .post(`/api/hostelers/${w.hosteler._id}/check-out`)
       .set(w.auth)
@@ -219,11 +232,12 @@ describe('transfer, check-out, reset-password, delete', () => {
       .expect(200)
     const s = r.body.settlement
     expect(s.held).toBe(5000)
-    expect(s.dues).toBe(7000)
-    expect(s.adjusted).toBe(5000)
+    expect(s.dues).toBe(4500)
+    expect(s.adjusted).toBe(4500)
     expect(s.totalDeductions).toBe(500)
     expect(s.refund).toBe(0)
-    expect(s.toCollect).toBe(2500)
+    expect(s.toCollect).toBe(0)
+    expect(s.depositForfeited).toBe(false)
     expect(s.days).toBe(39)
     expect(s.bed).toBe('Room 101-A')
     expect(r.body.hosteler.status).toBe('checked_out')
@@ -232,7 +246,7 @@ describe('transfer, check-out, reset-password, delete', () => {
 
     // oldest invoice settled first
     expect((await Invoice.findById(inv1._id))!.paidAmount).toBe(3000)
-    expect((await Invoice.findById(inv2._id))!.paidAmount).toBe(2000)
+    expect((await Invoice.findById(inv2._id))!.paidAmount).toBe(4000)
     const adj = await Payment.find({ hostelerId: w.hosteler._id, note: 'Adjusted from security deposit' })
     expect(adj).toHaveLength(2)
 

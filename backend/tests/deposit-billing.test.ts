@@ -237,9 +237,13 @@ describe('check-out with a deposit collected through bills', () => {
     const id = await checkIn(w)
     const [inv] = await bills(id)
     await pay(w, id, inv!._id, 3000).expect(201) // deposit 3000 of 5000; rent 6000 unpaid
+    // the hosteler owes 6000 rent and has paid 3000 deposit -> 3000 to collect first
+    const blocked = await api().post(`/api/hostelers/${id}/check-out`).set(w.auth).send({ date: today }).expect(409)
+    expect(blocked.body.error).toMatchObject({ code: 'DUES_PENDING' })
+    expect(blocked.body.error.details.toCollect).toBe(3000)
+    await pay(w, id, inv!._id, 3000).expect(201)
     const r = await api().post(`/api/hostelers/${id}/check-out`).set(w.auth).send({ date: today }).expect(200)
-    // the hosteler owes 6000 rent and has paid 3000 deposit -> 3000 to collect
-    expect(r.body.settlement).toMatchObject({ toCollect: 3000, refund: 0 })
+    expect(r.body.settlement).toMatchObject({ held: 5000, dues: 5000, adjusted: 5000, toCollect: 0, refund: 0 })
   })
 
   it('a deposit still waiting for the next bill is not treated as held', async () => {
@@ -306,6 +310,9 @@ describe('POST /api/hostelers/:id/bill-deposit', () => {
     const id2 = await checkIn(w, { name: 'Kabir', bedId: String((await makeRoom(w.org._id, w.hostel._id, '102', 1)).beds[0]!._id), depositOption: 'collected' })
     await api().post(`/api/hostelers/${id2}/bill-deposit`).set(other.auth).send({ target: 'next' }).expect(404)
 
+    await api().post(`/api/hostelers/${id2}/check-out`).set(w.auth).send({ date: today }).expect(409) // first bill unpaid
+    const [b2] = await bills(id2)
+    await pay(w, id2, b2!._id, b2!.total).expect(201)
     await api().post(`/api/hostelers/${id2}/check-out`).set(w.auth).send({ date: today }).expect(200)
     await api().post(`/api/hostelers/${id2}/bill-deposit`).set(w.auth).send({ target: 'next' }).expect(409)
   })

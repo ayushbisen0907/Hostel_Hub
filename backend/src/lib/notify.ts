@@ -1,10 +1,10 @@
 /** In-app notifications. */
 import type { ClientSession, Types } from 'mongoose'
-import { Notification } from '../models/Notification.js'
+import { Notification, type NotificationType } from '../models/Notification.js'
 import { User } from '../models/User.js'
+import { shortDate } from './dates.js'
 
 type Id = string | Types.ObjectId
-type NotificationType = 'payment_submitted' | 'payment_verified' | 'payment_rejected' | 'bill_generated' | 'general'
 
 export interface NotificationInput {
   type: NotificationType
@@ -13,6 +13,9 @@ export interface NotificationInput {
   link?: string
   hostelId?: Id | null
 }
+
+/** Roles that run admissions / check-outs (move-out requests). */
+export const CHECKIN_ROLES = ['owner', 'manager', 'warden'] as const
 
 /** Roles that handle money and get payment notifications. */
 export const PAYMENT_ROLES = ['owner', 'manager', 'accountant'] as const
@@ -55,5 +58,29 @@ export async function notifyHostelers(orgId: Id, hostelerIds: Id[], n: Notificat
       link: n.link ?? '',
     })),
     { session },
+  )
+}
+
+/**
+ * Tells a hosteler about a new bill, with its number, period and due date.
+ * `period` is e.g. "13 Oct – 12 Nov 2026" (rent cycle) or "October 2026".
+ */
+export async function notifyNewBill(
+  orgId: Id,
+  inv: { hostelerId: Id; hostelId: Id; number: string; total: number; dueDate: string },
+  period: string,
+  session?: ClientSession,
+) {
+  await notifyHostelers(
+    orgId,
+    [inv.hostelerId],
+    {
+      type: 'bill_generated',
+      hostelId: inv.hostelId,
+      title: `New bill: ₹${inv.total.toLocaleString('en-IN')}`,
+      body: `Your bill ${inv.number} for ${period} is ready. Due by ${shortDate(inv.dueDate, true)}. Pay to the hostel's UPI and report the transaction ID in the app.`,
+      link: '/portal/fees',
+    },
+    session,
   )
 }

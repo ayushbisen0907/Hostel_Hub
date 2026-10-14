@@ -46,6 +46,16 @@ const hostelSchema = new Schema(
     electricityRate: { type: Number, default: 0, min: 0 },
     /** 'room' = one meter per room, split equally among its hostelers; 'bed' = a meter per bed */
     electricityBasis: { type: String, enum: ['room', 'bed'], default: 'room' },
+
+    // ---- stay terms ----
+    /** days of notice a hosteler must give before moving out (portal move-out requests) */
+    noticePeriodDays: { type: Number, default: 30, min: 0, max: 90 },
+    /** security deposit is refunded only after this many full rent cycles (0 = always refundable) */
+    depositMinStayMonths: { type: Number, default: 0, min: 0, max: 12 },
+    /** hostel rules every hosteler signs in the portal ('' = no rules) */
+    rulesText: { type: String, default: '', maxlength: 10000 },
+    /** bumped automatically whenever rulesText changes; hostelers re-sign when it goes up (0 = never set) */
+    rulesVersion: { type: Number, default: 0, min: 0 },
   },
   baseOptions(['qrStorageKey', 'qrMimeType']),
 )

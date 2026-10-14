@@ -9,6 +9,13 @@
  *   PUT    /api/hostels/:id/qr   multipart image: the hostel's UPI QR code (optional; otherwise drawn from upiId)
  *   GET    /api/hostels/:id/qr   any staff
  *   DELETE /api/hostels/:id/qr
+ *   GET    /api/hostels/:id/default-rules   { rulesText } — suggested rules built from the hostel + org settings
+ *
+ * Stay terms: noticePeriodDays (0–90, default 30) for move-out requests;
+ * depositMinStayMonths (0 = always refundable, else 1–12 full rent cycles)
+ * for the deposit refund at check-out; rulesText (≤ 10000) that hostelers sign
+ * in the portal. rulesVersion is read-only: it goes up whenever rulesText
+ * changes, and active hostelers are asked to sign again.
  *
  * Every hostel has its own UPI ID + payee name (required when creating) where
  * hostelers pay rent, a mess charge, and an electricity rate per unit with
@@ -21,7 +28,9 @@ import { ah, idParam, parse } from '../../lib/http.js'
 import { badRequest, conflict, notFound } from '../../lib/errors.js'
 import { removeStoredFile, sendStoredFile, upload } from '../../lib/upload.js'
 import { makeHostelCode } from '../../lib/auth.js'
-import { logActivity } from '../../lib/org.js'
+import { getSettings, logActivity } from '../../lib/org.js'
+import { notifyHostelers } from '../../lib/notify.js'
+import { defaultRulesText } from '../../lib/rules.js'
 import { withTransaction } from '../../config/db.js'
 import { requireStaff, staffOf } from '../../middleware/auth.js'
 import { Hostel, UPI_ID_RE } from '../../models/Hostel.js'
@@ -52,6 +61,12 @@ const chargesSchema = z
   })
   .strict()
 
+const stayTerms = {
+  noticePeriodDays: z.coerce.number().int().min(0).max(90),
+  depositMinStayMonths: z.coerce.number().int().min(0).max(12),
+  rulesText: z.string().trim().max(10000, 'Rules can be at most 10000 characters'),
+}
+
 const fields = {
   name: z.string().trim().min(2).max(120),
   type: z.enum(['boys', 'girls', 'coed']),
@@ -67,6 +82,9 @@ const createSchema = z.object({
   charges: chargesSchema.default({}),
   electricityRate: charge.default(0),
   electricityBasis: z.enum(['room', 'bed']).default('room'),
+  noticePeriodDays: stayTerms.noticePeriodDays.default(30),
+  depositMinStayMonths: stayTerms.depositMinStayMonths.default(0),
+  rulesText: stayTerms.rulesText.default(''),
 })
 const patchSchema = z
   .object({
@@ -81,6 +99,7 @@ const patchSchema = z
     charges: chargesSchema,
     electricityRate: charge,
     electricityBasis: z.enum(['room', 'bed']),
+    ...stayTerms,
   })
   .partial()
   .strict()
@@ -159,7 +178,7 @@ router.post(
       const taken = (await Hostel.find({}).select('code').lean()).map((h) => h.code)
       hostelCode = makeHostelCode(body.name, taken)
     }
-    const hostel = await Hostel.create({ ...body, code: hostelCode, orgId })
+    const hostel = await Hostel.create({ ...body, code: hostelCode, orgId, rulesVersion: body.rulesText ? 1 : 0 })
     await logActivity(orgId, `Hostel "${hostel.name}" created`, 'room', hostel._id)
     res.status(201).json((await withCounts(orgId, [hostel]))[0])
   }),
@@ -178,10 +197,26 @@ router.patch(
       if (await Hostel.exists({ code: body.code, _id: { $ne: hostel._id } }))
         throw conflict(`Hostel code ${body.code} is already taken. Choose another.`)
     }
-    const { charges, ...rest } = body
+    const { charges, rulesText, ...rest } = body
     Object.assign(hostel, rest)
     if (charges) hostel.set('charges', charges)
+    const rulesChanged = rulesText !== undefined && rulesText !== (hostel.rulesText ?? '')
+    if (rulesChanged) {
+      hostel.rulesText = rulesText
+      hostel.rulesVersion = (hostel.rulesVersion ?? 0) + 1
+    }
     await hostel.save()
+    if (rulesChanged && rulesText) {
+      const active = await Hosteler.find({ orgId, hostelId: hostel._id, status: 'active' }).select('_id').lean()
+      await notifyHostelers(orgId, active.map((h) => h._id), {
+        type: 'consent_required',
+        hostelId: hostel._id,
+        title: 'Hostel rules updated',
+        body: `${hostel.name} has updated its rules. Please read and sign them in the app to continue.`,
+        link: '/portal/rules',
+      })
+      await logActivity(orgId, `Rules of "${hostel.name}" updated (version ${hostel.rulesVersion})`, 'general', hostel._id)
+    }
     res.json((await withCounts(orgId, [hostel]))[0])
   }),
 )
@@ -207,6 +242,19 @@ router.delete(
       await logActivity(orgId, `Hostel "${hostel.name}" deleted`, 'room', null, session)
     })
     res.json({ ok: true })
+  }),
+)
+
+/* ---------------- rules ---------------- */
+
+router.get(
+  '/:id/default-rules',
+  requireStaff('hostels'),
+  ah(async (req, res) => {
+    const { orgId } = staffOf(req)
+    const hostel = await hostelOr404(orgId, idParam(req))
+    const { settings } = await getSettings(orgId)
+    res.json({ rulesText: defaultRulesText(hostel, settings) })
   }),
 )
 

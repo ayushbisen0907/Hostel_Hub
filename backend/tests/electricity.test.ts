@@ -186,6 +186,9 @@ describe('room-metered electricity by period', () => {
     const { hosteler: z } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[0]!, name: 'Zoya', checkInDate: addDays(today, -20) })
     const { hosteler: v } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[1]!, name: 'Vivek', checkInDate: addDays(today, -20) })
     await billAll(w)
+    // dues must be cleared before check-out
+    for (const inv of await Invoice.find({ hostelerId: z._id }).lean())
+      await api().post('/api/payments').set(w.auth).send({ hostelerId: String(z._id), invoiceId: String(inv._id), amount: inv.total, mode: 'cash' }).expect(201)
     await api().post(`/api/hostelers/${z._id}/check-out`).set(w.auth).send({ date: addDays(today, -5) }).expect(200)
 
     const r = await post(w, { roomId: w.r201.room._id, fromDate: addDays(today, -9), toDate: today, units: 15 }).expect(201)

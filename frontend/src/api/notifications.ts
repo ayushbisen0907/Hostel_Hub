@@ -7,7 +7,16 @@ import { get, post } from './client'
 import { useSession } from './session'
 import type { ID } from './types'
 
-export type NotificationType = 'payment_submitted' | 'payment_verified' | 'payment_rejected' | 'bill_generated' | 'general'
+export type NotificationType =
+  | 'payment_submitted'
+  | 'payment_verified'
+  | 'payment_rejected'
+  | 'bill_generated'
+  | 'move_out_requested'
+  | 'move_out_approved'
+  | 'move_out_rejected'
+  | 'consent_required'
+  | 'general'
 
 export interface AppNotification {
   id: ID
@@ -33,7 +42,7 @@ export const notificationsKey = ['notifications'] as const
 export function useNotifications() {
   const session = useSession((s) => s.session)
   const kind = session?.kind
-  const blocked = session?.kind === 'hosteler' && session.mustChangePassword
+  const blocked = session?.kind === 'hosteler' && (session.mustChangePassword || !!session.consentRequired)
   return useQuery({
     queryKey: [...notificationsKey, kind],
     queryFn: () => get<NotificationList>(base(kind), { limit: 30 }),

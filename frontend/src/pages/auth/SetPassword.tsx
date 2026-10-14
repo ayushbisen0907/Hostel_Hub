@@ -24,7 +24,7 @@ export default function SetPassword() {
   const [loading, setLoading] = useState(false)
 
   if (!session) return <Navigate to="/portal/login" replace />
-  if (!session.mustChangePassword) return <Navigate to="/portal" replace />
+  if (!session.mustChangePassword) return <Navigate to={session.consentRequired ? '/portal/rules' : '/portal'} replace />
   const me = session.hosteler
 
   const strong = checkPasswordStrength(next).ok
@@ -38,9 +38,9 @@ export default function SetPassword() {
     if (!matches) return setError("Passwords don't match.")
     setLoading(true)
     try {
-      await hostelerSetPassword(temp, next)
+      const { consentRequired } = await hostelerSetPassword(temp, next)
       toast.success('Password set! Use it next time you log in.')
-      navigate('/portal', { replace: true })
+      navigate(consentRequired ? '/portal/rules' : '/portal', { replace: true })
     } catch (err) {
       setError(errorMessage(err))
     } finally {

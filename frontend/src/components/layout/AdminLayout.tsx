@@ -105,8 +105,16 @@ function usePendingCounts() {
   })
   // UPI payments reported by hostelers, waiting for staff to verify (all hostels)
   const claims = usePendingClaimCount('all', { enabled: hasModule(plan, 'fees') })
+  // move-out requests from the portal, waiting for approval (same key as the Check-out page's list)
+  const moveOuts = useQuery({
+    queryKey: ['move-out-requests', { status: 'pending' }],
+    queryFn: () => get<ListResponse<unknown>>('/move-out-requests', { status: 'pending' }),
+    enabled: roleCan(role, 'checkin') && hasModule(plan, 'checkin'),
+    refetchInterval: 60_000,
+  })
   const openComplaints = (complaints.data?.open ?? 0) + (complaints.data?.inProgress ?? 0)
   return {
+    pendingMoveOuts: moveOuts.data?.items.length ?? 0,
     openComplaints,
     newComplaints: complaints.data?.open ?? 0,
     pendingLeaves: leaves.data?.items.length ?? 0,
@@ -119,8 +127,13 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { data: org } = useOrg()
   const plan = org?.plan ?? staff?.organization.plan
   const role = staff?.user.role
-  const { openComplaints, pendingLeaves, pendingPayments } = usePendingCounts()
-  const badges: Record<string, number> = { '/app/complaints': openComplaints, '/app/attendance': pendingLeaves, '/app/fees': pendingPayments }
+  const { openComplaints, pendingLeaves, pendingPayments, pendingMoveOuts } = usePendingCounts()
+  const badges: Record<string, number> = {
+    '/app/complaints': openComplaints,
+    '/app/attendance': pendingLeaves,
+    '/app/fees': pendingPayments,
+    '/app/check-out': pendingMoveOuts,
+  }
   // modules the role can't use are hidden; plan-locked ones show a lock
   const visible = (item: NavItem) => !item.module || item.module === 'portal' || roleCan(role, item.module as StaffModule)
 

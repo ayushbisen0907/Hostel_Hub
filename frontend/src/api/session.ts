@@ -20,6 +20,8 @@ export interface HostelerSession {
   hosteler: Hosteler
   hostel: Pick<Hostel, 'id' | 'name' | 'code' | 'city' | 'phone'> | null
   mustChangePassword: boolean
+  /** the hostel's rules must be (re-)signed before the portal can be used (see /portal/rules) */
+  consentRequired?: boolean
 }
 
 export type Session = StaffSession | HostelerSession

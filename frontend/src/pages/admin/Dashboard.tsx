@@ -29,6 +29,7 @@ import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveCo
 import { useHostels, useOrg, useScope, useScopeStore } from '@/api/common'
 import { useCan, useStaffSession } from '@/api/session'
 import { usePendingClaimCount } from '@/api/claims'
+import { useMoveOutRequests } from '@/api/moveOut'
 import { useDashboard, useDecideLeave, useQuickExpense, useQuickNotice, type DashboardData, type DashboardHosteler } from '@/api/dashboard'
 import { EXPENSE_CATEGORIES, type ExpenseCategory } from '@/api/expenses'
 import type { Activity, Hostel, Meal, PaymentMode, Plan, Priority } from '@/api/types'
@@ -451,6 +452,8 @@ function OverviewBody({ data, hostels, plan, onPickHostel }: { data: DashboardDa
   const canDecideLeaves = hasAttendance && can('attendance')
   const hasMess = hasModule(plan, 'mess')
   const pendingPayments = usePendingClaimCount(scope, { enabled: hasModule(plan, 'fees') }).data ?? 0
+  const moveOutsQ = useMoveOutRequests({ status: 'pending' }, { enabled: can('checkin') && hasModule(plan, 'checkin') })
+  const pendingMoveOuts = moveOutsQ.data?.items ?? []
 
   const chart = useMemo(
     () => data.last6Months.map((m) => ({ month: formatDate(`${m.month}-01`, 'MMM'), Collected: m.collected, Expenses: m.expenses })),
@@ -485,6 +488,31 @@ function OverviewBody({ data, hostels, plan, onPickHostel }: { data: DashboardDa
             <p className="text-sm text-amber-800">Hostelers reported UPI payments. Check your bank and confirm them.</p>
           </div>
           <span className="hidden text-sm font-semibold text-amber-800 sm:inline">Verify →</span>
+        </button>
+      )}
+
+      {pendingMoveOuts.length > 0 && (
+        <button
+          type="button"
+          onClick={() => navigate('/app/check-out?view=requests')}
+          className="mb-4 flex w-full items-center gap-3 rounded-xl border border-brand-200 bg-brand-50 p-4 text-left transition hover:bg-brand-100"
+        >
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-brand-100 text-brand-700">
+            <DoorOpen className="h-5 w-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold text-brand-900">
+              {pendingMoveOuts.length} move-out request{pendingMoveOuts.length === 1 ? '' : 's'} to review
+            </p>
+            <p className="truncate text-sm text-brand-800">
+              {pendingMoveOuts
+                .slice(0, 3)
+                .map((r) => `${r.hosteler?.name ?? 'Hosteler'} (${formatDate(r.moveOutDate, 'dd MMM')})`)
+                .join(', ')}
+              {pendingMoveOuts.length > 3 ? '…' : ''}
+            </p>
+          </div>
+          <span className="hidden text-sm font-semibold text-brand-800 sm:inline">Review →</span>
         </button>
       )}
 

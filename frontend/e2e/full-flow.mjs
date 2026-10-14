@@ -145,6 +145,8 @@ try {
   await apiCall('POST', '/payments', { hostelerId: a3.hosteler.id, invoiceId: a3Bill.id, amount: 11500, mode: 'cash', date: today }, token)
   const a3Detail = await apiCall('GET', `/hostelers/${a3.hosteler.id}`, null, token)
   ok('paying that bill counts as deposit collected', a3Detail.depositCollected === 5000, `collected ₹${a3Detail.depositCollected}`)
+  // stay rules: 30 days notice, deposit refundable after 6 months, rules every hosteler must sign
+  await apiCall('PATCH', `/hostels/${hostel.id}`, { rulesText: 'Pay rent on time.\nNo smoking inside the hostel.\nGive 30 days notice before moving out.', noticePeriodDays: 30, depositMinStayMonths: 6 }, token)
   await apiCall('POST', '/notices', { title: 'Rent due by 5th', body: 'Please pay on time.', priority: 'high', pinned: true, hostelId: null }, token)
   await apiCall('POST', '/expenses', { hostelId: hostel.id, category: 'electricity', amount: 12000, date: today, paidTo: 'MPEB', mode: 'bank', note: '' }, token)
   await apiCall('PUT', '/mess/menu', { hostelId: hostel.id, day: new Date().getDay(), meal: 'dinner', items: 'Paneer, Roti, Dal' }, token)
@@ -207,6 +209,20 @@ try {
   const e2 = await elecLines(a2.hosteler.id)
   ok('room reading 100 units × ₹10 split by days stayed (both since today → equal) (UI)', e1.length === 1 && e2.length === 1 && e1[0].amount === 500 && e2[0].amount === 500, e1[0]?.label)
 
+  /** Portal: sign the hostel rules (typed name + drawn signature + checkbox). */
+  async function signRules(p, name) {
+    await p.waitForURL('**/portal/rules', { timeout: 15000 })
+    await p.getByLabel(/Your full name/).fill(name)
+    const pad = p.locator('canvas[aria-label^="Signature pad"]')
+    const box = await pad.boundingBox()
+    await p.mouse.move(box.x + 20, box.y + box.height / 2)
+    await p.mouse.down()
+    for (let i = 1; i <= 10; i++) await p.mouse.move(box.x + 20 + i * 25, box.y + box.height / 2 + (i % 2 ? -15 : 15))
+    await p.mouse.up()
+    await p.locator('input[type="checkbox"]').first().check()
+    await p.getByRole('button', { name: /Sign and continue/ }).click()
+  }
+
   /* ------------------------------------------------------------ */
   /* 4. Hosteler: temp password -> forced password change -> portal */
   /* ------------------------------------------------------------ */
@@ -226,7 +242,11 @@ try {
   await hp.locator('input[autocomplete="new-password"]').nth(0).fill('Aarav@2026')
   await hp.locator('input[autocomplete="new-password"]').nth(1).fill('Aarav@2026')
   await hp.getByRole('button', { name: /save & continue/i }).click()
+  await signRules(hp, 'Aarav Sharma')
+  ok('hosteler must sign the hostel rules before using the portal (UI)', true)
   await hp.waitForURL(/\/portal$/, { timeout: 15000 })
+  const consent = (await apiCall('GET', `/hostelers/${a1.hosteler.id}`, null, token)).consentStatus
+  ok('owner sees the signed rules', consent?.signedVersion === 1 && !consent.required, JSON.stringify(consent))
   ok('password set -> portal home', /\/portal$/.test(hp.url()))
 
   for (const p of ['/portal', '/portal/fees', '/portal/mess', '/portal/complaints', '/portal/leave', '/portal/profile']) await visit(hp, p, 'hosteler phone')
@@ -271,6 +291,7 @@ try {
   await pp.locator('input[autocomplete="new-password"]').nth(0).fill('Vivaan@2026')
   await pp.locator('input[autocomplete="new-password"]').nth(1).fill('Vivaan@2026')
   await pp.getByRole('button', { name: /save & continue/i }).click()
+  await signRules(pp, 'Vivaan Patel')
   await pp.waitForURL(/\/portal$/)
   // the first bill is itemized from the hostel's charges
   const hTok = await pp.evaluate(() => JSON.parse(localStorage.getItem('hostelhub-session') || '{}').state?.session?.token)
@@ -331,6 +352,30 @@ try {
   const regen = await apiCall('POST', '/invoices/generate', {}, token)
   ok('generating again creates nothing new (each cycle billed once)', regen.created === 0, JSON.stringify(regen))
   for (const pth of ['/portal', '/portal/fees']) await visit(pp, pth, 'hosteler phone (after payments)')
+
+  // move-out request from the portal (30 days notice)
+  const aTok = await hp.evaluate(() => JSON.parse(localStorage.getItem('hostelhub-session') || '{}').state?.session?.token)
+  const mo = await apiCall('GET', '/portal/move-out', null, aTok)
+  await visit(hp, '/portal/move-out', 'hosteler phone')
+  await hp.getByLabel(/Move-out date/).fill(mo.earliestDate)
+  await hp.getByRole('button', { name: /Send request/ }).click()
+  await hp.waitForTimeout(1500)
+  const pendingMo = (await apiCall('GET', '/move-out-requests?status=pending', null, token)).items
+  ok('hosteler requests move-out with 30 days notice; owner sees it (UI)', pendingMo.some((r) => r.hosteler?.id === a1.hosteler.id && r.moveOutDate === mo.earliestDate), mo.earliestDate)
+  const ownerMoNote = (await apiCall('GET', '/notifications', null, token)).items.some((n) => n.type === 'move_out_requested')
+  ok('owner is notified about the move-out request', ownerMoNote)
+
+  // check-out is blocked while dues are unpaid; deposit forfeited before 6 months
+  const preview = await apiCall('GET', `/hostelers/${a1.hosteler.id}/check-out-preview?date=${today}`, null, token)
+  ok('check-out preview: deposit forfeited (stayed 0 of 6 months) and blocked by dues', preview.depositForfeited === true && preview.canCheckOut === false && preview.toCollect > 0, `to collect ₹${preview.toCollect}`)
+  const blocked = await fetch(API + `/hostelers/${a1.hosteler.id}/check-out`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ date: today, deductions: [], adjustDuesFromDeposit: true, note: '' }),
+  })
+  const blockedBody = await blocked.json()
+  ok('check-out is refused until dues are paid (409 DUES_PENDING)', blocked.status === 409 && blockedBody.error.code === 'DUES_PENDING', blockedBody.error.message)
+  await visit(page, `/app/check-out?h=${a1.hosteler.id}`, 'owner (check-out blocked)')
 } catch (e) {
   results.push(false)
   console.log('FAIL  crashed:', e.message)

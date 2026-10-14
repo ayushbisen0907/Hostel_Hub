@@ -55,6 +55,8 @@ import {
 } from '@/components/ui'
 import { cn, currentMonth, formatBytes, formatDate, formatDateTime, rentCycleText, titleCase, today } from '@/lib/utils'
 import { NotLoggedIn, PortalTitle, SectionTitle, useMoney, useScrollToHash } from './_shared'
+import { MoveOutCard } from './MoveOut'
+import { RulesCard } from './_rulesCard'
 
 /** Same limits as the server (backend/src/modules/portal/routes.ts) */
 const MAX_BYTES = 2 * 1024 * 1024
@@ -337,6 +339,12 @@ export default function Profile() {
             />
           </div>
         </Card>
+      </div>
+
+      {/* Rules + move-out */}
+      <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+        <RulesCard />
+        {me.status === 'active' && <MoveOutCard />}
       </div>
 
       {/* Documents */}

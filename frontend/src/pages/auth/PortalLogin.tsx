@@ -18,7 +18,8 @@ export default function PortalLogin() {
   const [loading, setLoading] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
 
-  if (session) return <Navigate to={session.mustChangePassword ? '/portal/set-password' : '/portal'} replace />
+  if (session)
+    return <Navigate to={session.mustChangePassword ? '/portal/set-password' : session.consentRequired ? '/portal/rules' : '/portal'} replace />
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -30,6 +31,8 @@ export default function PortalLogin() {
       const s = await hostelerLogin(loginId, password)
       if (s.mustChangePassword) {
         navigate('/portal/set-password', { replace: true })
+      } else if (s.consentRequired) {
+        navigate('/portal/rules', { replace: true })
       } else {
         toast.success(`Welcome back, ${s.hosteler.name.split(' ')[0]}!`)
         navigate('/portal', { replace: true })

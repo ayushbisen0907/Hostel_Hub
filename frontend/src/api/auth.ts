@@ -13,6 +13,9 @@ interface StaffAuthResponse {
 interface PortalAuthResponse {
   token: string
   mustChangePassword: boolean
+  /** the hostel's rules must be signed (/portal/rules) before anything else */
+  consentRequired?: boolean
+  rulesVersion?: number
   hosteler: Hosteler
   hostel: HostelerSession['hostel']
 }
@@ -49,20 +52,40 @@ export async function staffChangePassword(currentPassword: string, newPassword: 
 export async function hostelerLogin(loginId: string, password: string) {
   const r = await post<PortalAuthResponse>('/portal/auth/login', { loginId, password })
   queryClient.clear()
-  const s: HostelerSession = { kind: 'hosteler', token: r.token, hosteler: r.hosteler, hostel: r.hostel, mustChangePassword: r.mustChangePassword }
+  const s: HostelerSession = {
+    kind: 'hosteler',
+    token: r.token,
+    hosteler: r.hosteler,
+    hostel: r.hostel,
+    mustChangePassword: r.mustChangePassword,
+    consentRequired: !!r.consentRequired,
+  }
   useSession.getState().setSession(s)
   return s
 }
 
 /** First login (temporary password) or a normal password change. Returns a fresh token. */
 export async function hostelerSetPassword(currentPassword: string, newPassword: string) {
-  const r = await post<{ token: string; mustChangePassword: boolean }>('/portal/auth/set-password', { currentPassword, newPassword })
-  useSession.getState().patchSession({ token: r.token, mustChangePassword: false })
+  const r = await post<{ token: string; mustChangePassword: boolean; consentRequired?: boolean }>('/portal/auth/set-password', { currentPassword, newPassword })
+  const consentRequired = !!r.consentRequired
+  useSession.getState().patchSession({ token: r.token, mustChangePassword: false, consentRequired })
+  return { consentRequired }
 }
 
 export async function refreshHostelerMe() {
-  const r = await get<{ mustChangePassword: boolean; hosteler: Hosteler; hostel: Pick<Hostel, 'id' | 'name' | 'code' | 'city' | 'phone'> | null }>('/portal/auth/me')
-  useSession.getState().patchSession({ hosteler: r.hosteler, hostel: r.hostel, mustChangePassword: r.mustChangePassword })
+  const r = await get<{
+    mustChangePassword: boolean
+    consentRequired?: boolean
+    rulesVersion?: number
+    hosteler: Hosteler
+    hostel: Pick<Hostel, 'id' | 'name' | 'code' | 'city' | 'phone'> | null
+  }>('/portal/auth/me')
+  useSession.getState().patchSession({
+    hosteler: r.hosteler,
+    hostel: r.hostel,
+    mustChangePassword: r.mustChangePassword,
+    consentRequired: !!r.consentRequired,
+  })
   return r
 }
 

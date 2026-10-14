@@ -6,6 +6,7 @@
  *  - turns every failure into an ApiError { status, code, message, details }
  *  - 401 -> session cleared (user is sent back to login by the route guards)
  *  - 403 PASSWORD_CHANGE_REQUIRED -> hosteler is sent to the set-password page
+ *  - 403 CONSENT_REQUIRED -> hosteler is sent to the hostel-rules page (/portal/rules)
  */
 import axios, { AxiosError, type AxiosRequestConfig } from 'axios'
 import { getSession, useSession } from './session'
@@ -65,6 +66,10 @@ api.interceptors.response.use(
     if (status === 403 && code === 'PASSWORD_CHANGE_REQUIRED') {
       const s = getSession()
       if (s?.kind === 'hosteler' && !s.mustChangePassword) useSession.getState().patchSession({ mustChangePassword: true })
+    }
+    if (status === 403 && code === 'CONSENT_REQUIRED') {
+      const s = getSession()
+      if (s?.kind === 'hosteler' && !s.consentRequired) useSession.getState().patchSession({ consentRequired: true })
     }
     return Promise.reject(new ApiError(status, code, message, body?.error?.details))
   },

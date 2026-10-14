@@ -99,6 +99,7 @@ import {
   type SetProfile,
 } from './_residents'
 import { RecordPaymentModal } from './_fees'
+import { RulesConsentSection } from './_consents'
 
 type Tab = 'overview' | 'fees' | 'documents' | 'attendance' | 'gate' | 'requests'
 
@@ -1242,6 +1243,7 @@ function Profile({ h }: { h: HostelerDetailT }) {
                 </p>
               )}
             </Section>
+            <RulesConsentSection h={h} />
             <DepositSection h={h} canFees={canFees} />
             <Section title="Notes">
               <p className="whitespace-pre-wrap text-sm text-slate-700">{h.notes || <span className="text-slate-400">No notes.</span>}</p>

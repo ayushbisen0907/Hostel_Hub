@@ -22,7 +22,7 @@ import { errorMessage } from '@/api/client'
 import { useHostels, useOrg, useScopeStore } from '@/api/common'
 import { useCan, useStaffSession } from '@/api/session'
 import { useDeleteHostel } from '@/api/hostels'
-import { HOSTEL_TYPES, HostelChargeChips, HostelModal } from './_hostelForm'
+import { HOSTEL_TYPES, HostelChargeChips, HostelModal, HostelStayChips } from './_hostelForm'
 import {
   orgApi,
   useChangeOwnPassword,
@@ -397,6 +397,7 @@ function HostelsTab() {
                           </p>
                         </div>
                         <HostelChargeChips hostel={h} />
+                        <HostelStayChips hostel={h} />
                         <div className="mt-4 grid grid-cols-3 gap-2 rounded-lg bg-slate-50 p-3 text-center">
                           <div>
                             <p className="text-lg font-bold text-slate-900">{c.rooms}</p>

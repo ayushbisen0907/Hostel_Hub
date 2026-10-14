@@ -85,6 +85,14 @@ export interface Hostel {
   electricityRate: number
   /** 'room': one meter per room, amount shared among its hostelers by days stayed; 'bed': one meter per bed */
   electricityBasis: 'room' | 'bed'
+  /** days of notice a hosteler must give before moving out (0–90, default 30) */
+  noticePeriodDays: number
+  /** deposit refunded only after this many full rent cycles (0 = always refundable, max 12) */
+  depositMinStayMonths: number
+  /** hostel rules every hosteler signs in the portal ('' = no rules) */
+  rulesText: string
+  /** read-only: goes up whenever rulesText changes (hostelers sign again) */
+  rulesVersion: number
   createdAt: string
   counts?: { rooms: number; beds: number; occupied: number; vacant: number; activeHostelers: number }
 }

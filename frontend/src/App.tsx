@@ -15,6 +15,7 @@ import Login from '@/pages/auth/Login'
 import Signup from '@/pages/auth/Signup'
 import PortalLogin from '@/pages/auth/PortalLogin'
 import SetPassword from '@/pages/auth/SetPassword'
+import PortalRules from '@/pages/portal/Rules'
 
 import Dashboard from '@/pages/admin/Dashboard'
 import Rooms from '@/pages/admin/Rooms'
@@ -44,6 +45,7 @@ import PortalMess from '@/pages/portal/Mess'
 import PortalComplaints from '@/pages/portal/Complaints'
 import PortalLeave from '@/pages/portal/Leave'
 import PortalProfile from '@/pages/portal/Profile'
+import PortalMoveOut from '@/pages/portal/MoveOut'
 
 function RequireAdmin({ children }: { children: ReactNode }) {
   const staff = useStaffSession()
@@ -55,6 +57,7 @@ function RequireHosteler({ children }: { children: ReactNode }) {
   const h = useHostelerSession()
   if (!h) return <Navigate to="/portal/login" replace />
   if (h.mustChangePassword) return <Navigate to="/portal/set-password" replace />
+  if (h.consentRequired) return <Navigate to="/portal/rules" replace />
   return <>{children}</>
 }
 
@@ -63,6 +66,7 @@ function RequireAny({ children }: { children: ReactNode }) {
   const session = useSession((s) => s.session)
   if (!session) return <Navigate to="/login" replace />
   if (session.kind === 'hosteler' && session.mustChangePassword) return <Navigate to="/portal/set-password" replace />
+  if (session.kind === 'hosteler' && session.consentRequired) return <Navigate to="/portal/rules" replace />
   return <>{children}</>
 }
 
@@ -126,6 +130,7 @@ export default function App() {
         <Route path="/signup" element={<Signup />} />
         <Route path="/portal/login" element={<PortalLogin />} />
         <Route path="/portal/set-password" element={<SetPassword />} />
+        <Route path="/portal/rules" element={<PortalRules />} />
 
         <Route
           path="/app"
@@ -142,6 +147,8 @@ export default function App() {
           <Route path="hostelers/:id" element={<Gate module="hostelers"><HostelerDetail /></Gate>} />
           <Route path="check-in" element={<Gate module="checkin"><CheckIn /></Gate>} />
           <Route path="check-out" element={<Gate module="checkin"><CheckOut /></Gate>} />
+          {/* link used by move-out notifications */}
+          <Route path="move-out-requests" element={<Navigate to="/app/check-out?view=requests" replace />} />
           <Route path="gate-log" element={<Gate module="checkin"><GateLog /></Gate>} />
           <Route path="documents" element={<Gate module="documents"><Documents /></Gate>} />
           <Route path="fees" element={<Gate module="fees"><Fees /></Gate>} />
@@ -173,6 +180,7 @@ export default function App() {
           <Route path="complaints" element={<PortalComplaints />} />
           <Route path="leave" element={<PortalLeave />} />
           <Route path="profile" element={<PortalProfile />} />
+          <Route path="move-out" element={<PortalMoveOut />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />

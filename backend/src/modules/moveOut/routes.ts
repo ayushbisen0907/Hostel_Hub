@@ -55,15 +55,18 @@ portalMoveOutRouter.get(
   ah(async (req, res) => {
     const me = hostelerOf(req)
     const today = todayStr()
-    const [items, notice] = await Promise.all([
+    const [items, notice, hostel] = await Promise.all([
       MoveOutRequest.find({ orgId: me.orgId, hostelerId: me.hostelerId }).sort({ createdAt: -1, _id: -1 }),
       noticeOf(me.hostelId),
+      Hostel.findById(me.hostelId).select('depositMinStayMonths').lean(),
     ])
     const out = items.map((r) => r.toJSON())
     res.json({
       items: out,
       active: out.find((r) => r.status === 'pending' || r.status === 'approved') ?? null,
       noticePeriodDays: notice,
+      /** deposit is refunded only after this many months of stay (0 = always) */
+      depositMinStayMonths: hostel?.depositMinStayMonths ?? 0,
       earliestDate: addDays(today, notice),
       today,
     })

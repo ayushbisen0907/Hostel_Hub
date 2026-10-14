@@ -1,12 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, CheckCircle2, LogOut, Plus, Printer, Trash2, UserMinus } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, CalendarClock, CheckCircle2, IndianRupee, KeyRound, LogOut, Plus, Printer, ShieldAlert, Trash2, UserMinus } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
+import { ApiError, errorMessage } from '@/api/client'
 import { useOrg, useScope } from '@/api/common'
 import { useApiMutation } from '@/api/query'
 import { useCan } from '@/api/session'
-import { useInvoices } from '@/api/fees'
-import { HOSTELER_INVALIDATE, hostelersApi, useHosteler, useHostelers, type HostelerDetail, type Settlement } from '@/api/hostelers'
+import {
+  HOSTELER_INVALIDATE,
+  hostelersApi,
+  useCheckOutPreview,
+  useHosteler,
+  useHostelers,
+  type DuesPendingDetails,
+  type HostelerDetail,
+  type Settlement,
+} from '@/api/hostelers'
 import type { ID } from '@/api/types'
 import {
   Badge,
@@ -21,6 +30,7 @@ import {
   LoadingState,
   PageHeader,
   SearchInput,
+  Spinner,
   Switch,
   Table,
   TD,
@@ -33,6 +43,8 @@ import {
 } from '@/components/ui'
 import { billPeriod, cn, daysBetween, formatDate, formatMoney, today, uid } from '@/lib/utils'
 import { HostelerAvatar, Pager, bedText, useDebounced } from './_residents'
+import { RecordPaymentModal } from './_fees'
+import { MoveOutBadge, MoveOutRequests } from './_moveOut'
 
 interface Deduction {
   key: string
@@ -53,6 +65,9 @@ const CHECKLIST = [
 ] as const
 type CheckKey = (typeof CHECKLIST)[number]['key']
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
+
 /* ------------------------------------------------------------------ */
 /* Printable summary                                                   */
 /* ------------------------------------------------------------------ */
@@ -63,10 +78,10 @@ function SettlementSummary({ r, orgName, onDone }: { r: Result; orgName: string;
     <>
       <div className="no-print mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
-          <CheckCircle2 className="h-8 w-8 text-emerald-500" />
+          <CheckCircle2 className="h-8 w-8 shrink-0 text-emerald-500" />
           <div>
             <h1 className="text-xl font-bold text-slate-900">{s.name} has been checked out</h1>
-            <p className="text-sm text-slate-500">The bed is now vacant and the portal account is closed. Print the settlement for your records.</p>
+            <p className="text-sm text-slate-500">The bed is now vacant. Print the settlement for your records.</p>
           </div>
         </div>
         <div className="flex gap-2">
@@ -78,8 +93,15 @@ function SettlementSummary({ r, orgName, onDone }: { r: Result; orgName: string;
           </Button>
         </div>
       </div>
+      <div className="no-print mx-auto mb-6 flex max-w-2xl items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+        <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
+        <span>
+          Hosteler ID <span className="font-mono font-semibold">{s.loginId}</span> is now closed. {s.name} has been signed out of the app and can no longer log
+          in to the hosteler portal. Their records (bills, payments, documents) stay in HostelHub.
+        </span>
+      </div>
       <Card className="mx-auto max-w-2xl p-6 print:border-0 print:shadow-none sm:p-8">
-        <div className="flex items-start justify-between border-b border-slate-200 pb-4">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-4">
           <div>
             <p className="text-lg font-bold text-slate-900">{orgName}</p>
             <p className="text-sm text-slate-500">{r.hostel}</p>
@@ -89,7 +111,7 @@ function SettlementSummary({ r, orgName, onDone }: { r: Result; orgName: string;
             <p className="text-xs text-slate-500">{formatDate(s.checkOut)}</p>
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-4 border-b border-slate-200 py-4 text-sm">
+        <div className="grid grid-cols-1 gap-4 border-b border-slate-200 py-4 text-sm sm:grid-cols-2">
           <div>
             <p className="text-xs text-slate-500">Resident</p>
             <p className="font-semibold text-slate-900">{s.name}</p>
@@ -101,7 +123,8 @@ function SettlementSummary({ r, orgName, onDone }: { r: Result; orgName: string;
             <p className="text-xs text-slate-500">Room</p>
             <p className="font-semibold text-slate-900">{s.bed ?? '—'}</p>
             <p className="text-slate-600">
-              {formatDate(s.checkIn)} – {formatDate(s.checkOut)} ({s.days} days)
+              {formatDate(s.checkIn)} – {formatDate(s.checkOut)} ({s.days} days
+              {s.monthsStayed !== undefined ? `, ${plural(s.monthsStayed, 'month')}` : ''})
             </p>
           </div>
         </div>
@@ -111,34 +134,39 @@ function SettlementSummary({ r, orgName, onDone }: { r: Result; orgName: string;
               <td className="py-1.5 text-slate-600">Security deposit held</td>
               <td className="py-1.5 text-right font-medium">{formatMoney(s.held)}</td>
             </tr>
-            <tr>
-              <td className="py-1.5 text-slate-600">
-                Outstanding dues{s.adjusted > 0 && ` (${formatMoney(s.adjusted)} adjusted from deposit)`}
-              </td>
-              <td className="py-1.5 text-right font-medium text-red-600">− {formatMoney(s.dues)}</td>
-            </tr>
+            {s.depositForfeited ? (
+              <tr>
+                <td className="py-1.5 text-slate-600">
+                  Deposit forfeited
+                  {s.minStayMonths ? ` (stayed ${s.monthsStayed ?? 0} of the ${plural(s.minStayMonths, 'month')} required)` : ''}
+                </td>
+                <td className="py-1.5 text-right font-medium text-red-600">− {formatMoney(s.held)}</td>
+              </tr>
+            ) : (
+              s.adjusted > 0 && (
+                <tr>
+                  <td className="py-1.5 text-slate-600">Dues paid from the deposit</td>
+                  <td className="py-1.5 text-right font-medium text-red-600">− {formatMoney(s.adjusted)}</td>
+                </tr>
+              )
+            )}
             {s.deductions.map((d, i) => (
               <tr key={i}>
-                <td className="py-1.5 text-slate-600">{d.label}</td>
-                <td className="py-1.5 text-right font-medium text-red-600">− {formatMoney(d.amount)}</td>
+                <td className="py-1.5 text-slate-600">
+                  {d.label}
+                  {s.depositForfeited && <span className="text-xs text-slate-400"> (covered by the forfeited deposit)</span>}
+                </td>
+                <td className="py-1.5 text-right font-medium text-red-600">{s.depositForfeited ? '—' : `− ${formatMoney(d.amount)}`}</td>
               </tr>
             ))}
-            {s.deductions.length > 1 && (
-              <tr>
-                <td className="py-1.5 text-xs text-slate-500">Total deductions</td>
-                <td className="py-1.5 text-right text-xs text-slate-500">{formatMoney(s.totalDeductions)}</td>
-              </tr>
-            )}
             <tr className="border-t-2 border-slate-900">
-              <td className="pt-3 font-semibold text-slate-900">{s.toCollect > 0 ? 'Amount to collect from resident' : 'Refund to resident'}</td>
-              <td className={cn('pt-3 text-right text-lg font-bold', s.toCollect > 0 ? 'text-red-600' : 'text-emerald-700')}>
-                {formatMoney(s.toCollect > 0 ? s.toCollect : s.refund)}
-              </td>
+              <td className="pt-3 font-semibold text-slate-900">Refund to resident</td>
+              <td className="pt-3 text-right text-lg font-bold text-emerald-700">{formatMoney(s.refund)}</td>
             </tr>
           </tbody>
         </table>
         {s.notes && <p className="mt-4 whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-sm text-slate-600">{s.notes}</p>}
-        <div className="mt-4 text-xs text-slate-500">Keys, ID card returned and room inspected.</div>
+        <div className="mt-4 text-xs text-slate-500">All dues cleared. Keys, ID card returned and room inspected. Portal login closed.</div>
         <div className="mt-14 grid grid-cols-2 gap-10 text-center text-xs text-slate-500">
           <div className="border-t border-slate-300 pt-2">Resident signature</div>
           <div className="border-t border-slate-300 pt-2">Warden / manager</div>
@@ -209,7 +237,7 @@ function RecentCheckouts() {
 /* Selection                                                           */
 /* ------------------------------------------------------------------ */
 
-function ChooseResident({ onSelect, notice }: { onSelect: (id: ID) => void; notice?: string }) {
+function ChooseResident({ onSelect, notice, showRequests }: { onSelect: (id: ID) => void; notice?: string; showRequests?: boolean }) {
   const scope = useScope()
   const [q, setQ] = useState('')
   const [page, setPage] = useState(1)
@@ -217,10 +245,14 @@ function ChooseResident({ onSelect, notice }: { onSelect: (id: ID) => void; noti
   useEffect(() => setPage(1), [term, scope])
   const list = useHostelers({ status: 'active', hostelId: scope, q: term || undefined, page, limit: 30 })
   const items = list.data?.items ?? []
+  useEffect(() => {
+    if (showRequests) document.getElementById('move-out-requests')?.scrollIntoView({ block: 'start' })
+  }, [showRequests])
   return (
     <>
-      <PageHeader title="Check-out" subtitle="Settle dues and deposit, then free up the bed." />
+      <PageHeader title="Check-out" subtitle="Clear all dues, settle the deposit, then free up the bed." />
       {notice && <p className="mb-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800">{notice}</p>}
+      <MoveOutRequests onStart={onSelect} defaultOpen={showRequests} />
       <Card>
         <div className="border-b border-slate-100 p-4">
           <SearchInput value={q} onChange={setQ} placeholder="Search active residents by name, phone or Hosteler ID…" className="sm:max-w-md" />
@@ -239,6 +271,7 @@ function ChooseResident({ onSelect, notice }: { onSelect: (id: ID) => void; noti
                     <p className="truncate font-medium text-slate-900">{x.name}</p>
                     <p className="truncate text-xs text-slate-500">
                       {bedText(x)} · since {formatDate(x.checkInDate)}
+                      {x.expectedCheckOut ? ` · leaving ${formatDate(x.expectedCheckOut)}` : ''}
                     </p>
                   </div>
                   {x.dues > 0 ? <Badge tone="red">Dues {formatMoney(x.dues)}</Badge> : <Badge tone="green">No dues</Badge>}
@@ -271,11 +304,13 @@ export default function CheckOut() {
   const { data: org } = useOrg()
   const [result, setResult] = useState<Result | null>(null)
   const selectedId = params.get('h') ?? ''
+  const showRequests = params.get('view') === 'requests'
   const q = useHosteler(selectedId || null)
 
   const select = (id: ID | null) => {
     setResult(null)
     setParams(id ? { h: id } : {}, { replace: false })
+    window.scrollTo({ top: 0 })
   }
 
   if (result)
@@ -290,7 +325,7 @@ export default function CheckOut() {
       />
     )
 
-  if (!selectedId) return <ChooseResident onSelect={select} />
+  if (!selectedId) return <ChooseResident onSelect={select} showRequests={showRequests} />
   if (q.isLoading) return <LoadingState />
   if (q.error || !q.data)
     return <ChooseResident onSelect={select} notice="That resident couldn't be found. Choose someone from the list." />
@@ -304,23 +339,38 @@ export default function CheckOut() {
   return <SettlementForm key={q.data.id} h={q.data} onBack={() => select(null)} onDone={(r) => setResult(r)} />
 }
 
+/* ------------------------------------------------------------------ */
+/* Settlement                                                          */
+/* ------------------------------------------------------------------ */
+
 function SettlementForm({ h, onBack, onDone }: { h: HostelerDetail; onBack: () => void; onDone: (r: Result) => void }) {
   const can = useCan()
   const qc = useQueryClient()
   const canFees = can('fees')
-  const invoicesQ = useInvoices({ hostelerId: h.id, limit: 500 }, { enabled: canFees })
 
   const [date, setDate] = useState(today())
-  const [held, setHeld] = useState(String(h.depositCollected || h.securityDeposit))
+  /** '' = the deposit the server works out (payments / agreed amount) */
+  const [heldOverride, setHeldOverride] = useState('')
   const [deductions, setDeductions] = useState<Deduction[]>([])
   const [adjust, setAdjust] = useState(true)
   const [notes, setNotes] = useState('')
   const [checks, setChecks] = useState<Record<CheckKey, boolean>>({ keys: false, idcard: false, inspected: false })
+  const [pay, setPay] = useState<{ invoiceId: ID | null } | null>(null)
+  const [duesError, setDuesError] = useState<{ message: string; details: DuesPendingDetails | null } | null>(null)
+
+  const dDate = useDebounced(date, 300)
+  const dHeld = useDebounced(heldOverride, 400)
+  const heldParam = dHeld.trim() === '' ? undefined : Math.max(0, Math.round(Number(dHeld) || 0))
+  const dateOk = DATE_RE.test(dDate) && dDate >= h.checkInDate
+  const previewQ = useCheckOutPreview(h.id, { date: dDate, adjustDuesFromDeposit: adjust, depositHeld: heldParam }, dateOk)
+  const p = previewQ.data
+  const settling = date !== dDate || heldOverride !== dHeld || previewQ.isFetching
 
   const checkOut = useApiMutation(hostelersApi.checkOut, {
     // the profile query is refreshed after the summary is shown (else this form would unmount first)
-    invalidate: [...HOSTELER_INVALIDATE.filter((k) => k[0] !== 'hosteler'), ['dues'], ['deposits'], ['attendance']],
+    invalidate: [...HOSTELER_INVALIDATE.filter((k) => k[0] !== 'hosteler'), ['dues'], ['deposits'], ['attendance'], ['move-out-requests'], ['notifications']],
     success: (r) => `${r.settlement.name} checked out`,
+    toastErrors: false,
     onSuccess: (r) => {
       onDone({ s: r.settlement, phone: h.phone, hostel: h.hostelName ?? '' })
       window.scrollTo({ top: 0 })
@@ -328,58 +378,102 @@ function SettlementForm({ h, onBack, onDone }: { h: HostelerDetail; onBack: () =
     },
   })
 
-  const unpaid = useMemo(
-    () => (invoicesQ.data?.items ?? []).filter((i) => i.status !== 'cancelled' && i.balance > 0).sort((a, b) => a.dueDate.localeCompare(b.dueDate)),
-    [invoicesQ.data],
-  )
-  const dues = h.dues
-  const heldNum = Math.max(0, Math.round(Number(held) || 0))
+  // ---- settlement (the preview has no deductions; they are added here the same way the API does) ----
   const deductionLines = deductions
     .map((d) => ({ label: d.label.trim() || 'Deduction', amount: Math.max(0, Math.round(Number(d.amount) || 0)) }))
     .filter((d) => d.amount > 0)
   const totalDeductions = deductionLines.reduce((a, d) => a + d.amount, 0)
-  const balance = heldNum - dues - totalDeductions
-  const refund = Math.max(balance, 0)
-  const toCollect = Math.max(-balance, 0)
-  const adjustable = Math.min(dues, heldNum)
-  const days = Math.max(daysBetween(h.checkInDate, date || today()), 0)
+  const forfeited = !!p?.depositForfeited
+  const afterDeductions = p ? (forfeited ? 0 : p.held - p.adjusted - totalDeductions) : 0
+  const deductionShortfall = Math.max(-afterDeductions, 0)
+  const toCollect = p ? p.remainingDues + deductionShortfall : 0
+  const refund = Math.max(afterDeductions, 0)
+  const blockers = [
+    ...(p?.blockers ?? []),
+    ...(deductionShortfall > 0
+      ? [`Deductions are ${formatMoney(deductionShortfall)} more than the deposit left. Raise a bill for the extra charges and collect it, or reduce the deductions.`]
+      : []),
+  ]
+  const canCheckOut = !!p && toCollect <= 0
   const allChecked = CHECKLIST.every((c) => checks[c.key])
   const bed = bedText(h)
+  const days = p?.days ?? Math.max(daysBetween(h.checkInDate, date || today()), 0)
+  const unpaid = p?.unpaidBills ?? []
+  const firstOpenBill = unpaid.find((b) => b.remaining > 0) ?? null
+  const request = p?.moveOutRequest ?? null
 
   const submit = async () => {
-    if (!date) return toast.error('Choose the checkout date')
+    if (!date || !DATE_RE.test(date)) return toast.error('Choose the checkout date')
     if (date < h.checkInDate) return toast.error('Checkout date cannot be before check-in')
+    if (!canCheckOut) return toast.error('Clear the dues first')
     if (!allChecked) return toast.error('Complete the checkout checklist first')
     const ok = await confirm({
       title: `Check out ${h.name}?`,
-      message: `${bed} will be freed and the portal account closed. ${toCollect > 0 ? `Collect ${formatMoney(toCollect)} from the resident.` : `Refund ${formatMoney(refund)} to the resident.`}`,
+      message: `${bed} will be freed, and Hosteler ID ${h.loginId} will be closed (no more portal login). ${
+        forfeited ? 'The deposit is forfeited — no refund.' : `Refund ${formatMoney(refund)} to the resident.`
+      }`,
       confirmText: 'Check out',
       danger: true,
     })
     if (!ok) return
-    checkOut.mutate({
-      id: h.id,
-      date,
-      deductions: deductionLines,
-      adjustDuesFromDeposit: adjust,
-      depositHeld: heldNum,
-      note: notes.trim(),
-    })
+    setDuesError(null)
+    checkOut.mutate(
+      {
+        id: h.id,
+        date,
+        deductions: deductionLines,
+        adjustDuesFromDeposit: adjust,
+        ...(heldOverride.trim() !== '' ? { depositHeld: Math.max(0, Math.round(Number(heldOverride) || 0)) } : {}),
+        note: notes.trim(),
+      },
+      {
+        onError: (e) => {
+          if (e instanceof ApiError && e.code === 'DUES_PENDING') {
+            setDuesError({ message: e.message, details: (e.details as DuesPendingDetails | undefined) ?? null })
+            void previewQ.refetch()
+            toast.error('Dues must be cleared before check-out')
+            window.scrollTo({ top: 0, behavior: 'smooth' })
+          } else toast.error(errorMessage(e))
+        },
+      },
+    )
   }
 
   return (
     <>
       <PageHeader
         title="Check-out"
-        subtitle="Settle dues and deposit, then free up the bed."
+        subtitle="Clear all dues, settle the deposit, then free up the bed."
         actions={
           <Button variant="outline" icon={<ArrowLeft className="h-4 w-4" />} onClick={onBack} disabled={checkOut.isPending}>
             Choose another
           </Button>
         }
       />
+
+      {duesError && (
+        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          <p className="flex items-start gap-2 font-semibold">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" /> Check-out was blocked: dues are pending
+          </p>
+          <p className="mt-1">{duesError.message}</p>
+          {duesError.details && duesError.details.unpaidBills.length > 0 && (
+            <ul className="mt-2 list-inside list-disc">
+              {duesError.details.unpaidBills.map((b) => (
+                <li key={b.id}>
+                  {b.number} ({billPeriod(b)}): {formatMoney(b.remaining)} due
+                </li>
+              ))}
+            </ul>
+          )}
+          <button type="button" className="mt-2 text-xs font-medium underline" onClick={() => setDuesError(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="space-y-6 lg:col-span-2">
+        <div className="min-w-0 space-y-6 lg:col-span-2">
           <Card className="p-5">
             <div className="flex items-center gap-4">
               <HostelerAvatar h={h} size="lg" />
@@ -402,8 +496,10 @@ function SettlementForm({ h, onBack, onDone }: { h: HostelerDetail; onBack: () =
                 <p className="font-medium text-slate-900">{formatDate(h.checkInDate)}</p>
               </div>
               <div>
-                <p className="text-xs text-slate-500">Days stayed</p>
-                <p className="font-medium text-slate-900">{days}</p>
+                <p className="text-xs text-slate-500">Stayed</p>
+                <p className="font-medium text-slate-900">
+                  {days} days{p ? ` · ${plural(p.monthsStayed, 'month')}` : ''}
+                </p>
               </div>
               <div>
                 <p className="text-xs text-slate-500">Monthly rent</p>
@@ -412,59 +508,167 @@ function SettlementForm({ h, onBack, onDone }: { h: HostelerDetail; onBack: () =
             </div>
           </Card>
 
-          <Card>
-            <CardHeader
-              title="Outstanding dues"
-              subtitle={dues > 0 ? (canFees && invoicesQ.data ? `${unpaid.length} unpaid invoice(s)` : 'Unpaid invoices') : 'All invoices are paid'}
-              action={<span className={cn('text-lg font-bold', dues > 0 ? 'text-red-600' : 'text-emerald-600')}>{formatMoney(dues)}</span>}
-            />
-            {dues > 0 && (
-              <>
-                {canFees &&
-                  (invoicesQ.isLoading ? (
-                    <LoadingState className="py-8" />
-                  ) : invoicesQ.error ? (
-                    <ErrorState error={invoicesQ.error} onRetry={() => void invoicesQ.refetch()} className="py-8" />
-                  ) : (
-                    unpaid.length > 0 && (
-                      <Table>
-                        <THead>
-                          <tr>
-                            <TH>Invoice</TH>
-                            <TH>Month</TH>
-                            <TH>Due</TH>
-                            <TH className="text-right">Balance</TH>
-                          </tr>
-                        </THead>
-                        <tbody>
-                          {unpaid.map((inv) => (
-                            <TR key={inv.id}>
-                              <TD className="font-medium text-slate-900">{inv.number}</TD>
-                              <TD>{billPeriod(inv)}</TD>
-                              <TD className="whitespace-nowrap">{formatDate(inv.dueDate)}</TD>
-                              <TD className="text-right font-medium text-red-600">{formatMoney(inv.balance)}</TD>
-                            </TR>
-                          ))}
-                        </tbody>
-                      </Table>
+          {request && (
+            <div className="flex flex-col gap-3 rounded-xl border border-brand-200 bg-brand-50 p-4 sm:flex-row sm:items-center">
+              <CalendarClock className="hidden h-5 w-5 shrink-0 text-brand-600 sm:block" />
+              <div className="min-w-0 flex-1 text-sm text-brand-900">
+                <p className="flex flex-wrap items-center gap-2 font-semibold">
+                  Move-out requested for {formatDate(request.moveOutDate, 'EEE, dd MMM yyyy')} <MoveOutBadge status={request.status} />
+                </p>
+                <p className="text-brand-800">
+                  {request.status === 'pending'
+                    ? 'The request is still waiting for approval. Checking out now completes it.'
+                    : 'Approved. Checking out completes the request.'}
+                </p>
+              </div>
+              {request.moveOutDate !== date && request.moveOutDate >= h.checkInDate && (
+                <Button size="sm" variant="outline" onClick={() => setDate(request.moveOutDate)}>
+                  Use this date
+                </Button>
+              )}
+            </div>
+          )}
+
+          {!dateOk ? (
+            <Card className="p-5 text-sm text-slate-500">Choose a valid checkout date (on or after {formatDate(h.checkInDate)}) to work out the settlement.</Card>
+          ) : previewQ.isLoading ? (
+            <Card>
+              <LoadingState className="py-10" label="Working out the settlement…" />
+            </Card>
+          ) : previewQ.error || !p ? (
+            <Card>
+              <ErrorState error={previewQ.error} onRetry={() => void previewQ.refetch()} className="py-10" />
+            </Card>
+          ) : (
+            <>
+              {/* Deposit */}
+              <Card>
+                <CardHeader
+                  title="Security deposit"
+                  subtitle={
+                    p.minStayMonths > 0
+                      ? `Refundable after ${plural(p.minStayMonths, 'month')} of stay · stayed ${plural(p.monthsStayed, 'month')}`
+                      : 'This hostel always refunds the deposit'
+                  }
+                  action={
+                    forfeited ? (
+                      <Badge tone="red">Forfeited</Badge>
+                    ) : p.held > 0 ? (
+                      <Badge tone="green">Refundable</Badge>
+                    ) : (
+                      <Badge>None held</Badge>
                     )
-                  ))}
-                <div className="border-t border-slate-100 px-5 py-3">
-                  <Switch
-                    checked={adjust}
-                    onChange={setAdjust}
-                    label={`Adjust dues against deposit (records ${formatMoney(adjustable)} as cash payments)`}
-                  />
-                  {!adjust && <p className="mt-1 text-xs text-slate-500">Dues stay open in Fees and are still subtracted in this settlement.</p>}
+                  }
+                />
+                <div className="space-y-3 p-5 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Deposit held</span>
+                    <span className="font-semibold text-slate-900">{formatMoney(p.held)}</span>
+                  </div>
+                  {p.minStayMonths > 0 && (
+                    <div>
+                      <div className="mb-1 flex justify-between text-xs text-slate-500">
+                        <span>Months stayed</span>
+                        <span>
+                          {p.monthsStayed} / {p.minStayMonths}
+                        </span>
+                      </div>
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+                        <div
+                          className={cn('h-full rounded-full', p.monthsStayed >= p.minStayMonths ? 'bg-emerald-500' : 'bg-red-400')}
+                          style={{ width: `${Math.min((p.monthsStayed / p.minStayMonths) * 100, 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                  {forfeited && p.forfeitReason && (
+                    <p className="flex items-start gap-2 rounded-lg bg-red-50 px-3 py-2 text-red-800">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <span>{p.forfeitReason}.</span>
+                    </p>
+                  )}
                 </div>
-              </>
-            )}
-          </Card>
+              </Card>
+
+              {/* Dues */}
+              <Card>
+                <CardHeader
+                  title="Dues"
+                  subtitle={
+                    p.dues > 0
+                      ? `${plural(unpaid.length, 'unpaid bill')} · every bill must be paid before check-out`
+                      : 'All bills are paid'
+                  }
+                  action={
+                    <span className={cn('text-lg font-bold', p.remainingDues > 0 ? 'text-red-600' : 'text-emerald-600')}>
+                      {p.remainingDues > 0 ? formatMoney(p.remainingDues) : 'Clear'}
+                    </span>
+                  }
+                />
+                {unpaid.length > 0 && (
+                  <Table className={cn(settling && 'opacity-60')}>
+                    <THead>
+                      <tr>
+                        <TH>Bill</TH>
+                        <TH>Due</TH>
+                        <TH className="text-right">Balance</TH>
+                        <TH className="text-right">From deposit</TH>
+                        <TH className="text-right">To collect</TH>
+                        {canFees && <TH />}
+                      </tr>
+                    </THead>
+                    <tbody>
+                      {unpaid.map((b) => (
+                        <TR key={b.id}>
+                          <TD>
+                            <p className="font-medium text-slate-900">{b.number}</p>
+                            <p className="text-xs text-slate-500">{billPeriod(b)}</p>
+                          </TD>
+                          <TD className={cn('whitespace-nowrap', b.dueDate < today() && 'text-red-600')}>{formatDate(b.dueDate)}</TD>
+                          <TD className="text-right">{formatMoney(b.balance)}</TD>
+                          <TD className="text-right text-emerald-700">{b.adjustFromDeposit > 0 ? formatMoney(b.adjustFromDeposit) : '—'}</TD>
+                          <TD className={cn('text-right font-semibold', b.remaining > 0 ? 'text-red-600' : 'text-emerald-600')}>
+                            {b.remaining > 0 ? formatMoney(b.remaining) : 'Covered'}
+                          </TD>
+                          {canFees && (
+                            <TD className="text-right">
+                              {b.remaining > 0 && (
+                                <Button size="sm" variant="outline" icon={<IndianRupee className="h-3.5 w-3.5" />} onClick={() => setPay({ invoiceId: b.id })}>
+                                  Record payment
+                                </Button>
+                              )}
+                            </TD>
+                          )}
+                        </TR>
+                      ))}
+                    </tbody>
+                  </Table>
+                )}
+                {p.dues > 0 && (
+                  <div className="border-t border-slate-100 px-5 py-3">
+                    <Switch
+                      checked={adjust && !forfeited}
+                      disabled={forfeited}
+                      onChange={setAdjust}
+                      label={forfeited ? 'Adjust dues from the deposit (not allowed: deposit forfeited)' : 'Adjust dues from the deposit (oldest bill first)'}
+                    />
+                    <p className="mt-1 text-xs text-slate-500">
+                      {forfeited
+                        ? 'A forfeited deposit is kept by the hostel and cannot pay the dues. Collect the full amount.'
+                        : adjust
+                          ? `${formatMoney(p.adjusted)} will be recorded as paid from the deposit at check-out.`
+                          : 'Dues must be paid in full; the whole deposit is refunded.'}
+                    </p>
+                  </div>
+                )}
+              </Card>
+            </>
+          )}
 
           <Card>
             <CardHeader
               title="Deductions"
-              subtitle="Damages, cleaning, lost keys…"
+              subtitle={forfeited ? 'Covered by the forfeited deposit' : 'Damages, cleaning, lost keys… taken from the deposit'}
               action={
                 <Button size="sm" variant="outline" icon={<Plus className="h-4 w-4" />} onClick={() => setDeductions((d) => [...d, { key: uid(), label: '', amount: '' }])}>
                   Add line
@@ -484,8 +688,9 @@ function SettlementForm({ h, onBack, onDone }: { h: HostelerDetail; onBack: () =
                   <Input
                     type="number"
                     min={0}
+                    inputMode="numeric"
                     placeholder="Amount"
-                    className="w-32 shrink-0"
+                    className="w-28 shrink-0 sm:w-32"
                     value={d.amount}
                     onChange={(e) => setDeductions((all) => all.map((x) => (x.key === d.key ? { ...x, amount: e.target.value } : x)))}
                   />
@@ -514,31 +719,77 @@ function SettlementForm({ h, onBack, onDone }: { h: HostelerDetail; onBack: () =
 
         <div className="space-y-6">
           <Card className="p-5 lg:sticky lg:top-20">
-            <h3 className="mb-4 font-semibold text-slate-900">Settlement</h3>
-            <Field label="Security deposit held" hint={`Agreed ${formatMoney(h.securityDeposit)} · collected ${formatMoney(h.depositCollected)}`}>
-              <Input type="number" min={0} value={held} onChange={(e) => setHeld(e.target.value)} />
-            </Field>
-            <dl className="mt-4 space-y-2 text-sm">
-              <div className="flex justify-between">
-                <dt className="text-slate-600">Deposit</dt>
-                <dd className="font-medium">{formatMoney(heldNum)}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-slate-600">Dues</dt>
-                <dd className="font-medium text-red-600">− {formatMoney(dues)}</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-slate-600">Deductions</dt>
-                <dd className="font-medium text-red-600">− {formatMoney(totalDeductions)}</dd>
-              </div>
-              <div className={cn('flex justify-between rounded-lg px-3 py-3', toCollect > 0 ? 'bg-red-50' : 'bg-emerald-50')}>
-                <dt className={cn('font-semibold', toCollect > 0 ? 'text-red-800' : 'text-emerald-800')}>{toCollect > 0 ? 'Amount to collect' : 'Refund'}</dt>
-                <dd className={cn('text-lg font-bold', toCollect > 0 ? 'text-red-700' : 'text-emerald-700')}>{formatMoney(toCollect > 0 ? toCollect : refund)}</dd>
-              </div>
-            </dl>
-            <Field label="Checkout date" className="mt-4">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="font-semibold text-slate-900">Settlement</h3>
+              {settling && dateOk && <Spinner className="h-4 w-4" />}
+            </div>
+            <Field label="Checkout date">
               <Input type="date" value={date} min={h.checkInDate} onChange={(e) => setDate(e.target.value)} />
             </Field>
+            <Field
+              label="Security deposit held"
+              className="mt-4"
+              hint={`Agreed ${formatMoney(h.securityDeposit)} · collected ${formatMoney(h.depositCollected)}. Leave blank to use ${p ? formatMoney(p.held) : 'the recorded amount'}.`}
+            >
+              <Input type="number" min={0} inputMode="numeric" value={heldOverride} placeholder={p ? String(p.held) : ''} onChange={(e) => setHeldOverride(e.target.value)} />
+            </Field>
+            {p && (
+              <dl className={cn('mt-4 space-y-2 text-sm', settling && 'opacity-60')}>
+                <div className="flex justify-between">
+                  <dt className="text-slate-600">Deposit</dt>
+                  <dd className="font-medium">{formatMoney(p.held)}</dd>
+                </div>
+                {forfeited ? (
+                  <div className="flex justify-between">
+                    <dt className="text-slate-600">Forfeited</dt>
+                    <dd className="font-medium text-red-600">− {formatMoney(p.held)}</dd>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex justify-between">
+                      <dt className="text-slate-600">Dues paid from deposit</dt>
+                      <dd className="font-medium text-red-600">− {formatMoney(p.adjusted)}</dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt className="text-slate-600">Deductions</dt>
+                      <dd className="font-medium text-red-600">− {formatMoney(totalDeductions)}</dd>
+                    </div>
+                  </>
+                )}
+                <div className={cn('flex justify-between rounded-lg px-3 py-3', toCollect > 0 ? 'bg-red-50' : 'bg-emerald-50')}>
+                  <dt className={cn('font-semibold', toCollect > 0 ? 'text-red-800' : 'text-emerald-800')}>{toCollect > 0 ? 'Still to collect' : 'Refund'}</dt>
+                  <dd className={cn('text-lg font-bold', toCollect > 0 ? 'text-red-700' : 'text-emerald-700')}>{formatMoney(toCollect > 0 ? toCollect : refund)}</dd>
+                </div>
+              </dl>
+            )}
+
+            {p && blockers.length > 0 && (
+              <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                <p className="mb-1 flex items-center gap-1.5 font-semibold">
+                  <ShieldAlert className="h-4 w-4" /> Can't check out yet
+                </p>
+                <ul className="list-inside list-disc space-y-1 text-xs">
+                  {blockers.map((b, i) => (
+                    <li key={i}>{b}</li>
+                  ))}
+                </ul>
+                {p.remainingDues > 0 &&
+                  (canFees ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-3 w-full bg-white"
+                      icon={<IndianRupee className="h-3.5 w-3.5" />}
+                      onClick={() => setPay({ invoiceId: firstOpenBill?.id ?? null })}
+                    >
+                      Record payment
+                    </Button>
+                  ) : (
+                    <p className="mt-2 text-xs">Ask the owner or accountant to record the payment in Fees.</p>
+                  ))}
+              </div>
+            )}
+
             <Field label="Notes" className="mt-4">
               <Textarea value={notes} maxLength={1000} onChange={(e) => setNotes(e.target.value)} placeholder="Reason for leaving, forwarding address…" />
             </Field>
@@ -560,17 +811,38 @@ function SettlementForm({ h, onBack, onDone }: { h: HostelerDetail; onBack: () =
               variant="danger"
               className="mt-5 w-full"
               icon={<LogOut className="h-4 w-4" />}
-              disabled={!allChecked}
+              disabled={!allChecked || !canCheckOut || settling}
               loading={checkOut.isPending}
               onClick={() => void submit()}
             >
-              Complete check-out
+              Check out
             </Button>
-            {!allChecked && <p className="mt-2 text-center text-xs text-slate-500">Tick every checklist item to continue.</p>}
+            <p className="mt-2 text-center text-xs text-slate-500">
+              {!p
+                ? 'Waiting for the settlement…'
+                : !canCheckOut
+                  ? 'Clear the dues above to continue.'
+                  : !allChecked
+                    ? 'Tick every checklist item to continue.'
+                    : `The bed is freed and ${h.loginId}'s portal login is closed.`}
+            </p>
           </Card>
         </div>
       </div>
       <RecentCheckouts />
+
+      {canFees && (
+        <RecordPaymentModal
+          open={!!pay}
+          onClose={() => {
+            setPay(null)
+            setDuesError(null)
+            void previewQ.refetch()
+          }}
+          hostelerId={h.id}
+          invoiceId={pay?.invoiceId ?? null}
+        />
+      )}
     </>
   )
 }

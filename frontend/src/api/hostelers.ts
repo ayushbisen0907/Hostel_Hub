@@ -31,7 +31,19 @@ export interface HostelerRow extends Hosteler {
   dues: number
 }
 
+/** Hostel rules signature state (GET /hostelers/:id). */
+export interface ConsentStatus {
+  /** the current rules version is not signed yet */
+  required: boolean
+  /** current version of the hostel's rules (0 = the hostel has no rules) */
+  rulesVersion: number
+  /** latest version this hosteler signed (0 = never) */
+  signedVersion: number
+  signedAt: string | null
+}
+
 export interface HostelerDetail extends HostelerRow {
+  consentStatus?: ConsentStatus
   depositCollected: number
   lastGateLog: GateLogEntry | null
   counts: { documents: number; invoices: number; payments: number; complaints: number; leaves: number; visitors: number }
@@ -115,6 +127,72 @@ export interface Settlement {
   refund: number
   toCollect: number
   notes: string
+  /** full rent cycles completed by the check-out date */
+  monthsStayed?: number
+  /** the hostel's minimum stay for a deposit refund (0 = always refundable) */
+  minStayMonths?: number
+  depositForfeited?: boolean
+  forfeitReason?: string | null
+  remainingDues?: number
+}
+
+/** An unpaid bill in the check-out preview, with what the deposit covers. */
+export interface PreviewBill {
+  id: ID
+  number: string
+  month: string
+  periodStart: string | null
+  periodEnd: string | null
+  dueDate: string
+  total: number
+  paidAmount: number
+  balance: number
+  /** part of the balance paid from a refundable deposit at check-out */
+  adjustFromDeposit: number
+  /** still to be collected */
+  remaining: number
+}
+
+/** GET /hostelers/:id/check-out-preview — the settlement without deductions; nothing is saved. */
+export interface CheckOutPreview {
+  hostelerId: ID
+  name: string
+  loginId: string
+  bed: string | null
+  checkIn: string
+  checkOut: string
+  days: number
+  monthsStayed: number
+  minStayMonths: number
+  depositForfeited: boolean
+  forfeitReason: string | null
+  held: number
+  dues: number
+  unpaidBills: PreviewBill[]
+  adjusted: number
+  remainingDues: number
+  deductions: { label: string; amount: number }[]
+  totalDeductions: number
+  refund: number
+  toCollect: number
+  canCheckOut: boolean
+  blockers: string[]
+  moveOutRequest: { id: ID; moveOutDate: string; status: 'pending' | 'approved' } | null
+}
+
+export interface CheckOutPreviewParams {
+  date: string
+  adjustDuesFromDeposit: boolean
+  depositHeld?: number
+}
+
+/** details of a 409 DUES_PENDING from POST /hostelers/:id/check-out */
+export interface DuesPendingDetails {
+  toCollect: number
+  remainingDues: number
+  depositForfeited: boolean
+  unpaidBills: PreviewBill[]
+  blockers: string[]
 }
 
 export interface HostelerListParams {
@@ -140,6 +218,12 @@ export const hostelersApi = {
   confirmCheckIn: ({ id, date }: { id: ID; date?: string }) => post<HostelerRow>(`/hostelers/${id}/confirm-check-in`, date ? { date } : {}),
   transfer: ({ id, bedId, updateRent }: { id: ID; bedId: ID; updateRent: boolean }) =>
     post<HostelerRow>(`/hostelers/${id}/transfer`, { bedId, updateRent }),
+  checkOutPreview: (id: ID, p: CheckOutPreviewParams) =>
+    get<CheckOutPreview>(`/hostelers/${id}/check-out-preview`, {
+      date: p.date,
+      adjustDuesFromDeposit: String(p.adjustDuesFromDeposit),
+      depositHeld: p.depositHeld,
+    }),
   checkOut: ({ id, ...body }: CheckOutInput & { id: ID }) =>
     post<{ settlement: Settlement; hosteler: HostelerRow }>(`/hostelers/${id}/check-out`, body),
   /** Put the outstanding security deposit on the latest bill now ('open') or on the next monthly bill ('next'). */
@@ -199,6 +283,17 @@ export function useHostelers(params: HostelerListParams, enabled = true) {
 export function useHosteler(id: ID | null | undefined) {
   const staff = useStaffSession()
   return useQuery({ queryKey: ['hosteler', id], queryFn: () => hostelersApi.get(id!), enabled: !!staff && !!id })
+}
+
+/** Check-out settlement preview. Keyed under ['hosteler', id] so payments (FEES_INVALIDATE) refresh it. */
+export function useCheckOutPreview(id: ID | null | undefined, params: CheckOutPreviewParams, enabled = true) {
+  const staff = useStaffSession()
+  return useQuery({
+    queryKey: ['hosteler', id, 'check-out-preview', params],
+    queryFn: () => hostelersApi.checkOutPreview(id!, params),
+    enabled: !!staff && !!id && !!params.date && enabled,
+    placeholderData: keepPreviousData,
+  })
 }
 
 /* ------------------------------------------------------------------ */

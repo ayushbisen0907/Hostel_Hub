@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bell, CheckCheck, CircleAlert, CircleCheck, IndianRupee, ReceiptText } from 'lucide-react'
+import { Bell, CalendarClock, CheckCheck, CircleAlert, CircleCheck, DoorClosed, DoorOpen, FileSignature, IndianRupee, ReceiptText } from 'lucide-react'
 import { formatDistanceToNow, parseISO } from 'date-fns'
 import { useNotificationActions, useNotifications, type AppNotification } from '@/api/notifications'
 import { toastError } from '@/api/query'
@@ -12,7 +12,17 @@ const ICONS: Record<AppNotification['type'], { icon: typeof Bell; tone: string }
   payment_verified: { icon: CircleCheck, tone: 'bg-emerald-50 text-emerald-600' },
   payment_rejected: { icon: CircleAlert, tone: 'bg-red-50 text-red-600' },
   bill_generated: { icon: ReceiptText, tone: 'bg-brand-50 text-brand-600' },
+  move_out_requested: { icon: DoorOpen, tone: 'bg-amber-50 text-amber-600' },
+  move_out_approved: { icon: DoorOpen, tone: 'bg-emerald-50 text-emerald-600' },
+  move_out_rejected: { icon: DoorClosed, tone: 'bg-red-50 text-red-600' },
+  consent_required: { icon: FileSignature, tone: 'bg-violet-50 text-violet-600' },
   general: { icon: Bell, tone: 'bg-slate-100 text-slate-600' },
+}
+
+/** "… Due by 5 Nov 2026. …" in a bill notification -> "5 Nov 2026" */
+function dueDateOf(n: AppNotification): string | null {
+  if (n.type !== 'bill_generated') return null
+  return /Due by ([^.]+)\./.exec(n.body)?.[1]?.trim() ?? null
 }
 
 /**
@@ -87,6 +97,7 @@ export function NotificationBell({ className }: { className?: string }) {
               ) : (
                 items.map((n) => {
                   const { icon: Icon, tone } = ICONS[n.type] ?? ICONS.general
+                  const due = dueDateOf(n)
                   return (
                     <button
                       key={n.id}
@@ -101,6 +112,11 @@ export function NotificationBell({ className }: { className?: string }) {
                           <span className={cn('flex-1 text-sm', n.readAt ? 'text-slate-700' : 'font-semibold text-slate-900')}>{n.title}</span>
                           {!n.readAt && <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-brand-600" />}
                         </span>
+                        {due && (
+                          <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-200">
+                            <CalendarClock className="h-3 w-3" /> Due by {due}
+                          </span>
+                        )}
                         {n.body && <span className="mt-0.5 block text-xs leading-snug text-slate-500">{n.body}</span>}
                         <span className="mt-1 block text-[11px] text-slate-400">{formatDistanceToNow(parseISO(n.createdAt), { addSuffix: true })}</span>
                       </span>

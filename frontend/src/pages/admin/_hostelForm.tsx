@@ -1,11 +1,13 @@
 /**
  * Add / edit hostel modal (Settings → Hostels): basics, the UPI ID where
- * hostelers pay rent (+ optional QR image) and the monthly charge heads.
+ * hostelers pay rent (+ optional QR image), the monthly charge heads and the
+ * stay rules (notice period, deposit refund rule, rules hostelers sign).
  */
 import { useEffect, useState } from 'react'
-import { QrCode, Receipt, Trash2, Upload, Zap } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { CalendarClock, QrCode, Receipt, ScrollText, ShieldCheck, Sparkles, Trash2, Upload, Wallet, Zap } from 'lucide-react'
 import { errorMessage } from '@/api/client'
-import { hostelQrUrl, useCreateHostel, useRemoveHostelQr, useUpdateHostel, useUploadHostelQr, type HostelInput } from '@/api/hostels'
+import { hostelQrUrl, hostelsApi, useCreateHostel, useRemoveHostelQr, useUpdateHostel, useUploadHostelQr, type HostelInput } from '@/api/hostels'
 import type { Hostel, HostelCharges, HostelType } from '@/api/types'
 import { Badge, Button, Field, FileDrop, Input, Modal, Select, Textarea, confirm, toast } from '@/components/ui'
 import { UpiQr } from '@/components/UpiQr'
@@ -46,6 +48,45 @@ interface ChargeDraft {
   electricityBasis: ElectricityBasis | ''
 }
 const QR_MAX = 2 * 1024 * 1024
+const RULES_MAX = 10_000
+const MAX_NOTICE_DAYS = 90
+
+const DEPOSIT_STAY_OPTIONS = [
+  { value: '0', label: 'Always (no minimum stay)' },
+  ...Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1), label: `After ${i + 1} month${i ? 's' : ''} of stay` })),
+]
+
+function depositRuleText(months: number | undefined): string {
+  return months && months > 0 ? `Deposit refundable after ${months} month${months === 1 ? '' : 's'}` : 'Deposit always refundable'
+}
+
+/** Notice period, deposit rule and rules version as chips (hostel cards). */
+export function HostelStayChips({ hostel }: { hostel: Hostel }) {
+  const notice = hostel.noticePeriodDays ?? 30
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      <Badge tone="violet">
+        <CalendarClock className="mr-1 inline h-3 w-3" />
+        {notice > 0 ? `${notice} days notice` : 'No notice period'}
+      </Badge>
+      <Badge tone="violet">
+        <Wallet className="mr-1 inline h-3 w-3" />
+        {depositRuleText(hostel.depositMinStayMonths)}
+      </Badge>
+      {hostel.rulesText && hostel.rulesVersion > 0 ? (
+        <Badge tone="green">
+          <ScrollText className="mr-1 inline h-3 w-3" />
+          Rules v{hostel.rulesVersion}
+        </Badge>
+      ) : (
+        <Badge tone="amber">
+          <ScrollText className="mr-1 inline h-3 w-3" />
+          No rules yet
+        </Badge>
+      )}
+    </div>
+  )
+}
 const MAX_CHARGE = 1_000_000
 const MAX_UNIT_RATE = 1000
 
@@ -109,7 +150,7 @@ function AmountInput({ value, onChange, className, label }: { value: string; onC
   )
 }
 
-type Errors = Partial<Record<keyof HostelForm | 'charges' | 'electricityRate' | 'electricityBasis' | 'qr', string>>
+type Errors = Partial<Record<keyof HostelForm | 'charges' | 'electricityRate' | 'electricityBasis' | 'qr' | 'noticePeriodDays' | 'rulesText', string>>
 
 export function HostelModal({ editing, onClose }: { editing: Hostel | null; onClose: () => void }) {
   const [form, setForm] = useState<HostelForm>(
@@ -136,12 +177,20 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
   const [hasQr, setHasQr] = useState(!!editing?.hasQr)
   const [qrVersion, setQrVersion] = useState(0)
   const [savingQr, setSavingQr] = useState(false)
+  // stay rules
+  const [notice, setNotice] = useState(String(editing?.noticePeriodDays ?? 30))
+  const [minStay, setMinStay] = useState(String(editing?.depositMinStayMonths ?? 0))
+  const [rulesText, setRulesText] = useState(editing?.rulesText ?? '')
+  const [addDefaultRules, setAddDefaultRules] = useState(true)
+  const [loadingRules, setLoadingRules] = useState(false)
+  const qc = useQueryClient()
+  const rulesChanged = !!editing && rulesText.trim() !== (editing.rulesText ?? '').trim()
 
   const create = useCreateHostel()
   const update = useUpdateHostel(onClose)
   const uploadQr = useUploadHostelQr()
   const removeQr = useRemoveHostelQr()
-  const pending = create.isPending || update.isPending || savingQr
+  const pending = create.isPending || update.isPending || savingQr || loadingRules
   const qrBusy = uploadQr.isPending || removeQr.isPending
   const codeLocked = !!editing && editing.hostelerSeq > 0
   const upiId = form.upiId.trim()
@@ -223,6 +272,53 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
     const n = Number(charges.electricityRate)
     return Number.isFinite(n) && n >= 0 && n <= MAX_UNIT_RATE ? Math.round(n * 100) / 100 : null
   }
+  /** Fill the textarea with the suggested rules (built from this hostel's saved settings). */
+  const loadDefaultRules = async () => {
+    if (!editing) return
+    if (rulesText.trim()) {
+      const ok = await confirm({
+        title: 'Replace the rules?',
+        message: 'The text in the box will be replaced with the default rules. Nothing is saved until you click "Save changes".',
+        confirmText: 'Replace',
+      })
+      if (!ok) return
+    }
+    setLoadingRules(true)
+    try {
+      const r = await hostelsApi.defaultRules(editing.id)
+      setRulesText(r.rulesText)
+      setErr('rulesText', undefined)
+      toast.info('Default rules added. Review and edit them, then save.')
+    } catch (e) {
+      setErr('rulesText', errorMessage(e))
+    } finally {
+      setLoadingRules(false)
+    }
+  }
+
+  /** After a new hostel is created: upload the chosen QR and add the default rules (both need the hostel id). */
+  const afterCreate = async (h: Hostel) => {
+    setSavingQr(true)
+    if (qrFile) {
+      try {
+        await uploadQr.mutateAsync({ id: h.id, file: qrFile })
+      } catch (err) {
+        toast.error(`Hostel added, but the QR image couldn't be uploaded (${errorMessage(err)}). Edit the hostel to try again.`)
+      }
+    }
+    if (!rulesText.trim() && addDefaultRules) {
+      try {
+        const r = await hostelsApi.defaultRules(h.id)
+        await hostelsApi.update({ id: h.id, rulesText: r.rulesText })
+        await qc.invalidateQueries({ queryKey: ['hostels'] })
+      } catch (err) {
+        toast.error(`Hostel added, but the default rules couldn't be added (${errorMessage(err)}). Edit the hostel to add them.`)
+      }
+    }
+    setSavingQr(false)
+    onClose()
+  }
+
   const rateNum = Number(charges.electricityRate)
   const rateOn = Number.isFinite(rateNum) && rateNum > 0
 
@@ -241,6 +337,10 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
     const rate = parseRate()
     if (rate === null) e.electricityRate = `Enter a rate between ₹0 and ₹${MAX_UNIT_RATE} per unit.`
     else if (rate > 0 && !charges.electricityBasis) e.electricityBasis = 'Choose how the meters are read.'
+    const noticeNum = Number(notice)
+    if (notice.trim() === '' || !Number.isInteger(noticeNum) || noticeNum < 0 || noticeNum > MAX_NOTICE_DAYS)
+      e.noticePeriodDays = `Enter 0 to ${MAX_NOTICE_DAYS} days.`
+    if (rulesText.trim().length > RULES_MAX) e.rulesText = `Rules can be at most ${RULES_MAX.toLocaleString('en-IN')} characters.`
     setErrors((prev) => ({ ...e, qr: prev.qr }))
     setApiError('')
     if (Object.keys(e).length || typeof built === 'string' || rate === null) return
@@ -256,6 +356,9 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
       charges: built,
       electricityRate: rate,
       electricityBasis: charges.electricityBasis || 'room',
+      noticePeriodDays: noticeNum,
+      depositMinStayMonths: Number(minStay) || 0,
+      rulesText: rulesText.trim(),
     }
     const onError = (err: unknown) => setApiError(errorMessage(err))
     if (editing) {
@@ -273,20 +376,7 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
       { ...body, ...(code ? { code } : {}) },
       {
         onError,
-        onSuccess: (h) => {
-          if (!qrFile) return onClose()
-          setSavingQr(true)
-          uploadQr.mutate(
-            { id: h.id, file: qrFile },
-            {
-              onError: (err) => toast.error(`Hostel added, but the QR image couldn't be uploaded (${errorMessage(err)}). Edit the hostel to try again.`),
-              onSettled: () => {
-                setSavingQr(false)
-                onClose()
-              },
-            },
-          )
-        },
+        onSuccess: (h) => void afterCreate(h),
       },
     )
   }
@@ -528,6 +618,79 @@ export function HostelModal({ editing, onClose }: { editing: Hostel | null; onCl
           )}
         </fieldset>
         {errors.charges && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 sm:col-span-2">{errors.charges}</p>}
+
+        {/* ---------------- Stay rules ---------------- */}
+        <div className="border-t border-slate-100 pt-4 sm:col-span-2">
+          <p className="flex items-center gap-2 font-semibold text-slate-900">
+            <ScrollText className="h-4 w-4 text-brand-600" /> Stay rules
+          </p>
+          <p className="mt-0.5 text-sm text-slate-500">Notice for moving out, when the security deposit is refunded, and the rules every hosteler signs in the app.</p>
+        </div>
+        <Field
+          label="Notice period (days)"
+          error={errors.noticePeriodDays}
+          hint={errors.noticePeriodDays ? undefined : 'Hostelers must request a move-out at least this many days ahead. 0 = no notice.'}
+        >
+          <Input type="number" inputMode="numeric" min={0} max={MAX_NOTICE_DAYS} step={1} value={notice} onChange={(e) => setNotice(e.target.value)} placeholder="30" />
+        </Field>
+        <Field label="Deposit refundable" hint="If a hosteler leaves earlier, the deposit is kept and is not adjusted against dues.">
+          <Select value={minStay} onChange={(e) => setMinStay(e.target.value)} options={DEPOSIT_STAY_OPTIONS} />
+        </Field>
+        <div className="sm:col-span-2">
+          <div className="mb-1.5 flex flex-wrap items-end justify-between gap-2">
+            <span className="text-sm font-medium text-slate-700">
+              Hostel rules
+              {editing && editing.rulesVersion > 0 && editing.rulesText && <span className="ml-2 text-xs font-normal text-slate-500">version {editing.rulesVersion}</span>}
+            </span>
+            {editing && (
+              <Button
+                size="sm"
+                variant="outline"
+                icon={<Sparkles className="h-3.5 w-3.5" />}
+                loading={loadingRules}
+                disabled={pending && !loadingRules}
+                onClick={() => void loadDefaultRules()}
+              >
+                Use default rules
+              </Button>
+            )}
+          </div>
+          <Textarea
+            rows={8}
+            maxLength={RULES_MAX}
+            value={rulesText}
+            aria-label="Hostel rules"
+            onChange={(e) => {
+              setRulesText(e.target.value)
+              if (errors.rulesText) setErr('rulesText', undefined)
+            }}
+            placeholder={
+              editing ? 'Write your hostel rules, or click "Use default rules" to start from a ready-made set.' : 'Write your hostel rules here, or leave blank to use the default rules.'
+            }
+            className="text-xs leading-relaxed sm:text-sm"
+          />
+          <div className="mt-1 flex items-start justify-between gap-3">
+            {errors.rulesText ? <p className="text-xs text-red-600">{errors.rulesText}</p> : <span />}
+            <span className="shrink-0 text-xs text-slate-400">
+              {rulesText.length.toLocaleString('en-IN')} / {RULES_MAX.toLocaleString('en-IN')}
+            </span>
+          </div>
+          {!editing && !rulesText.trim() && (
+            <label className="mt-2 flex cursor-pointer items-start gap-2 text-sm text-slate-700">
+              <input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0 accent-brand-600" checked={addDefaultRules} onChange={(e) => setAddDefaultRules(e.target.checked)} />
+              <span>Add the default rules (rent, deposit, notice, timings, visitors, conduct…) built from these settings. You can edit them later.</span>
+            </label>
+          )}
+          <p className={cn('mt-2 flex items-start gap-2 rounded-lg px-3 py-2 text-xs', rulesChanged ? 'bg-amber-50 text-amber-800' : 'bg-slate-50 text-slate-600')}>
+            <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              Hostelers read and sign these rules in the app after check-in.{' '}
+              {rulesChanged
+                ? 'You changed the rules: when you save, every hosteler of this hostel will be asked to sign the new version before using the app.'
+                : 'Changing the rules later asks every hosteler to sign again.'}
+            </span>
+          </p>
+        </div>
       </div>
     </Modal>
   )

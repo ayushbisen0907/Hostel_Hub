@@ -166,12 +166,14 @@ const items = <T>(r: ListResponse<T>) => r.items
 
 function useEnabled() {
   const s = useHostelerSession()
-  return !!s && !s.mustChangePassword
+  return !!s && !s.mustChangePassword && !s.consentRequired
 }
 
 /** Fresh profile from /portal/auth/me; also keeps the session's hosteler current. */
 export function usePortalMe() {
-  const enabled = useEnabled()
+  // /portal/auth/me also works while the rules are unsigned
+  const s = useHostelerSession()
+  const enabled = !!s && !s.mustChangePassword
   return useQuery({ queryKey: portalKeys.me, queryFn: refreshHostelerMe, enabled })
 }
 

@@ -48,7 +48,7 @@ export interface PrintHostel {
 /** Unpaid balance of the hosteler's bills older than this one (shown as "previous balance"). */
 export interface PreviousBalance {
   amount: number
-  invoices: { id: ID; number: string; month: string; balance: number; dueDate: string }[]
+  invoices: { id: ID; number: string; month: string; periodStart?: string | null; periodEnd?: string | null; balance: number; dueDate: string }[]
 }
 
 export interface PrintOrg {
@@ -100,6 +100,8 @@ export interface DueInvoice {
   id: ID
   number: string
   month: string
+  periodStart?: string | null
+  periodEnd?: string | null
   total: number
   paidAmount: number
   balance: number
@@ -163,11 +165,13 @@ export interface FeesSummary {
   collectionRate: number
 }
 
+/** POST /invoices/generate: bills created for every rent cycle that is due (per hosteler's check-in date). */
 export interface GenerateResult {
-  month: string
-  dueDate: string
   created: number
+  /** active hostelers checked */
+  hostelers: number
   skipped: number
+  errors: string[]
 }
 
 export type LateFeeResult = InvoiceWithStatus & { lateFee: number; days: number; replaced: boolean }
@@ -213,7 +217,7 @@ export interface PaymentListParams {
 export const feesApi = {
   invoices: (p: InvoiceListParams) => get<InvoiceList>('/invoices', { ...p }),
   invoice: (id: ID) => get<InvoiceDetail>(`/invoices/${id}`),
-  generate: (body: { month: string; hostelId?: ID | 'all' }) => post<GenerateResult>('/invoices/generate', body),
+  generate: (body: { hostelId?: ID | 'all' }) => post<GenerateResult>('/invoices/generate', body),
   createInvoice: (body: { hostelerId: ID; month: string; items: InvoiceItem[]; dueDate: string }) =>
     post<InvoiceWithStatus>('/invoices', body),
   updateInvoice: ({ id, ...body }: { id: ID; items?: InvoiceItem[]; dueDate?: string }) => patch<InvoiceWithStatus>(`/invoices/${id}`, body),

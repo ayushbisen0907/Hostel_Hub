@@ -11,6 +11,11 @@ import { Room } from '../src/models/Room.js'
 import { GateLog } from '../src/models/Operations.js'
 import { HDocument } from '../src/models/Document.js'
 import { uploadRoot } from '../src/lib/upload.js'
+import { todayStr } from '../src/lib/http.js'
+import { addDays, addMonthsAnchored, periodLabel } from '../src/lib/dates.js'
+import { cycleEnd, cycleIndexOf, cycleStart, generateDueBills } from '../src/lib/rentCycle.js'
+
+const today = todayStr()
 
 function admission(hostelId: unknown, bedId: unknown, extra: Record<string, unknown> = {}) {
   return {
@@ -21,7 +26,7 @@ function admission(hostelId: unknown, bedId: unknown, extra: Record<string, unkn
     institution: 'IIT Indore',
     hostelId: String(hostelId),
     bedId: bedId ? String(bedId) : null,
-    checkInDate: '2026-10-01',
+    checkInDate: today,
     monthlyRent: 6000,
     securityDeposit: 5000,
     messOpted: true,
@@ -55,7 +60,7 @@ describe('admission / check-in', () => {
     const invs = await Invoice.find({ hostelerId: hosteler.id })
     expect(invs).toHaveLength(1)
     expect(invs[0]!.total).toBe(6000 + 3000)
-    expect(invs[0]!.dueDate).toBe('2026-10-01')
+    expect(invs[0]!.dueDate).toBe(addDays(today, 5)) // rentDueDay (5) days after the cycle starts
     expect(await GateLog.countDocuments({ hostelerId: hosteler.id, direction: 'in' })).toBe(1)
     expect(hosteler.dues).toBe(9000)
 
@@ -358,11 +363,11 @@ describe('first bill at check-in', () => {
     const r = await api().post('/api/hostelers').set(w.auth).send(admission(w.hostel._id, w.beds[1]!._id)).expect(201)
     const [inv] = await Invoice.find({ hostelerId: r.body.hosteler.id }).lean()
     expect(inv!.items.map((i) => ({ key: i.key, label: i.label, amount: i.amount }))).toEqual([
-      { key: 'rent', label: 'Room rent', amount: 6000 },
-      { key: 'mess', label: 'Mess fees', amount: 2000 },
+      { key: 'rent', label: `Room rent (${periodLabel(today, cycleEnd(today, 0))})`, amount: 6000 },
+      { key: 'mess', label: `Mess fees (${periodLabel(today, cycleEnd(today, 0))})`, amount: 2000 },
       // electricity is metered (added from readings); laundry / custom heads are included in the room rent
     ])
-    expect(inv).toMatchObject({ month: '2026-10', total: 8000, dueDate: '2026-10-01' })
+    expect(inv).toMatchObject({ month: today.slice(0, 7), total: 8000, dueDate: addDays(today, 5), periodStart: today, periodEnd: cycleEnd(today, 0) })
     expect(r.body.hosteler.dues).toBe(8000)
 
     const room2 = await makeRoom(w.org._id, w.hostel._id, '102', 1)
@@ -375,5 +380,37 @@ describe('first bill at check-in', () => {
     const room3 = await makeRoom(w.org._id, w.hostel._id, '103', 1)
     const r3 = await api().post('/api/hostelers').set(w.auth).send(admission(w.hostel._id, room3.beds[0]!._id, { name: 'Later', generateFirstInvoice: false })).expect(201)
     expect(await Invoice.countDocuments({ hostelerId: r3.body.hosteler.id })).toBe(0)
+    // ...billing starts with the second cycle (the first is settled outside the app)
+    expect((await Hosteler.findById(r3.body.hosteler.id).lean())!.billFromCycle).toBe(1)
+    await generateDueBills(w.org._id, { today, notify: false })
+    expect(await Invoice.countDocuments({ hostelerId: r3.body.hosteler.id })).toBe(0)
+    await generateDueBills(w.org._id, { today: cycleStart(today, 1), notify: false })
+    const later = await Invoice.find({ hostelerId: r3.body.hosteler.id }).lean()
+    expect(later.map((i) => i.periodStart)).toEqual([cycleStart(today, 1)])
+  })
+
+  it('a back-dated check-in gets a bill for every cycle that has started; the deposit goes on the first', async () => {
+    const w = await makeWorld()
+    const ci = addMonthsAnchored(today, -2)
+    const n = cycleIndexOf(ci, today) + 1 // 3
+    const r = await api()
+      .post('/api/hostelers')
+      .set(w.auth)
+      .send(admission(w.hostel._id, w.beds[1]!._id, { checkInDate: ci, depositPayment: null, messOpted: false }))
+      .expect(201)
+    const invs = await Invoice.find({ hostelerId: r.body.hosteler.id }).sort({ periodStart: 1 }).lean()
+    expect(invs).toHaveLength(n)
+    expect(invs.map((i) => [i.periodStart, i.periodEnd, i.dueDate])).toEqual(
+      Array.from({ length: n }, (_, k) => [cycleStart(ci, k), cycleEnd(ci, k), addDays(cycleStart(ci, k), 5)]),
+    )
+    expect(invs[0]!.items.map((i) => [i.key, i.amount])).toEqual([
+      ['rent', 6000],
+      ['deposit', 5000],
+    ])
+    expect(invs.slice(1).every((i) => i.items.map((x) => x.key).join() === 'rent')).toBe(true)
+    expect(r.body.hosteler.dues).toBe(6000 * n + 5000)
+    // the hourly run has nothing left to do for this hosteler
+    await generateDueBills(w.org._id, { today, notify: false })
+    expect(await Invoice.countDocuments({ hostelerId: r.body.hosteler.id })).toBe(n)
   })
 })

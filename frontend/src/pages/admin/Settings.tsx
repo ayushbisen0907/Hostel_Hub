@@ -975,7 +975,7 @@ function PreferencesForm({ settings }: { settings: SettingsT }) {
   const submit = () => {
     const e: typeof errors = {}
     const due = Number(form.rentDueDay)
-    if (!Number.isInteger(due) || due < 1 || due > 28) e.rentDueDay = 'Enter a day between 1 and 28.'
+    if (form.rentDueDay.trim() === '' || !Number.isInteger(due) || due < 0 || due > 28) e.rentDueDay = 'Enter a number of days from 0 to 28.'
     const num = (k: 'lateFeePerDay' | 'defaultSecurityDeposit' | 'messMonthlyCharge') => {
       const v = Number(form[k])
       if (form[k] === '' || Number.isNaN(v) || v < 0) e[k] = 'Enter a valid amount.'
@@ -1005,8 +1005,12 @@ function PreferencesForm({ settings }: { settings: SettingsT }) {
     <Card className="max-w-3xl">
       <CardHeader title="Hostel preferences" subtitle="Defaults used for rent, receipts, check-ins and the mess." />
       <div className="grid gap-5 p-5 sm:grid-cols-2">
-        <Field label="Rent due day" error={errors.rentDueDay} hint="Day of the month rent invoices are due (1–28)">
-          <Input type="number" min={1} max={28} value={form.rentDueDay} onChange={set('rentDueDay')} />
+        <Field
+          label="Days to pay after a bill is created"
+          error={errors.rentDueDay}
+          hint="Bills are created on each hosteler's check-in date every month; this many days later they are due (0 = due the same day, max 28)"
+        >
+          <Input type="number" min={0} max={28} value={form.rentDueDay} onChange={set('rentDueDay')} />
         </Field>
         <Field label="Late fee per day (₹)" error={errors.lateFeePerDay} hint="Shown on overdue invoices">
           <Input type="number" min={0} value={form.lateFeePerDay} onChange={set('lateFeePerDay')} />

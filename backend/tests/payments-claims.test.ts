@@ -76,7 +76,7 @@ describe('portal payment info', () => {
     })
     expect(r.body.bills.map((b: { id: string }) => b.id)).toEqual([aug.id, oct.id])
     expect(r.body.bills[1]).toMatchObject({ number: oct.number, month: '2026-10', total: 7000, paidAmount: 2000, balance: 5000, dueDate: '2026-10-05' })
-    expect(r.body.bills[1].items).toEqual([{ key: 'rent', label: 'Room rent', amount: 7000 }])
+    expect(r.body.bills[1].items).toEqual([{ key: 'rent', label: 'Room rent', amount: 7000, ref: null }])
 
     await submit(w, 1500, 'UTR1500AA')
     const after = await api().get('/api/portal/payment-info').set(w.hostelerAuth).expect(200)

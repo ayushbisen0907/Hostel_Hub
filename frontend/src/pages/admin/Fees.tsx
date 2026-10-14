@@ -77,7 +77,7 @@ import {
   confirm,
   toast,
 } from '@/components/ui'
-import { currentMonth, downloadCsv, formatDate, formatMoney, formatMonth, sum, today } from '@/lib/utils'
+import { addDaysStr, billPeriod, currentMonth, downloadCsv, formatDate, formatMoney, formatMonth, sum, today } from '@/lib/utils'
 import {
   DEPOSIT_NOTE,
   HostelerPicker,
@@ -86,7 +86,6 @@ import {
   RecordPaymentModal,
   RowMenu,
   daysOverdue,
-  dueDateFor,
   modeLabel,
   openInNewTab,
   reminderText,
@@ -152,7 +151,7 @@ export default function Fees() {
         actions={
           <>
             <Button variant="outline" icon={<Sparkles className="h-4 w-4" />} onClick={() => setGenOpen(true)}>
-              Generate rent
+              Generate due bills
             </Button>
             <Button variant="outline" icon={<FilePlus2 className="h-4 w-4" />} onClick={() => setCustomOpen(true)}>
               Custom invoice
@@ -233,7 +232,7 @@ export default function Fees() {
                 ? 'Loading…'
                 : s.invoiceCount
                   ? `${formatMoney(s.collected)} of ${formatMoney(s.billed)} collected for ${formatMonth(month)}`
-                  : `No invoices for ${formatMonth(month)} yet — use "Generate rent" to bill everyone at once.`}
+                  : `No invoices for ${formatMonth(month)} yet — bills are created automatically on each hosteler's check-in date every month.`}
             </p>
           </Card>
         </>
@@ -277,7 +276,7 @@ export default function Fees() {
         invoiceId={payTarget?.invoiceId ?? null}
         defaultTarget={payTarget?.defaultTarget}
       />
-      <GenerateModal open={genOpen} onClose={() => setGenOpen(false)} initialMonth={month} />
+      <GenerateModal open={genOpen} onClose={() => setGenOpen(false)} />
       <CustomInvoiceModal open={customOpen} onClose={() => setCustomOpen(false)} />
       <OverdueRemindersModal open={remindOpen} onClose={() => setRemindOpen(false)} query={duesQ} />
     </div>
@@ -367,6 +366,7 @@ function InvoicesTab({ onPay, onRemindAll, overdueCount }: { onPay: (inv: Invoic
           dueDate: inv.dueDate,
           invoiceNo: inv.number,
           month: inv.month,
+          period: inv.periodStart && inv.periodEnd ? billPeriod(inv) : undefined,
           hostelName: inv.hostelName || hostelName(inv.hostelId),
         }),
       ),
@@ -380,7 +380,7 @@ function InvoicesTab({ onPay, onRemindAll, overdueCount }: { onPay: (inv: Invoic
     try {
       const all = await fetchAllPages(feesApi.invoices, { ...filters })
       downloadCsv(`invoices-${month || 'all'}.csv`, [
-        ['Invoice', 'Hosteler', 'Phone', 'Room', 'Hostel', 'Month', 'Total', 'Paid', 'Balance', 'Due date', 'Status'],
+        ['Invoice', 'Hosteler', 'Phone', 'Room', 'Hostel', 'Month', 'Period', 'Total', 'Paid', 'Balance', 'Due date', 'Status'],
         ...all.map((r) => [
           r.number,
           r.hosteler?.name ?? '',
@@ -388,6 +388,7 @@ function InvoicesTab({ onPay, onRemindAll, overdueCount }: { onPay: (inv: Invoic
           shortRoom(r.roomLabel),
           r.hostelName,
           r.month,
+          r.periodStart && r.periodEnd ? `${r.periodStart} – ${r.periodEnd}` : '',
           r.total,
           Math.min(r.paidAmount, r.total),
           r.balance,
@@ -407,7 +408,14 @@ function InvoicesTab({ onPay, onRemindAll, overdueCount }: { onPay: (inv: Invoic
       <div className="flex flex-col gap-3 border-b border-slate-100 p-4 lg:flex-row lg:items-center">
         <SearchInput value={q} onChange={setQ} placeholder="Search invoice no., name, phone…" className="lg:w-72" />
         <div className="flex flex-1 flex-wrap items-center gap-2">
-          <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-44" aria-label="Month" />
+          <Input
+            type="month"
+            value={month}
+            onChange={(e) => setMonth(e.target.value)}
+            className="w-44"
+            aria-label="Bills starting in month"
+            title="Bills whose period starts in this month"
+          />
           {month ? (
             <Button variant="ghost" size="sm" icon={<X className="h-3.5 w-3.5" />} onClick={() => setMonth('')}>
               All months
@@ -450,7 +458,7 @@ function InvoicesTab({ onPay, onRemindAll, overdueCount }: { onPay: (inv: Invoic
                 <TH>Invoice</TH>
                 <TH>Hosteler</TH>
                 <TH>Room</TH>
-                <TH>Month</TH>
+                <TH>Period</TH>
                 <TH className="text-right">Total</TH>
                 <TH className="text-right">Paid</TH>
                 <TH className="text-right">Balance</TH>
@@ -476,7 +484,7 @@ function InvoicesTab({ onPay, onRemindAll, overdueCount }: { onPay: (inv: Invoic
                       </div>
                     </TD>
                     <TD>{shortRoom(inv.roomLabel)}</TD>
-                    <TD className="whitespace-nowrap">{formatMonth(inv.month)}</TD>
+                    <TD className="whitespace-nowrap">{billPeriod(inv)}</TD>
                     <TD className="text-right tabular-nums">{formatMoney(inv.total)}</TD>
                     <TD className="text-right tabular-nums text-emerald-700">{formatMoney(Math.min(inv.paidAmount, inv.total))}</TD>
                     <TD className="text-right font-semibold tabular-nums">{inv.balance ? formatMoney(inv.balance) : '—'}</TD>
@@ -579,6 +587,8 @@ interface DraftItem {
   cat: ChargeKey
   label: string
   amount: string
+  /** source of an automatic line (e.g. an electricity reading) — sent back unchanged */
+  ref?: string | null
 }
 
 let draftKey = 0
@@ -588,6 +598,7 @@ const toDraft = (items: InvoiceItem[]): DraftItem[] =>
     cat: i.key ?? guessKey(i.label),
     label: i.label,
     amount: String(i.amount),
+    ref: i.ref ?? null,
   }))
 const blankDraft = (cat: ChargeKey = 'other', label = ''): DraftItem => ({
   key: ++draftKey,
@@ -664,7 +675,7 @@ function parseItems(items: DraftItem[]): {
     if (!it.label.trim()) return { items: [], error: 'Every item needs a description' }
     if (!Number.isFinite(amt) || it.amount === '') return { items: [], error: `Enter an amount for "${it.label}"` }
     if (amt < 0) return { items: [], error: `"${it.label}" can't be negative` }
-    out.push({ key: it.cat, label: it.label.trim(), amount: amt })
+    out.push({ key: it.cat, label: it.label.trim(), amount: amt, ...(it.ref ? { ref: it.ref } : {}) })
   }
   if (!out.length) return { items: [], error: 'Add at least one line item' }
   if (sum(out, (i) => i.amount) <= 0) return { items: [], error: 'Invoice total must be greater than zero' }
@@ -704,7 +715,7 @@ function EditItemsModal({ invoice, onClose }: { invoice: InvoiceRow | null; onCl
       onClose={onClose}
       size="lg"
       title={`Edit ${invoice?.number ?? 'invoice'}`}
-      description={invoice ? `${formatMonth(invoice.month)}${paid ? ` · ${formatMoney(paid)} already paid` : ''}` : undefined}
+      description={invoice ? `${billPeriod(invoice)}${paid ? ` · ${formatMoney(paid)} already paid` : ''}` : undefined}
       footer={
         <>
           <Button variant="outline" onClick={onClose} disabled={update.isPending}>
@@ -734,15 +745,14 @@ function EditItemsModal({ invoice, onClose }: { invoice: InvoiceRow | null; onCl
 }
 
 /* ------------------------------------------------------------------ */
-/* Generate monthly rent                                               */
+/* Generate due bills                                                  */
 /* ------------------------------------------------------------------ */
 
-function GenerateModal({ open, onClose, initialMonth }: { open: boolean; onClose: () => void; initialMonth: string }) {
+function GenerateModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const scope = useScope()
   const hostels = useHostels()
   const settings = useSettings()
 
-  const [month, setMonth] = useState(initialMonth)
   const [hostelId, setHostelId] = useState<string>(scope)
   const [result, setResult] = useState<GenerateResult | null>(null)
   const [wasOpen, setWasOpen] = useState(false)
@@ -751,24 +761,24 @@ function GenerateModal({ open, onClose, initialMonth }: { open: boolean; onClose
 
   if (open && !wasOpen) {
     setWasOpen(true)
-    setMonth(initialMonth)
     setHostelId(scope)
     setResult(null)
   }
   if (!open && wasOpen) setWasOpen(false)
 
   const run = () => {
-    if (!month) return toast.error('Choose a month')
     generate.mutate(
-      { month, hostelId: hostelId as ID | 'all' },
+      { hostelId: hostelId as ID | 'all' },
       {
         onSuccess: (r) => {
-          if (r.created) toast.success(`${r.created} invoice${r.created === 1 ? '' : 's'} generated for ${formatMonth(r.month)}`)
-          else toast.info(r.skipped ? `Everyone is already billed for ${formatMonth(r.month)}` : 'No active hostelers to bill for this month')
+          if (r.created) toast.success(`${r.created} bill${r.created === 1 ? '' : 's'} created`)
+          else toast.info('Everyone is up to date — no bills were due')
         },
       },
     )
   }
+
+  const dueDays = settings.rentDueDay
 
   if (result) {
     return (
@@ -776,22 +786,26 @@ function GenerateModal({ open, onClose, initialMonth }: { open: boolean; onClose
         open={open}
         onClose={onClose}
         size="sm"
-        title="Rent generated"
-        description={`${formatMonth(result.month)} · due ${formatDate(result.dueDate)}`}
+        title={result.created ? 'Bills created' : 'Everyone is up to date'}
+        description={`${result.hostelers} active hosteler${result.hostelers === 1 ? '' : 's'} checked`}
         footer={<Button onClick={onClose}>Done</Button>}
       >
-        <div className="grid grid-cols-2 gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-center">
-          <div>
-            <p className="text-3xl font-bold text-emerald-600">{result.created}</p>
-            <p className="text-xs text-slate-500">invoice{result.created === 1 ? '' : 's'} created</p>
-          </div>
-          <div>
-            <p className="text-3xl font-bold text-slate-400">{result.skipped}</p>
-            <p className="text-xs text-slate-500">already billed (skipped)</p>
-          </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-center">
+          <p className={result.created ? 'text-3xl font-bold text-emerald-600' : 'text-3xl font-bold text-slate-400'}>{result.created}</p>
+          <p className="text-xs text-slate-500">bill{result.created === 1 ? '' : 's'} created</p>
         </div>
-        {!result.created && !result.skipped && (
-          <p className="mt-3 text-sm text-slate-500">No active hostelers were checked in by {formatMonth(result.month)}.</p>
+        {!result.created && (
+          <p className="mt-3 text-sm text-slate-500">No rent cycle has started since the last bills — the next ones are created on each hosteler's date automatically.</p>
+        )}
+        {result.errors.length > 0 && (
+          <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            <p className="font-medium">{result.errors.length} couldn't be billed:</p>
+            <ul className="mt-1 list-inside list-disc text-xs">
+              {result.errors.slice(0, 5).map((e, i) => (
+                <li key={i}>{e}</li>
+              ))}
+            </ul>
+          </div>
         )}
       </Modal>
     )
@@ -801,42 +815,42 @@ function GenerateModal({ open, onClose, initialMonth }: { open: boolean; onClose
     <Modal
       open={open}
       onClose={onClose}
-      title="Generate monthly rent"
-      description="Create rent invoices for every active hosteler in one go"
+      title="Generate due bills"
+      description="Create every bill that is due right now"
       footer={
         <>
           <Button variant="outline" onClick={onClose} disabled={generate.isPending}>
             Cancel
           </Button>
-          <Button onClick={run} disabled={!month} loading={generate.isPending} icon={<Sparkles className="h-4 w-4" />}>
-            Generate invoices
+          <Button onClick={run} loading={generate.isPending} icon={<Sparkles className="h-4 w-4" />}>
+            Generate due bills
           </Button>
         </>
       }
     >
       <div className="space-y-4">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Month" required>
-            <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
-          </Field>
-          <Field label="Hostel">
-            <Select
-              value={hostelId}
-              onChange={(e) => setHostelId(e.target.value)}
-              options={[
-                { value: 'all', label: 'All hostels' },
-                ...(hostels.data ?? []).map((h) => ({
-                  value: h.id,
-                  label: h.name,
-                })),
-              ]}
-            />
-          </Field>
-        </div>
+        <Field label="Hostel" className="sm:w-72">
+          <Select
+            value={hostelId}
+            onChange={(e) => setHostelId(e.target.value)}
+            options={[
+              { value: 'all', label: 'All hostels' },
+              ...(hostels.data ?? []).map((h) => ({
+                value: h.id,
+                label: h.name,
+              })),
+            ]}
+          />
+        </Field>
         <ul className="space-y-1.5 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
           <li>
-            • Each active hosteler gets an itemised bill: room rent (includes water, Wi-Fi, cleaning and maintenance), mess fees for mess members, and their
-            share of electricity from the month's meter readings (Rooms &amp; Beds → Electricity). Rates are set in Settings → Hostels.
+            • <b className="font-medium text-slate-800">Bills follow each hosteler's check-in date.</b> Someone who checked in on 13 Oct is billed for 13 Oct – 12
+            Nov, then 13 Nov – 12 Dec, and so on.
+          </li>
+          <li>• Bills are also created automatically every hour, so you only need this to bill everyone right away.</li>
+          <li>
+            • Each bill has room rent (includes water, Wi-Fi, cleaning and maintenance), mess fees for mess members, and any electricity shares waiting from
+            meter readings (Rooms &amp; Beds → Electricity). Rates are set in Settings → Hostels.
             {settings.messMonthlyCharge ? ` Hostels without their own mess charge use the default ${formatMoney(settings.messMonthlyCharge)}.` : ''}
           </li>
           {selectedHostel && (
@@ -851,14 +865,11 @@ function GenerateModal({ open, onClose, initialMonth }: { open: boolean; onClose
             </li>
           )}
           <li>
-            • Electricity readings already entered for this month are added to the bills. Readings entered later are added to the existing bills automatically.
+            • Due date: {dueDays ? `${dueDays} day${dueDays === 1 ? '' : 's'} after the bill is created` : 'the day the bill is created'} (set in Settings →
+            Preferences).
           </li>
           <li>• Unpaid amounts from earlier bills are not copied in — they show as "previous balance" on the bill.</li>
-          <li>• Hostelers are notified and pay to their hostel's UPI ID, then report the payment for you to verify.</li>
-          <li>
-            • Due date: {month ? formatDate(dueDateFor(month, settings.rentDueDay)) : '—'} (day {settings.rentDueDay} of the month, set in Settings).
-          </li>
-          <li>• Hostelers who already have an invoice for this month are skipped, so it's safe to run again.</li>
+          <li>• Nobody is billed twice for the same period, so it's safe to run again.</li>
         </ul>
       </div>
     </Modal>
@@ -874,7 +885,7 @@ function CustomInvoiceModal({ open, onClose }: { open: boolean; onClose: () => v
   const hostelsQ = useHostels()
   const [hosteler, setHosteler] = useState<HostelerListItem | null>(null)
   const [month, setMonth] = useState(currentMonth())
-  const [dueDate, setDueDate] = useState(dueDateFor(currentMonth(), settings.rentDueDay))
+  const [dueDate, setDueDate] = useState(addDaysStr(today(), settings.rentDueDay))
   const [items, setItems] = useState<DraftItem[]>([])
   const [error, setError] = useState('')
   const [wasOpen, setWasOpen] = useState(false)
@@ -884,7 +895,7 @@ function CustomInvoiceModal({ open, onClose }: { open: boolean; onClose: () => v
     setWasOpen(true)
     setHosteler(null)
     setMonth(currentMonth())
-    setDueDate(dueDateFor(currentMonth(), settings.rentDueDay))
+    setDueDate(addDaysStr(today(), settings.rentDueDay))
     setItems([blankDraft()])
     setError('')
   }
@@ -947,10 +958,7 @@ function CustomInvoiceModal({ open, onClose }: { open: boolean; onClose: () => v
             <Input
               type="month"
               value={month}
-              onChange={(e) => {
-                setMonth(e.target.value)
-                if (e.target.value) setDueDate(dueDateFor(e.target.value, settings.rentDueDay))
-              }}
+              onChange={(e) => setMonth(e.target.value)}
             />
           </Field>
           <Field label="Due date" required>

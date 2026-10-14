@@ -32,7 +32,7 @@ import {
 import type { PaymentClaim, PaymentMode } from '@/api/types'
 import { UpiQr, upiPayLink } from '@/components/UpiQr'
 import { Badge, Button, Card, EmptyState, ErrorState, Field, Input, LoadingState, Modal, StatusBadge, Textarea, toast } from '@/components/ui'
-import { cn, formatBytes, formatDate, formatMonth, today } from '@/lib/utils'
+import { billPeriod, cn, formatBytes, formatDate, formatMonth, today } from '@/lib/utils'
 import { PortalTitle, SectionTitle, openInNewTab, useMoney } from './_shared'
 
 const MODE_LABEL: Record<PaymentMode, string> = {
@@ -93,7 +93,7 @@ function BillCard({ bill, previous }: { bill: PortalOpenBill; previous: boolean 
       <button type="button" onClick={() => setOpen((v) => !v)} className="flex w-full items-start gap-3 p-4 text-left" aria-expanded={open}>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
-            <p className="font-semibold text-slate-900">{formatMonth(bill.month)}</p>
+            <p className="font-semibold text-slate-900">{billPeriod(bill)}</p>
             {previous ? <Badge tone="amber">Previous balance</Badge> : <Badge tone="blue">Current bill</Badge>}
             <StatusBadge status={billStatus(bill)} />
           </div>
@@ -309,7 +309,7 @@ function PaySheet({ info, open, onClose }: { info: PortalPaymentInfo; open: bool
                 {plan.map((p) => (
                   <li key={p.bill.id} className="flex justify-between gap-3 text-slate-700">
                     <span className="truncate">
-                      {formatMonth(p.bill.month)} · {p.bill.number}
+                      {billPeriod(p.bill)} · {p.bill.number}
                       {p.clears ? '' : ' (part)'}
                     </span>
                     <span className="font-medium tabular-nums">{money(p.applied)}</span>
@@ -679,7 +679,7 @@ export default function Fees() {
             {paidBills.map((inv) => (
               <li key={inv.id} className="flex items-center gap-3 px-4 py-3">
                 <div className="min-w-0 flex-1">
-                  <p className="font-medium text-slate-900">{formatMonth(inv.month)}</p>
+                  <p className="font-medium text-slate-900">{billPeriod(inv)}</p>
                   <p className="truncate text-xs text-slate-500">
                     {inv.number} · {money(inv.total)}
                   </p>

@@ -15,6 +15,7 @@ export interface BillItem {
   key: ChargeKey
   label: string
   amount: number
+  ref?: string | null
 }
 
 interface HostelCharges {
@@ -65,12 +66,20 @@ export async function previousBalance(
     $expr: { $gt: ['$total', '$paidAmount'] },
     $or: [{ dueDate: { $lt: invoice.dueDate } }, { dueDate: invoice.dueDate, month: { $lt: invoice.month } }],
   })
-    .select('number month total paidAmount dueDate')
+    .select('number month periodStart periodEnd total paidAmount dueDate')
     .sort({ dueDate: 1, month: 1 })
     .session(session ?? null)
     .lean()
   return {
     amount: older.reduce((a, i) => a + (i.total - i.paidAmount), 0),
-    invoices: older.map((i) => ({ id: String(i._id), number: i.number, month: i.month, balance: i.total - i.paidAmount, dueDate: i.dueDate })),
+    invoices: older.map((i) => ({
+      id: String(i._id),
+      number: i.number,
+      month: i.month,
+      periodStart: i.periodStart ?? null,
+      periodEnd: i.periodEnd ?? null,
+      balance: i.total - i.paidAmount,
+      dueDate: i.dueDate,
+    })),
   }
 }

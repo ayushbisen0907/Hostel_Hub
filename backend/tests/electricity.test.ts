@@ -1,40 +1,21 @@
+/**
+ * Metered electricity by period (lib/electricity.ts, /api/electricity):
+ * readings for a period on a room (or bed) meter, shared by the days each
+ * hosteler stayed there (room-stay history), added to their latest bill.
+ * All periods are relative to today so they are always in the past.
+ */
 import { describe, expect, it } from 'vitest'
-import { api, makeHostel, makeHosteler, makeRoom, makeStaffUser, makeWorld, TEST_UPI } from './helpers.js'
+import { api, makeHosteler, makeRoom, makeStaffUser, makeWorld, TEST_UPI } from './helpers.js'
 import { splitEqually } from '../src/lib/electricity.js'
-import { Bed } from '../src/models/Bed.js'
+import { todayStr } from '../src/lib/http.js'
+import { addDays, addMonthsAnchored, daysInclusive, periodLabel } from '../src/lib/dates.js'
+import { generateDueBills } from '../src/lib/rentCycle.js'
+import { backfillStays } from '../src/lib/stays.js'
 import { ElectricityReading } from '../src/models/ElectricityReading.js'
 import { Hostel } from '../src/models/Hostel.js'
 import { Hosteler } from '../src/models/Hosteler.js'
 import { Invoice } from '../src/models/Invoice.js'
-import { Notification } from '../src/models/Notification.js'
-
-const MONTH = '2026-10'
-type World = Awaited<ReturnType<typeof makeWorld>>
-
-/** Hostel with metered electricity at ₹rate/unit and a 3-bed room 201 (beds A, B, C). */
-async function setup(rate = 10, basis: 'room' | 'bed' = 'room') {
-  const w = await makeWorld()
-  await Hostel.updateOne({ _id: w.hostel._id }, { electricityRate: rate, electricityBasis: basis })
-  const r201 = await makeRoom(w.org._id, w.hostel._id, '201', 3)
-  return { ...w, r201 }
-}
-
-const bill = (hostelerId: unknown, month = MONTH) => Invoice.findOne({ hostelerId, month, cancelled: false }).lean()
-const elecLines = (inv: { items: { key?: string | null; label: string; amount: number }[] } | null) =>
-  (inv?.items ?? []).filter((i) => i.key === 'electricity')
-
-function put(w: World, readings: { roomId: unknown; bedId?: unknown; units: number | null }[], auth = w.auth, hostelId: unknown = w.hostel._id) {
-  return api()
-    .put('/api/electricity')
-    .set(auth)
-    .send({
-      hostelId: String(hostelId),
-      month: MONTH,
-      readings: readings.map((r) => ({ roomId: String(r.roomId), ...(r.bedId !== undefined ? { bedId: r.bedId === null ? null : String(r.bedId) } : {}), units: r.units })),
-    })
-}
-
-const generate = (w: World, month = MONTH) => api().post('/api/invoices/generate').set(w.auth).send({ month }).expect(200)
+import { RoomStay } from '../src/models/RoomStay.js'
 
 describe('hostel electricity settings', () => {
   it('create and patch accept electricityRate / electricityBasis, with validation', async () => {
@@ -77,251 +58,264 @@ describe('splitEqually', () => {
   })
 })
 
-describe('room-metered electricity', () => {
-  it('splits a room reading equally onto the occupants’ existing bills and shows it on the sheet', async () => {
+const today = todayStr()
+
+/** The most recent calendar month with 31 days that has fully passed (from = 1st, to = 31st). */
+function past31DayMonth() {
+  let from = addMonthsAnchored(`${today.slice(0, 7)}-01`, -1)
+  while (daysInclusive(from, addDays(addMonthsAnchored(from, 1), -1)) !== 31) from = addMonthsAnchored(from, -1)
+  return { from, to: addDays(from, 30) }
+}
+
+/** World + metered electricity at ₹rate/unit and a 3-bed room 201 (beds A, B, C). */
+async function setup(rate = 10, basis: 'room' | 'bed' = 'room') {
+  const w = await makeWorld()
+  await Hostel.updateOne({ _id: w.hostel._id }, { electricityRate: rate, electricityBasis: basis })
+  const r201 = await makeRoom(w.org._id, w.hostel._id, '201', 3)
+  return { ...w, r201 }
+}
+type World = Awaited<ReturnType<typeof setup>>
+
+interface Body {
+  roomId: unknown
+  bedId?: unknown
+  fromDate: string
+  toDate: string
+  units: number
+}
+const body = (b: Body) => ({ ...b, roomId: String(b.roomId), ...(b.bedId !== undefined ? { bedId: b.bedId === null ? null : String(b.bedId) } : {}) })
+const post = (w: { auth: Record<string, string> }, b: Body, auth = w.auth) => api().post('/api/electricity/readings').set(auth).send(body(b))
+const preview = (w: World, b: Body) => api().post('/api/electricity/preview').set(w.auth).send(body(b))
+const patch = (w: World, id: string, b: Record<string, unknown>, auth = w.auth) => api().patch(`/api/electricity/readings/${id}`).set(auth).send(b)
+const del = (w: World, id: string, auth = w.auth) => api().delete(`/api/electricity/readings/${id}`).set(auth)
+const billAll = (w: { org: { _id: unknown } }) => generateDueBills(w.org._id as never, { today, notify: false })
+
+/** Hosteler's latest bill (by period) and all bills. */
+const bills = (hostelerId: unknown) => Invoice.find({ hostelerId, cancelled: false }).sort({ periodStart: 1 }).lean()
+const latest = async (hostelerId: unknown) => (await bills(hostelerId)).at(-1)!
+const elecLines = (inv: { items: { key?: string | null; label: string; amount: number; ref?: string | null }[] } | null | undefined) =>
+  (inv?.items ?? []).filter((i) => i.key === 'electricity')
+
+describe('room-metered electricity by period', () => {
+  it("shares by days stayed (the owner's example: 31 and 21 days of ₹1000 → 596 / 404) onto the latest bills", async () => {
     const w = await setup()
-    const [A, , C] = w.r201.beds
-    const { hosteler: h1 } = await makeHosteler(w.org._id, w.hostel, { bed: A!, name: 'Ishaan Rao' })
-    const { hosteler: h2 } = await makeHosteler(w.org._id, w.hostel, { bed: C!, name: 'Kabir Jain' })
-    await generate(w)
-    const before1 = await bill(h1._id)
-    expect(elecLines(before1)).toEqual([])
+    const M = past31DayMonth()
+    const [A, B] = w.r201.beds
+    const { hosteler: ha } = await makeHosteler(w.org._id, w.hostel, { bed: A!, name: 'Aman', checkInDate: addDays(M.from, -10) })
+    const { hosteler: hb } = await makeHosteler(w.org._id, w.hostel, { bed: B!, name: 'Bhavya', checkInDate: addDays(M.from, 10) }) // moved in on day 11
+    await backfillStays(w.org._id)
+    await billAll(w)
+    const before = { a: await latest(ha._id), b: await latest(hb._id) }
 
-    const r = await put(w, [{ roomId: w.r201.room._id, units: 100 }]).expect(200)
-    expect(r.body).toMatchObject({ billsUpdated: 2, hostelersAffected: 2, warnings: [] })
-
-    for (const h of [h1, h2]) {
-      const inv = await bill(h._id)
-      const lines = elecLines(inv)
-      expect(lines).toHaveLength(1)
-      expect(lines[0]!.amount).toBe(500)
-      expect(lines[0]!.label).toMatch(/^Electricity/)
-      expect(lines[0]!.label).toContain('Room 201')
-      expect(lines[0]!.label).toContain('100 units')
-      expect(lines[0]!.label).toContain('₹10')
-      expect(lines[0]!.label).toContain('split 2 ways')
-      expect(inv!.total).toBe(inv!.items.reduce((a, i) => a + i.amount, 0))
-      expect(inv!.total).toBe(before1!.total + 500)
-    }
-    // the world hosteler (room 101) is untouched
-    expect(elecLines(await bill(w.hosteler._id))).toEqual([])
-
-    const row = r.body.rows.find((x: { roomNumber: string }) => x.roomNumber === '201')
-    expect(row).toMatchObject({ bedId: null, beds: 3 })
-    expect(row.occupants.map((o: { name: string; billed: boolean }) => [o.name, o.billed])).toEqual([
-      ['Ishaan Rao', true],
-      ['Kabir Jain', true],
+    // preview: nothing saved
+    const p = await preview(w, { roomId: w.r201.room._id, fromDate: M.from, toDate: M.to, units: 100 }).expect(200)
+    expect(p.body).toMatchObject({ rate: 10, amount: 1000, periodDays: 31, totalDays: 52 })
+    expect(p.body.shares).toEqual([
+      { hostelerId: String(ha._id), name: 'Aman', days: 31, amount: 596 },
+      { hostelerId: String(hb._id), name: 'Bhavya', days: 21, amount: 404 },
     ])
-    expect(row.reading).toMatchObject({ units: 100, rate: 10, amount: 1000, enteredByName: 'Owner' })
-    expect(row.reading.splits).toEqual([
-      { hostelerId: String(h1._id), name: 'Ishaan Rao', amount: 500 },
-      { hostelerId: String(h2._id), name: 'Kabir Jain', amount: 500 },
+    expect(await ElectricityReading.countDocuments({})).toBe(0)
+
+    const r = await post(w, { roomId: w.r201.room._id, fromDate: M.from, toDate: M.to, units: 100 }).expect(201)
+    expect(r.body).toMatchObject({ billsUpdated: 2, waitingForNextBill: 0, warnings: [] })
+    expect(r.body.reading).toMatchObject({ roomNumber: '201', bedLabel: null, fromDate: M.from, toDate: M.to, month: M.to.slice(0, 7), units: 100, rate: 10, amount: 1000, totalDays: 52, enteredByName: 'Owner' })
+    expect(r.body.reading.splits).toMatchObject([
+      { hostelerId: String(ha._id), name: 'Aman', days: 31, amount: 596, invoiceNumber: before.a.number },
+      { hostelerId: String(hb._id), name: 'Bhavya', days: 21, amount: 404, invoiceNumber: before.b.number },
     ])
 
-    const g = await api().get('/api/electricity').set(w.auth).query({ hostelId: String(w.hostel._id), month: MONTH }).expect(200)
-    expect(g.body.hostel).toMatchObject({ rate: 10, basis: 'room' })
-    expect(g.body.month).toBe(MONTH)
-    expect(g.body.totals).toEqual({ units: 100, amount: 1000 })
-    expect(g.body.rows.map((x: { roomNumber: string }) => x.roomNumber)).toEqual(['101', '201'])
-    const g201 = g.body.rows.find((x: { roomNumber: string }) => x.roomNumber === '201')
-    expect(g201.reading.splits.map((s: { amount: number }) => s.amount)).toEqual([500, 500])
-    expect(g.body.rows.find((x: { roomNumber: string }) => x.roomNumber === '101').reading).toBeNull()
+    const a = await latest(ha._id)
+    const [line] = elecLines(a)
+    expect(elecLines(a)).toHaveLength(1)
+    expect(line).toMatchObject({ amount: 596, ref: r.body.reading.id })
+    expect(line!.label).toBe(`Electricity – Room 201, ${periodLabel(M.from, M.to)} (100 units × ₹10, your 31 of 52 days)`)
+    expect(a.total).toBe(before.a.total + 596)
+    expect(elecLines(await latest(hb._id)).map((l) => l.amount)).toEqual([404])
+    // only the latest bill gets it
+    expect((await bills(ha._id)).slice(0, -1).every((b) => elecLines(b).length === 0)).toBe(true)
+    // the helper's hosteler in room 101 isn't part of it
+    expect((await bills(w.hosteler._id)).every((b) => elecLines(b).length === 0)).toBe(true)
+
+    // history
+    const list = await api().get('/api/electricity/readings').set(w.auth).query({ hostelId: String(w.hostel._id) }).expect(200)
+    expect(list.body.items).toHaveLength(1)
+    expect(list.body.items[0].splits.map((s: { invoiceNumber: string }) => s.invoiceNumber)).toEqual([before.a.number, before.b.number])
   })
 
-  it('odd amounts: remainder goes to the first beds in label order', async () => {
+  it('shares wait for the next bill when the hosteler has none yet', async () => {
     const w = await setup()
-    const [A, B, C] = w.r201.beds
-    // created out of bed order on purpose
-    const { hosteler: hc } = await makeHosteler(w.org._id, w.hostel, { bed: C!, name: 'C person' })
-    const { hosteler: ha } = await makeHosteler(w.org._id, w.hostel, { bed: A!, name: 'A person' })
-    const { hosteler: hb } = await makeHosteler(w.org._id, w.hostel, { bed: B!, name: 'B person' })
-    await generate(w)
+    const from = addDays(today, -9)
+    const { hosteler: h } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[0]!, checkInDate: addDays(today, -20) })
+    const r = await post(w, { roomId: w.r201.room._id, fromDate: from, toDate: today, units: 12 }).expect(201)
+    expect(r.body).toMatchObject({ billsUpdated: 0, waitingForNextBill: 1 })
+    expect(r.body.reading.splits).toMatchObject([{ hostelerId: String(h._id), days: 10, amount: 120, invoiceId: null, invoiceNumber: null }])
 
-    const r = await put(w, [{ roomId: w.r201.room._id, units: 101 }]).expect(200)
-    const reading = await ElectricityReading.findOne({ roomId: w.r201.room._id, month: MONTH }).lean()
-    expect(reading!.amount).toBe(1010)
-    expect(reading!.splits.map((s) => s.name)).toEqual(['A person', 'B person', 'C person'])
-    expect(reading!.splits.map((s) => s.amount)).toEqual([337, 337, 336])
-    expect(r.body.billsUpdated).toBe(3)
-    expect(elecLines(await bill(ha._id))[0]!.amount).toBe(337)
-    expect(elecLines(await bill(hb._id))[0]!.amount).toBe(337)
-    expect(elecLines(await bill(hc._id))[0]!.amount).toBe(336)
-    expect(elecLines(await bill(hc._id))[0]!.label).toContain('split 3 ways')
-
-    // fractional units are rounded to whole rupees: 12.34 × 10 = 123.4 → 123 → 41 each
-    await put(w, [{ roomId: w.r201.room._id, units: 12.34 }]).expect(200)
-    const again = await ElectricityReading.findOne({ roomId: w.r201.room._id, month: MONTH }).lean()
-    expect(again!.amount).toBe(123)
-    expect(again!.splits.map((s) => s.amount)).toEqual([41, 41, 41])
+    await billAll(w)
+    const [first] = await bills(h._id)
+    expect(elecLines(first)).toMatchObject([{ amount: 120, ref: r.body.reading.id }])
+    expect(String((await ElectricityReading.findById(r.body.reading.id).lean())!.splits[0]!.invoiceId)).toBe(String(first!._id))
+    // not added twice
+    await generateDueBills(w.org._id, { today: addMonthsAnchored(today, 1), notify: false })
+    const all = await bills(h._id)
+    expect(all.flatMap((b) => elecLines(b))).toHaveLength(1)
   })
 
-  it('readings entered before bills exist are added when bills are generated (and notified)', async () => {
+  it('follows stays across a transfer (days in each room)', async () => {
     const w = await setup()
-    const { hosteler: h1 } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[0]!, name: 'Ishaan Rao' })
-    const { hosteler: h2 } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[1]!, name: 'Kabir Jain' })
+    const r202 = await makeRoom(w.org._id, w.hostel._id, '202', 2)
+    const { hosteler: x } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[0]!, name: 'Xavier', checkInDate: addDays(today, -20) })
+    const { hosteler: y } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[1]!, name: 'Yash', checkInDate: addDays(today, -20) })
+    await billAll(w)
+    await api().post(`/api/hostelers/${x._id}/transfer`).set(w.auth).send({ bedId: String(r202.beds[0]!._id) }).expect(200)
 
-    const r = await put(w, [{ roomId: w.r201.room._id, units: 80 }]).expect(200)
-    expect(r.body).toMatchObject({ billsUpdated: 0, hostelersAffected: 2 })
-    const row = r.body.rows.find((x: { roomNumber: string }) => x.roomNumber === '201')
-    expect(row.occupants.every((o: { billed: boolean }) => o.billed === false)).toBe(true)
-    expect(await Invoice.countDocuments({ orgId: w.org._id })).toBe(0)
-
-    await generate(w)
-    for (const h of [h1, h2]) {
-      const inv = await bill(h._id)
-      expect(elecLines(inv).map((l) => l.amount)).toEqual([400])
-      expect(inv!.items.map((i) => i.key)).toEqual(['rent', 'mess', 'electricity'])
-      expect(inv!.total).toBe(6000 + 3000 + 400)
-      const note = await Notification.findOne({ recipientId: h._id, type: 'bill_generated' }).lean()
-      expect(note!.title).toContain('₹9,400')
-    }
-    // no electricity for the room-101 hosteler
-    const other = await bill(w.hosteler._id)
-    expect(elecLines(other)).toEqual([])
-    expect((await Notification.findOne({ recipientId: w.hosteler._id }).lean())!.title).toContain('₹9,000')
+    const from = addDays(today, -9)
+    const r1 = await post(w, { roomId: w.r201.room._id, fromDate: from, toDate: today, units: 19 }).expect(201)
+    expect(r1.body.reading.splits.map((s: { name: string; days: number; amount: number }) => [s.name, s.days, s.amount])).toEqual([
+      ['Xavier', 9, 90], // until yesterday
+      ['Yash', 10, 100],
+    ])
+    const r2 = await post(w, { roomId: r202.room._id, fromDate: from, toDate: today, units: 5 }).expect(201)
+    expect(r2.body.reading.splits.map((s: { name: string; days: number; amount: number }) => [s.name, s.days, s.amount])).toEqual([['Xavier', 1, 50]])
+    expect(elecLines(await latest(x._id)).map((l) => l.amount)).toEqual([90, 50])
+    expect(elecLines(await latest(x._id))[1]!.label).not.toContain('your') // alone on that meter
+    expect(elecLines(await latest(y._id)).map((l) => l.amount)).toEqual([100])
   })
 
-  it('re-saving replaces the electricity line; 0 / null removes it', async () => {
+  it('a hosteler who checked out during the period still pays for their days', async () => {
     const w = await setup()
-    const { hosteler: h1 } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[0]! })
-    await generate(w)
-    const base = (await bill(h1._id))!.total
+    const { hosteler: z } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[0]!, name: 'Zoya', checkInDate: addDays(today, -20) })
+    const { hosteler: v } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[1]!, name: 'Vivek', checkInDate: addDays(today, -20) })
+    await billAll(w)
+    await api().post(`/api/hostelers/${z._id}/check-out`).set(w.auth).send({ date: addDays(today, -5) }).expect(200)
 
-    await put(w, [{ roomId: w.r201.room._id, units: 50 }]).expect(200)
-    await put(w, [{ roomId: w.r201.room._id, units: 70 }]).expect(200)
-    let inv = await bill(h1._id)
-    expect(elecLines(inv).map((l) => l.amount)).toEqual([700])
-    expect(inv!.total).toBe(base + 700)
-    expect(await ElectricityReading.countDocuments({ roomId: w.r201.room._id })).toBe(1)
+    const r = await post(w, { roomId: w.r201.room._id, fromDate: addDays(today, -9), toDate: today, units: 15 }).expect(201)
+    expect(r.body.reading.splits.map((s: { name: string; days: number; amount: number }) => [s.name, s.days, s.amount])).toEqual([
+      ['Zoya', 5, 50],
+      ['Vivek', 10, 100],
+    ])
+    expect(r.body.billsUpdated).toBe(2)
+    expect(elecLines(await latest(z._id)).map((l) => l.amount)).toEqual([50])
+    // checked-out hostelers don't appear as current occupants of the meter
+    const meters = await api().get('/api/electricity').set(w.auth).query({ hostelId: String(w.hostel._id) }).expect(200)
+    const m201 = meters.body.meters.find((m: { roomNumber: string }) => m.roomNumber === '201')
+    expect(m201.occupants.map((o: { name: string }) => o.name)).toEqual(['Vivek'])
+  })
 
-    const r0 = await put(w, [{ roomId: w.r201.room._id, units: 0 }]).expect(200)
-    expect(r0.body.billsUpdated).toBe(1)
-    inv = await bill(h1._id)
-    expect(elecLines(inv)).toEqual([])
-    expect(inv!.total).toBe(base)
-    expect(await ElectricityReading.countDocuments({ roomId: w.r201.room._id })).toBe(0)
+  it('editing re-splits and updates the bill lines; deleting removes them', async () => {
+    const w = await setup()
+    const { hosteler: h } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[0]!, checkInDate: addDays(today, -40) })
+    await billAll(w)
+    const base = (await latest(h._id)).total
+    const r = await post(w, { roomId: w.r201.room._id, fromDate: addDays(today, -29), toDate: addDays(today, -15), units: 10 }).expect(201)
+    const id = r.body.reading.id as string
 
-    await put(w, [{ roomId: w.r201.room._id, units: 30 }]).expect(200)
-    expect((await bill(h1._id))!.total).toBe(base + 300)
-    await put(w, [{ roomId: w.r201.room._id, units: null }]).expect(200)
-    expect((await bill(h1._id))!.total).toBe(base)
+    const e1 = await patch(w, id, { units: 20 }).expect(200)
+    expect(e1.body).toMatchObject({ billsUpdated: 1 })
+    expect(e1.body.reading).toMatchObject({ units: 20, amount: 200 })
+    let bill = await latest(h._id)
+    expect(elecLines(bill)).toMatchObject([{ amount: 200, ref: id }])
+    expect(bill.total).toBe(base + 200)
+
+    // a second person in the room for part of the period: editing the dates re-splits by days
+    const { hosteler: g } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[1]!, name: 'Guest', checkInDate: addDays(today, -19) })
+    await RoomStay.create({ orgId: w.org._id, hostelId: w.hostel._id, hostelerId: g._id, roomId: w.r201.room._id, bedId: w.r201.beds[1]!._id, from: addDays(today, -19), to: null })
+    const e2 = await patch(w, id, { fromDate: addDays(today, -24), toDate: addDays(today, -15) }).expect(200)
+    expect(e2.body.reading.splits.map((s: { days: number; amount: number }) => [s.days, s.amount])).toEqual([
+      [10, 133],
+      [5, 67],
+    ])
+    expect(e2.body.waitingForNextBill).toBe(1) // the guest has no bill yet
+    bill = await latest(h._id)
+    expect(elecLines(bill).map((l) => l.amount)).toEqual([133])
+    expect(bill.total).toBe(base + 133)
+
+    await patch(w, id, { units: 0 }).expect(400)
+    await patch(w, id, { roomId: String(w.room._id) }).expect(400) // the meter can't be changed
+    await patch(w, '000000000000000000000000', { units: 5 }).expect(404)
+
+    await del(w, id).expect(200)
+    bill = await latest(h._id)
+    expect(elecLines(bill)).toEqual([])
+    expect(bill.total).toBe(base)
+    expect(await ElectricityReading.countDocuments({})).toBe(0)
+    await del(w, id).expect(404)
+  })
+
+  it('periods on one meter cannot overlap; next "from" is suggested', async () => {
+    const w = await setup()
+    await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[0]!, checkInDate: addDays(today, -40) })
+    const meters0 = await api().get('/api/electricity').set(w.auth).query({ hostelId: String(w.hostel._id) }).expect(200)
+    const m0 = meters0.body.meters.find((m: { roomNumber: string }) => m.roomNumber === '201')
+    expect(m0).toMatchObject({ lastReading: null, suggestedFrom: addDays(today, -40), beds: 3 }) // first move-in (stays backfilled)
+    expect(meters0.body).toMatchObject({ today, hostel: { rate: 10, basis: 'room' } })
+
+    const first = await post(w, { roomId: w.r201.room._id, fromDate: addDays(today, -30), toDate: addDays(today, -15), units: 10 }).expect(201)
+    const clash = await post(w, { roomId: w.r201.room._id, fromDate: addDays(today, -16), toDate: addDays(today, -10), units: 5 }).expect(409)
+    expect(clash.body.error.message).toMatch(/overlap/)
+    await post(w, { roomId: w.r201.room._id, fromDate: addDays(today, -40), toDate: addDays(today, -30), units: 5 }).expect(409)
+    // another meter, same dates: fine
+    await post(w, { roomId: w.room._id, fromDate: addDays(today, -30), toDate: addDays(today, -15), units: 5 }).expect(201)
+    // the next period starting the day after: fine
+    const second = await post(w, { roomId: w.r201.room._id, fromDate: addDays(today, -14), toDate: today, units: 5 }).expect(201)
+    // editing into the other period: 409
+    await patch(w, first.body.reading.id, { toDate: addDays(today, -14) }).expect(409)
+
+    const meters = await api().get('/api/electricity').set(w.auth).query({ hostelId: String(w.hostel._id) }).expect(200)
+    const m = meters.body.meters.find((x: { roomNumber: string }) => x.roomNumber === '201')
+    expect(m).toMatchObject({ lastReading: { id: second.body.reading.id, fromDate: addDays(today, -14), toDate: today }, suggestedFrom: addDays(today, 1) })
+    const hist = await api().get('/api/electricity/readings').set(w.auth).query({ hostelId: String(w.hostel._id), roomId: String(w.r201.room._id) }).expect(200)
+    expect(hist.body.items.map((i: { id: string }) => i.id)).toEqual([second.body.reading.id, first.body.reading.id]) // newest first
+  })
+
+  it('validates the period, units and rate', async () => {
+    const w = await setup()
+    await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[0]!, checkInDate: addDays(today, -40) })
+    const ok = { roomId: w.r201.room._id, fromDate: addDays(today, -10), toDate: today, units: 10 }
+    await post(w, { ...ok, fromDate: today, toDate: addDays(today, -1) }).expect(400) // from after to
+    const fut = await post(w, { ...ok, toDate: addDays(today, 1) }).expect(400)
+    expect(fut.body.error.message).toMatch(/future/)
+    await preview(w, { ...ok, toDate: addDays(today, 1) }).expect(400)
+    await post(w, { ...ok, fromDate: addDays(today, -400) }).expect(400) // over a year
+    await post(w, { ...ok, units: 0 }).expect(400)
+    await post(w, { ...ok, units: -5 }).expect(400)
+    await post(w, { ...ok, fromDate: '01/10/2026' }).expect(400)
+    await api().post('/api/electricity/readings').set(w.auth).send({ fromDate: ok.fromDate, toDate: ok.toDate, units: 5 }).expect(400)
+    await post(w, { ...ok, roomId: '000000000000000000000000' }).expect(404)
+
+    await Hostel.updateOne({ _id: w.hostel._id }, { electricityRate: 0 })
+    const noRate = await post(w, ok).expect(400)
+    expect(noRate.body.error.message).toMatch(/rate/i)
     expect(await ElectricityReading.countDocuments({})).toBe(0)
   })
 
-  it('several rooms in one save; each hosteler gets one line per reading', async () => {
+  it('a room nobody stayed in: reading saved with a warning, nobody billed', async () => {
     const w = await setup()
-    const { hosteler: h1 } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[0]! })
-    await generate(w)
-    const r = await put(w, [
-      { roomId: w.room._id, units: 25 },
-      { roomId: w.r201.room._id, units: 40 },
-    ]).expect(200)
-    expect(r.body).toMatchObject({ billsUpdated: 2, hostelersAffected: 2 })
-    expect(r.body.totals).toEqual({ units: 65, amount: 650 })
-    expect(elecLines(await bill(w.hosteler._id)).map((l) => l.amount)).toEqual([250])
-    expect(elecLines(await bill(h1._id)).map((l) => l.amount)).toEqual([400])
-  })
-
-  it('room with nobody in it: reading saved, warning returned, nobody billed', async () => {
-    const w = await setup()
-    await generate(w)
-    const before = (await bill(w.hosteler._id))!.total
-    const r = await put(w, [{ roomId: w.r201.room._id, units: 60 }]).expect(200)
-    expect(r.body.billsUpdated).toBe(0)
-    expect(r.body.hostelersAffected).toBe(0)
+    await billAll(w)
+    const r = await post(w, { roomId: w.r201.room._id, fromDate: addDays(today, -9), toDate: today, units: 7 }).expect(201)
+    expect(r.body).toMatchObject({ billsUpdated: 0, waitingForNextBill: 0 })
+    expect(r.body.reading).toMatchObject({ amount: 70, totalDays: 0, splits: [] })
     expect(r.body.warnings).toHaveLength(1)
     expect(r.body.warnings[0]).toContain('Room 201')
-    const reading = await ElectricityReading.findOne({ roomId: w.r201.room._id }).lean()
-    expect(reading).toMatchObject({ units: 60, amount: 600, splits: [] })
-    expect((await bill(w.hosteler._id))!.total).toBe(before)
-    expect(await Invoice.countDocuments({ orgId: w.org._id, 'items.key': 'electricity' })).toBe(0)
+    expect(await Invoice.countDocuments({ 'items.key': 'electricity' })).toBe(0)
   })
 
-  it('checked-out and reserved hostelers are not part of the split', async () => {
+  it('409 when a change would leave a bill below what was already paid; nothing changes', async () => {
     const w = await setup()
-    const [A, B, C] = w.r201.beds
-    const { hosteler: active } = await makeHosteler(w.org._id, w.hostel, { bed: A!, name: 'Active One' })
-    const { hosteler: gone } = await makeHosteler(w.org._id, w.hostel, { bed: B!, name: 'Gone' })
-    const { hosteler: reserved } = await makeHosteler(w.org._id, w.hostel, { bed: C!, name: 'Reserved' })
-    await generate(w)
-    // stale bed links on purpose: only the hosteler status should matter
-    await Hosteler.updateOne({ _id: gone._id }, { status: 'checked_out' })
-    await Hosteler.updateOne({ _id: reserved._id }, { status: 'reserved' })
+    const { hosteler: h } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[0]!, checkInDate: addDays(today, -20) })
+    await billAll(w)
+    const r = await post(w, { roomId: w.r201.room._id, fromDate: addDays(today, -9), toDate: today, units: 30 }).expect(201)
+    const bill = await latest(h._id)
+    await api().post('/api/payments').set(w.auth).send({ hostelerId: String(h._id), invoiceId: String(bill._id), amount: bill.total, mode: 'cash', date: today }).expect(201)
 
-    const r = await put(w, [{ roomId: w.r201.room._id, units: 100 }]).expect(200)
-    expect(r.body.hostelersAffected).toBe(1)
-    const reading = await ElectricityReading.findOne({ roomId: w.r201.room._id }).lean()
-    expect(reading!.splits.map((s) => [s.name, s.amount])).toEqual([['Active One', 1000]])
-    expect(elecLines(await bill(active._id)).map((l) => l.amount)).toEqual([1000])
-    expect(elecLines(await bill(gone._id))).toEqual([])
-    expect(elecLines(await bill(reserved._id))).toEqual([])
-    const row = r.body.rows.find((x: { roomNumber: string }) => x.roomNumber === '201')
-    expect(row.occupants.map((o: { name: string }) => o.name)).toEqual(['Active One'])
-  })
-
-  it('a hosteler who leaves the room loses the line when the reading is re-saved', async () => {
-    const w = await setup()
-    const { hosteler: h1 } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[0]! })
-    const { hosteler: h2 } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[1]! })
-    await generate(w)
-    await put(w, [{ roomId: w.r201.room._id, units: 100 }]).expect(200)
-    expect(elecLines(await bill(h2._id)).map((l) => l.amount)).toEqual([500])
-
-    await Bed.updateOne({ _id: w.r201.beds[1]!._id }, { hostelerId: null })
-    await put(w, [{ roomId: w.r201.room._id, units: 100 }]).expect(200)
-    expect(elecLines(await bill(h1._id)).map((l) => l.amount)).toEqual([1000])
-    expect(elecLines(await bill(h2._id))).toEqual([])
-  })
-
-  it('rate 0 → 400 asking to set the rate; nothing saved', async () => {
-    const w = await setup(0)
-    await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[0]! })
-    const r = await put(w, [{ roomId: w.r201.room._id, units: 100 }]).expect(400)
-    expect(JSON.stringify(r.body)).toMatch(/rate/i)
-    expect(await ElectricityReading.countDocuments({})).toBe(0)
-  })
-
-  it('validates the body', async () => {
-    const w = await setup()
-    const hostelId = String(w.hostel._id)
-    const roomId = String(w.r201.room._id)
-    await api().put('/api/electricity').set(w.auth).send({ hostelId, month: MONTH, readings: [] }).expect(400)
-    await api().put('/api/electricity').set(w.auth).send({ hostelId, month: '2026-13x', readings: [{ roomId, units: 5 }] }).expect(400)
-    await api().put('/api/electricity').set(w.auth).send({ hostelId, month: MONTH, readings: [{ roomId, units: -5 }] }).expect(400)
-    await api().put('/api/electricity').set(w.auth).send({ hostelId, month: MONTH, readings: [{ roomId: 'nope', units: 5 }] }).expect(400)
-    await api().get('/api/electricity').set(w.auth).query({ hostelId: 'nope' }).expect(400)
-    expect(await ElectricityReading.countDocuments({})).toBe(0)
-  })
-
-  it('409 when a partly paid bill would end up below the amount paid; nothing changes', async () => {
-    const w = await setup()
-    const { hosteler: h1 } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[0]! })
-    const { hosteler: h2 } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[1]! })
-    await generate(w)
-    await put(w, [{ roomId: w.r201.room._id, units: 100 }]).expect(200) // 500 each → 9500
-    const inv1 = await bill(h1._id)
-    expect(inv1!.total).toBe(9500)
-    await api().post('/api/payments').set(w.auth).send({ hostelerId: String(h1._id), invoiceId: String(inv1!._id), amount: 9400, mode: 'cash' }).expect(201)
-
-    // re-saving at 20 units would make h1's bill 9100 < 9400 paid
-    const r = await put(w, [
-      { roomId: w.room._id, units: 10 }, // an earlier reading in the same save must be rolled back too
-      { roomId: w.r201.room._id, units: 20 },
-    ]).expect(409)
-    expect(JSON.stringify(r.body)).toMatch(/paid/i)
-
-    const reading = await ElectricityReading.findOne({ roomId: w.r201.room._id }).lean()
-    expect(reading).toMatchObject({ units: 100, amount: 1000 })
-    expect(await ElectricityReading.countDocuments({ roomId: w.room._id })).toBe(0)
-    const after1 = await bill(h1._id)
-    expect(after1).toMatchObject({ total: 9500, paidAmount: 9400 })
-    expect(elecLines(after1).map((l) => l.amount)).toEqual([500])
-    expect((await bill(h2._id))!.total).toBe(9500)
-    expect(elecLines(await bill(w.hosteler._id))).toEqual([])
-
-    // a reading that keeps the total ≥ paid is fine (9400 exactly)
-    await put(w, [{ roomId: w.r201.room._id, units: 80 }]).expect(200)
-    expect(await bill(h1._id)).toMatchObject({ total: 9400, paidAmount: 9400 })
+    await del(w, r.body.reading.id).expect(409)
+    await patch(w, r.body.reading.id, { units: 10 }).expect(409)
+    const after = await Invoice.findById(bill._id).lean()
+    expect(after!.total).toBe(bill.total)
+    expect(elecLines(after)).toMatchObject([{ amount: 300 }])
+    expect((await ElectricityReading.findById(r.body.reading.id).lean())!.units).toBe(30)
+    // a higher reading is fine (the bill grows)
+    await patch(w, r.body.reading.id, { units: 40 }).expect(200)
+    expect((await Invoice.findById(bill._id).lean())!.total).toBe(bill.total + 100)
   })
 })
 
@@ -329,73 +323,72 @@ describe('bed-metered electricity', () => {
   it('requires a bed and bills each bed’s hosteler the full amount', async () => {
     const w = await setup(8, 'bed')
     const [A, B, C] = w.r201.beds
-    const { hosteler: ha } = await makeHosteler(w.org._id, w.hostel, { bed: A! })
-    const { hosteler: hb } = await makeHosteler(w.org._id, w.hostel, { bed: B! })
-    await generate(w)
+    const { hosteler: ha } = await makeHosteler(w.org._id, w.hostel, { bed: A!, checkInDate: addDays(today, -20) })
+    const { hosteler: hb } = await makeHosteler(w.org._id, w.hostel, { bed: B!, checkInDate: addDays(today, -20) })
+    await billAll(w)
+    const period = { roomId: w.r201.room._id, fromDate: addDays(today, -9), toDate: today }
 
-    const no = await put(w, [{ roomId: w.r201.room._id, units: 10 }]).expect(400)
-    expect(JSON.stringify(no.body)).toMatch(/bed/i)
-    await put(w, [{ roomId: w.r201.room._id, bedId: null, units: 10 }]).expect(400)
-    // bed from another room
-    await put(w, [{ roomId: w.r201.room._id, bedId: w.beds[0]!._id, units: 10 }]).expect(404)
+    const no = await post(w, { ...period, units: 10 }).expect(400)
+    expect(no.body.error.message).toMatch(/bed/i)
+    await post(w, { ...period, bedId: null, units: 10 }).expect(400)
+    await post(w, { ...period, bedId: w.beds[0]!._id, units: 10 }).expect(404) // bed from another room
 
-    const r = await put(w, [
-      { roomId: w.r201.room._id, bedId: A!._id, units: 30 },
-      { roomId: w.r201.room._id, bedId: B!._id, units: 45 },
-      { roomId: w.r201.room._id, bedId: C!._id, units: 5 }, // empty bed
-    ]).expect(200)
-    expect(r.body.billsUpdated).toBe(2)
-    expect(r.body.warnings).toHaveLength(1)
-    expect(r.body.warnings[0]).toContain('bed C')
+    const ra = await post(w, { ...period, bedId: A!._id, units: 30 }).expect(201)
+    expect(ra.body.reading).toMatchObject({ bedLabel: 'A', amount: 240, totalDays: 10 })
+    await post(w, { ...period, bedId: B!._id, units: 45 }).expect(201) // same dates, other bed: no overlap
+    await post(w, { ...period, bedId: A!._id, units: 1 }).expect(409)
+    const rc = await post(w, { ...period, bedId: C!._id, units: 5 }).expect(201) // empty bed
+    expect(rc.body.warnings[0]).toContain('Bed C')
 
-    const la = elecLines(await bill(ha._id))
+    const la = elecLines(await latest(ha._id))
     expect(la.map((l) => l.amount)).toEqual([240])
-    expect(la[0]!.label).toContain('Bed A')
-    expect(la[0]!.label).not.toContain('split')
-    expect(elecLines(await bill(hb._id)).map((l) => l.amount)).toEqual([360])
+    expect(la[0]!.label).toContain('Room 201 Bed A')
+    expect(la[0]!.label).not.toContain('your')
+    expect(elecLines(await latest(hb._id)).map((l) => l.amount)).toEqual([360])
 
-    expect(await ElectricityReading.countDocuments({ roomId: w.r201.room._id })).toBe(3)
-    const rows = r.body.rows.filter((x: { roomNumber: string }) => x.roomNumber === '201')
+    const meters = await api().get('/api/electricity').set(w.auth).query({ hostelId: String(w.hostel._id) }).expect(200)
+    expect(meters.body.hostel.basis).toBe('bed')
+    const rows = meters.body.meters.filter((x: { roomNumber: string }) => x.roomNumber === '201')
     expect(rows.map((x: { bedLabel: string }) => x.bedLabel)).toEqual(['A', 'B', 'C'])
-    expect(rows.map((x: { reading: { amount: number } }) => x.reading.amount)).toEqual([240, 360, 40])
+    expect(rows.map((x: { lastReading: { amount: number } }) => x.lastReading.amount)).toEqual([240, 360, 40])
     expect(rows[0].occupants.map((o: { id: string }) => o.id)).toEqual([String(ha._id)])
     expect(rows[2].occupants).toEqual([])
-    expect(r.body.hostel.basis).toBe('bed')
   })
 })
 
 describe('electricity permissions', () => {
-  it('warden and manager can save; accountant 403; hosteler 403; other org 404', async () => {
+  it('warden and manager can work with readings; accountant 403; hosteler 403; other org 404', async () => {
     const w = await setup()
-    const { hosteler: h1 } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[0]! })
+    const { hosteler: h1 } = await makeHosteler(w.org._id, w.hostel, { bed: w.r201.beds[0]!, checkInDate: addDays(today, -40) })
     const warden = await makeStaffUser(w.org._id, 'warden')
     const manager = await makeStaffUser(w.org._id, 'manager')
     const accountant = await makeStaffUser(w.org._id, 'accountant')
-    const q = { hostelId: String(w.hostel._id), month: MONTH }
+    const q = { hostelId: String(w.hostel._id) }
+    const p1 = { roomId: w.r201.room._id, fromDate: addDays(today, -30), toDate: addDays(today, -21), units: 10 }
 
-    const rw = await put(w, [{ roomId: w.r201.room._id, units: 10 }], warden.auth).expect(200)
-    expect(rw.body.rows.find((x: { roomNumber: string }) => x.roomNumber === '201').reading.enteredByName).toBe('warden')
+    const rw = await post(w, p1, warden.auth).expect(201)
+    expect(rw.body.reading.enteredByName).toBe('warden')
     await api().get('/api/electricity').set(warden.auth).query(q).expect(200)
-    await put(w, [{ roomId: w.r201.room._id, units: 20 }], manager.auth).expect(200)
-    await api().get('/api/electricity').set(manager.auth).query(q).expect(200)
+    await patch(w, rw.body.reading.id, { units: 20 }, manager.auth).expect(200)
+    await api().get('/api/electricity/readings').set(manager.auth).query(q).expect(200)
 
-    await put(w, [{ roomId: w.r201.room._id, units: 30 }], accountant.auth).expect(403)
+    await post(w, { ...p1, fromDate: addDays(today, -20), toDate: addDays(today, -11) }, accountant.auth).expect(403)
     await api().get('/api/electricity').set(accountant.auth).query(q).expect(403)
-    await put(w, [{ roomId: w.r201.room._id, units: 30 }], w.hostelerAuth).expect(403)
+    await del(w, rw.body.reading.id, accountant.auth).expect(403)
+    await post(w, p1, w.hostelerAuth).expect(403)
     await api().get('/api/electricity').set(w.hostelerAuth).query(q).expect(403)
-    await api().put('/api/electricity').send({ ...q, readings: [{ roomId: String(w.r201.room._id), units: 1 }] }).expect(401)
+    await api().post('/api/electricity/readings').send(body(p1)).expect(401)
 
-    // other org: their hostel / room are invisible
+    // other org: our hostel / room / reading are invisible
     const other = await setup()
-    await put(w, [{ roomId: w.r201.room._id, units: 30 }], other.auth).expect(404) // our hostel id with their token
     await api().get('/api/electricity').set(other.auth).query(q).expect(404)
-    await put(w, [{ roomId: other.r201.room._id, units: 30 }]).expect(404) // their room in our hostel
-    // a room from another hostel of the same org is also rejected
-    const second = await makeHostel(w.org._id, 'Second')
-    const r2 = await makeRoom(w.org._id, second._id, '901', 1)
-    await put(w, [{ roomId: r2.room._id, units: 30 }]).expect(404)
+    await api().get('/api/electricity/readings').set(other.auth).query(q).expect(404)
+    await post(w, { ...p1, fromDate: addDays(today, -10), toDate: today }, other.auth).expect(404)
+    await api().post('/api/electricity/preview').set(other.auth).send(body(p1)).expect(404)
+    await patch(w, rw.body.reading.id, { units: 99 }, other.auth).expect(404)
+    await del(w, rw.body.reading.id, other.auth).expect(404)
 
-    const reading = await ElectricityReading.findOne({ roomId: w.r201.room._id }).lean()
+    const reading = await ElectricityReading.findById(rw.body.reading.id).lean()
     expect(reading!.units).toBe(20)
     expect(reading!.splits.map((s) => String(s.hostelerId))).toEqual([String(h1._id)])
     expect(await ElectricityReading.countDocuments({})).toBe(1)
@@ -405,16 +398,19 @@ describe('electricity permissions', () => {
 describe('portal', () => {
   it('the hosteler sees the electricity line on their bill', async () => {
     const w = await setup()
-    await generate(w)
-    await put(w, [{ roomId: w.room._id, units: 55 }]).expect(200)
+    await Hosteler.updateOne({ _id: w.hosteler._id }, { checkInDate: addDays(today, -15) })
+    await billAll(w)
+    await post(w, { roomId: w.room._id, fromDate: addDays(today, -9), toDate: today, units: 55 }).expect(201)
     const r = await api().get('/api/portal/payment-info').set(w.hostelerAuth).expect(200)
-    expect(r.body.bills).toHaveLength(1)
-    const b = r.body.bills[0]
-    expect(b.month).toBe(MONTH)
+    const withLine = r.body.bills.filter((b: { items: { key: string }[] }) => b.items.some((i) => i.key === 'electricity'))
+    expect(withLine).toHaveLength(1)
+    const b = withLine[0]
     const line = b.items.find((i: { key: string }) => i.key === 'electricity')
     expect(line).toMatchObject({ amount: 550 })
     expect(line.label).toContain('Room 101')
     expect(b.total).toBe(6000 + 3000 + 550)
-    expect(r.body.totalDue).toBe(9550)
+    expect(b.periodStart).toBe((await latest(w.hosteler._id)).periodStart)
+    const inv = await api().get(`/api/portal/invoices/${b.id}`).set(w.hostelerAuth).expect(200)
+    expect(inv.body.invoice.items.some((i: { key: string; amount: number }) => i.key === 'electricity' && i.amount === 550)).toBe(true)
   })
 })

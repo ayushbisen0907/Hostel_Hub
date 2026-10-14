@@ -1,27 +1,40 @@
 /**
- * Rooms & Beds → Electricity: enter the month's meter readings.
+ * Rooms & Beds → Electricity: meter readings by period.
  *
- * One row per room (hostel.electricityBasis 'room' — the amount is split
- * equally among the room's hostelers) or per bed ('bed'). Amount = units ×
- * rate; each hosteler's share is added to their bill for that month
- * (immediately if the bill exists, otherwise when the bills are generated).
+ * One meter per room (hostel.electricityBasis 'room') or per bed ('bed').
+ * A reading says which period it covers (from–to) and how many units were
+ * used. Amount = units × rate, shared among everyone who stayed on that meter
+ * during the period in proportion to the days each stayed; each share is added
+ * to the hosteler's current bill (or their next bill if they have none yet).
  */
-import { useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { AlertTriangle, CheckCircle2, Info, RotateCcw, Save, Settings2, Zap } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronUp, History, Info, Pencil, Plus, Settings2, Trash2, Zap } from 'lucide-react'
 import { useHostels, useSingleHostelId } from '@/api/common'
-import { useElectricitySheet, useSaveReadings, type ElectricityRow, type ReadingInput, type SaveReadingsResult } from '@/api/electricity'
+import {
+  savedMessage,
+  useCreateReading,
+  useDeleteReading,
+  useElectricity,
+  useMeterReadings,
+  useReadingPreview,
+  useUpdateReading,
+  type ElectricityMeter,
+  type ElectricityReading,
+  type ReadingInput,
+  type SaveReadingResult,
+} from '@/api/electricity'
 import { useCan } from '@/api/session'
 import type { ID } from '@/api/types'
-import { Badge, Button, Card, EmptyState, ErrorState, Field, Input, LoadingState, Select, confirm, toast } from '@/components/ui'
-import { splitEqually } from '@/lib/charges'
-import { cn, currentMonth, formatDateTime, formatMoney, formatMonth } from '@/lib/utils'
+import { Badge, Button, Card, EmptyState, ErrorState, Field, Input, LoadingState, Select, Spinner, confirm, toast } from '@/components/ui'
+import { cn, formatDateTime, formatMoney, formatPeriod } from '@/lib/utils'
+import { useDebounced } from './_fees'
 
 const MAX_UNITS = 100_000
 
-const rowKey = (r: { roomId: ID; bedId: ID | null }) => `${r.roomId}|${r.bedId ?? ''}`
-const rowName = (r: ElectricityRow) => `Room ${r.roomNumber}${r.bedId ? ` · Bed ${r.bedLabel ?? ''}` : ''}`
+const meterName = (m: { roomNumber: string; bedId: ID | null; bedLabel: string | null }) => `Room ${m.roomNumber}${m.bedId ? ` · Bed ${m.bedLabel ?? ''}` : ''}`
 const rateText = (rate: number) => `₹${rate.toLocaleString('en-IN')}`
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 function floorName(f: number) {
   if (f === 0) return 'Ground floor'
@@ -31,26 +44,15 @@ function floorName(f: number) {
   return `${f}${suffix} floor`
 }
 
-/** '' -> null (no reading); invalid -> undefined */
-function parseUnits(v: string): number | null | undefined {
-  const t = v.trim()
-  if (!t) return null
-  const n = Number(t)
-  if (!Number.isFinite(n) || n < 0 || n > MAX_UNITS) return undefined
-  return n === 0 ? null : Math.round(n * 100) / 100
+/** Toast for a saved / updated reading: bill counts, then each warning. */
+function announce(r: SaveReadingResult, verb: string) {
+  toast.success(savedMessage(r, verb))
+  for (const w of r.warnings) toast.info(w)
 }
 
-interface RowState {
-  row: ElectricityRow
-  key: string
-  value: string
-  units: number | null | undefined
-  changed: boolean
-  /** saved reading no longer matches the current rate / occupants */
-  stale: boolean
-  amount: number
-  shares: { id: string; name: string; amount: number; billed: boolean }[]
-}
+/* ------------------------------------------------------------------ */
+/* Panel                                                               */
+/* ------------------------------------------------------------------ */
 
 export function ElectricityPanel() {
   const can = useCan()
@@ -59,141 +61,11 @@ export function ElectricityPanel() {
   const defaultHostel = useSingleHostelId()
   const [picked, setPicked] = useState<ID | null>(null)
   const hostelId = picked && hostels.some((h) => h.id === picked) ? picked : defaultHostel
-  const [month, setMonth] = useState(currentMonth())
 
-  // only the user's edits; everything else comes from the saved readings
-  const [draft, setDraft] = useState<Record<string, string>>({})
-  const [forced, setForced] = useState<Set<string>>(new Set())
-  const [result, setResult] = useState<{
-    res: SaveReadingsResult
-    pending: number
-  } | null>(null)
-  const inputs = useRef<(HTMLInputElement | null)[]>([])
-  const saveBtn = useRef<HTMLButtonElement>(null)
-
-  const sheetQ = useElectricitySheet(hostelId, month)
-  const sheet = sheetQ.data
-  const rate = sheet?.hostel.rate ?? 0
-  const basis = sheet?.hostel.basis ?? 'room'
-
-  const save = useSaveReadings()
-
-  const rows: RowState[] = useMemo(() => {
-    if (!sheet) return []
-    return sheet.rows.map((row) => {
-      const key = rowKey(row)
-      const saved = row.reading?.units ?? null
-      const value = draft[key] ?? (saved != null ? String(saved) : '')
-      const units = parseUnits(value)
-      const stale =
-        !!row.reading &&
-        (row.reading.rate !== sheet.hostel.rate ||
-          row.reading.splits.length !== row.occupants.length ||
-          row.reading.splits.some((s, i) => s.hostelerId !== row.occupants[i]?.id))
-      const changed = (units !== undefined && units !== saved) || (forced.has(key) && units !== undefined)
-      let amount = 0
-      let shares: RowState['shares'] = []
-      if (!changed && row.reading) {
-        amount = row.reading.amount
-        shares = row.reading.splits.map((s) => ({
-          id: s.hostelerId,
-          name: s.name,
-          amount: s.amount,
-          billed: row.occupants.find((o) => o.id === s.hostelerId)?.billed ?? false,
-        }))
-      } else if (units) {
-        amount = Math.round(units * sheet.hostel.rate)
-        const parts = splitEqually(amount, row.occupants.length)
-        shares = row.occupants.map((o, i) => ({
-          id: o.id,
-          name: o.name,
-          amount: parts[i] ?? 0,
-          billed: o.billed,
-        }))
-      }
-      return { row, key, value, units, changed, stale, amount, shares }
-    })
-  }, [sheet, draft, forced])
-
-  const changedRows = rows.filter((r) => r.changed)
-  const invalidRows = rows.filter((r) => r.units === undefined)
-  const dirty = changedRows.length > 0 || invalidRows.length > 0
-  const totals = rows.reduce(
-    (a, r) => ({
-      units: a.units + (r.units ?? 0),
-      amount: a.amount + (r.units ? r.amount : 0),
-    }),
-    { units: 0, amount: 0 },
-  )
-  const filledRows = rows.filter((r) => r.units).length
-
-  const resetDraft = () => {
-    setDraft({})
-    setForced(new Set())
-  }
-
-  const guardDirty = async () =>
-    !dirty ||
-    (await confirm({
-      title: 'Discard unsaved readings?',
-      message: `You have ${changedRows.length || invalidRows.length} unsaved change(s). They will be lost.`,
-      confirmText: 'Discard',
-      danger: true,
-    }))
-
-  const switchHostel = async (id: ID) => {
-    if (!(await guardDirty())) return
-    resetDraft()
-    setResult(null)
-    setPicked(id)
-  }
-  const switchMonth = async (m: string) => {
-    if (!m || !(await guardDirty())) return
-    resetDraft()
-    setResult(null)
-    setMonth(m)
-  }
-
-  const onKey = (e: KeyboardEvent<HTMLInputElement>, i: number) => {
-    if (e.key !== 'Enter') return
-    e.preventDefault()
-    const next = inputs.current.slice(i + 1).find(Boolean)
-    if (next) {
-      next.focus()
-      next.select()
-    } else saveBtn.current?.focus()
-  }
-
-  const submit = () => {
-    if (!sheet || !hostelId) return
-    if (invalidRows.length) {
-      const first = rows.indexOf(invalidRows[0]!)
-      inputs.current[first]?.focus()
-      return toast.error(`${rowName(invalidRows[0]!.row)}: enter units between 0 and ${MAX_UNITS.toLocaleString('en-IN')}`)
-    }
-    if (!changedRows.length) return toast.info('Nothing to save')
-    const readings: ReadingInput[] = changedRows.map((r) => ({
-      roomId: r.row.roomId,
-      bedId: r.row.bedId,
-      units: r.units ?? null,
-    }))
-    save.mutate(
-      { hostelId, month, readings },
-      {
-        onSuccess: (res) => {
-          resetDraft()
-          // hostelers whose share waits for the month's bills to be generated
-          const pending = new Set(res.rows.filter((r) => r.reading).flatMap((r) => r.occupants.filter((o) => !o.billed).map((o) => o.id))).size
-          setResult({ res, pending })
-          toast.success(
-            `Saved — ${res.billsUpdated} bill${res.billsUpdated === 1 ? '' : 's'} updated${res.warnings.length ? ` · ${res.warnings.length} warning(s)` : ''}`,
-          )
-        },
-      },
-    )
-  }
-
-  /* ---------------- render ---------------- */
+  const q = useElectricity(hostelId)
+  const data = q.data
+  const rate = data?.hostel.rate ?? 0
+  const basis = data?.hostel.basis ?? 'room'
 
   if (hostelsQ.isLoading) return <LoadingState />
   if (!hostels.length || !hostelId)
@@ -212,27 +84,21 @@ export function ElectricityPanel() {
   )
 
   return (
-    <div className="space-y-4 pb-24">
-      {/* ---------------- pickers + rate ---------------- */}
+    <div className="space-y-4">
+      {/* ---------------- hostel + rate ---------------- */}
       <Card className="p-4">
-        <div className="grid gap-3 sm:grid-cols-[minmax(0,16rem)_minmax(0,12rem)_1fr] sm:items-end">
-          {hostels.length > 1 ? (
-            <Field label="Hostel">
-              <Select value={hostelId} options={hostels.map((h) => ({ value: h.id, label: h.name }))} onChange={(e) => void switchHostel(e.target.value)} />
-            </Field>
-          ) : (
-            <Field label="Hostel">
+        <div className="grid gap-3 sm:grid-cols-[minmax(0,16rem)_1fr] sm:items-end">
+          <Field label="Hostel">
+            {hostels.length > 1 ? (
+              <Select value={hostelId} options={hostels.map((h) => ({ value: h.id, label: h.name }))} onChange={(e) => setPicked(e.target.value)} />
+            ) : (
               <p className="flex h-10 items-center truncate text-sm font-medium text-slate-900">{hostels[0]!.name}</p>
-            </Field>
-          )}
-          <Field label="Month">
-            <Input type="month" value={month} onChange={(e) => void switchMonth(e.target.value)} />
+            )}
           </Field>
-          {sheet && rate > 0 && (
+          {data && rate > 0 && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm">
               <p className="flex flex-wrap items-center gap-x-2 font-medium text-amber-900">
-                <Zap className="h-4 w-4 text-amber-500" /> {rateText(rate)} per unit ·{' '}
-                {basis === 'room' ? 'Meter per room — split equally among the room’s hostelers' : 'Meter per bed'}
+                <Zap className="h-4 w-4 text-amber-500" /> {rateText(rate)} per unit · {basis === 'room' ? 'Meter per room' : 'Meter per bed'}
               </p>
               <p className="mt-0.5 text-xs">{settingsLink}</p>
             </div>
@@ -240,18 +106,18 @@ export function ElectricityPanel() {
         </div>
       </Card>
 
-      {sheetQ.isLoading ? (
+      {q.isLoading ? (
         <Card>
-          <LoadingState label="Loading readings…" />
+          <LoadingState label="Loading meters…" />
         </Card>
-      ) : sheetQ.error ? (
+      ) : q.error ? (
         <Card>
-          <ErrorState error={sheetQ.error} onRetry={() => void sheetQ.refetch()} />
+          <ErrorState error={q.error} onRetry={() => void q.refetch()} />
         </Card>
-      ) : !sheet ? null : rate <= 0 ? (
+      ) : !data ? null : rate <= 0 ? (
         <Card className="border-amber-200 bg-amber-50/60 p-5">
           <p className="flex items-center gap-2 font-semibold text-amber-900">
-            <AlertTriangle className="h-5 w-5 text-amber-500" /> Set the electricity rate for {sheet.hostel.name} first
+            <AlertTriangle className="h-5 w-5 text-amber-500" /> Set the electricity rate for {data.hostel.name} first
           </p>
           <p className="mt-1 text-sm text-amber-800">
             Electricity is billed as units × rate per unit. Add the rate (₹ per unit) and choose whether each room or each bed has its own meter in the hostel's
@@ -259,216 +125,367 @@ export function ElectricityPanel() {
           </p>
           <div className="mt-3 text-sm">{settingsLink}</div>
         </Card>
-      ) : !sheet.rows.length ? (
+      ) : !data.meters.length ? (
         <Card>
           <EmptyState icon={<Zap className="h-6 w-6" />} title="No rooms yet" description="Add rooms and beds to this hostel to enter meter readings." />
         </Card>
       ) : (
         <>
-          {result && (
-            <Card className="border-emerald-200 bg-emerald-50/60 p-4 text-sm">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 space-y-1">
-                  <p className="flex items-center gap-2 font-semibold text-emerald-900">
-                    <CheckCircle2 className="h-4 w-4" /> Readings saved for {formatMonth(month)} — {result.res.billsUpdated} bill
-                    {result.res.billsUpdated === 1 ? '' : 's'} updated
-                  </p>
-                  {result.pending > 0 && (
-                    <p className="text-emerald-800">
-                      {result.pending} hosteler
-                      {result.pending === 1 ? ' doesn’t' : 's don’t'} have a bill for {formatMonth(month)} yet — their share is added automatically when the
-                      month's bills are generated (Fees → Generate invoices).
-                    </p>
-                  )}
-                  {result.res.warnings.map((w, i) => (
-                    <p key={i} className="flex items-start gap-1.5 text-amber-800">
-                      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> {w}
-                    </p>
-                  ))}
-                </div>
-                <button type="button" className="shrink-0 text-xs text-emerald-700 hover:underline" onClick={() => setResult(null)}>
-                  Dismiss
-                </button>
-              </div>
-            </Card>
-          )}
-
           <p className="flex items-start gap-1.5 text-xs text-slate-500">
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            Enter the units used in {formatMonth(month)} for each {basis === 'room' ? 'room' : 'bed'} (press Enter to jump to the next one). Leave blank or 0 to
-            remove a reading. Shares are whole rupees; any extra rupee goes to the first hostelers.
+            For each reading, choose the period it covers (from – to) and the units used. The bill is shared by everyone who stayed on that{' '}
+            {basis === 'room' ? 'room' : 'bed'}’s meter in that period, by the number of days each stayed, and added to their current bill.
           </p>
-
-          <Card className="overflow-hidden">
-            {/* header (desktop) */}
-            <div className="hidden grid-cols-[9rem_minmax(0,1fr)_9rem_8rem] gap-4 border-b border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500 md:grid">
-              <span>{basis === 'room' ? 'Room' : 'Bed'}</span>
-              <span>Hostelers &amp; share</span>
-              <span className="text-right">Units</span>
-              <span className="text-right">Amount</span>
-            </div>
-            <div className="divide-y divide-slate-100">
-              {rows.map((r, idx) => {
-                const showFloor = idx === 0 || r.row.floor !== rows[idx - 1]!.row.floor
-                const empty = !r.row.occupants.length
-                const noOne = !!r.units && empty
-                const n = r.row.occupants.length
-                return (
-                  <div key={r.key}>
-                    {showFloor && (
-                      <p className="bg-slate-50/70 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">{floorName(r.row.floor)}</p>
-                    )}
-                    <div
-                      className={cn(
-                        'grid grid-cols-[minmax(0,1fr)_7.5rem] gap-x-3 gap-y-2 px-4 py-3 md:grid-cols-[9rem_minmax(0,1fr)_9rem_8rem] md:items-center md:gap-4',
-                        r.changed && 'bg-brand-50/40',
-                        r.units === undefined && 'bg-red-50/60',
-                      )}
-                    >
-                      {/* room / bed */}
-                      <div className="min-w-0">
-                        <p className="font-semibold text-slate-900">
-                          {basis === 'room' ? `Room ${r.row.roomNumber}` : `${r.row.roomNumber} · ${r.row.bedLabel ?? ''}`}
-                        </p>
-                        <p className="text-xs text-slate-500">
-                          {basis === 'room' ? `${n}/${r.row.beds} bed${r.row.beds === 1 ? '' : 's'} occupied` : empty ? 'Vacant' : 'Occupied'}
-                        </p>
-                      </div>
-
-                      {/* units (right column on phones, 3rd column on desktop) */}
-                      <div className="row-span-2 md:order-3 md:row-span-1">
-                        <label className="sr-only" htmlFor={`units-${r.key}`}>
-                          Units for {rowName(r.row)}
-                        </label>
-                        <div className="relative">
-                          <Input
-                            id={`units-${r.key}`}
-                            ref={(el) => {
-                              inputs.current[idx] = el
-                            }}
-                            type="number"
-                            inputMode="decimal"
-                            enterKeyHint="next"
-                            min={0}
-                            max={MAX_UNITS}
-                            step="any"
-                            placeholder="0"
-                            value={r.value}
-                            onChange={(e) =>
-                              setDraft((d) => ({
-                                ...d,
-                                [r.key]: e.target.value,
-                              }))
-                            }
-                            onKeyDown={(e) => onKey(e, idx)}
-                            onFocus={(e) => e.target.select()}
-                            className={cn('h-11 pr-11 text-right text-base font-semibold tabular-nums', r.units === undefined && 'border-red-400')}
-                          />
-                          <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">units</span>
-                        </div>
-                        <p className="mt-1 text-right text-sm font-semibold tabular-nums text-slate-900 md:hidden">{r.units ? formatMoney(r.amount) : '—'}</p>
-                      </div>
-
-                      {/* occupants + shares */}
-                      <div className="min-w-0 text-sm md:order-2">
-                        {empty ? (
-                          <p className="text-xs text-slate-400">Nobody staying</p>
-                        ) : r.units && r.shares.length ? (
-                          <ul className="space-y-0.5">
-                            {r.shares.map((s) => (
-                              <li key={s.id} className="flex items-baseline gap-2">
-                                <span className="min-w-0 truncate text-slate-700">{s.name}</span>
-                                <span className="shrink-0 tabular-nums font-medium text-slate-900">{formatMoney(s.amount)}</span>
-                                {!s.billed && <span className="shrink-0 text-[11px] text-slate-400">· bill not generated yet</span>}
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <p className="truncate text-slate-700">{r.row.occupants.map((o) => o.name).join(', ')}</p>
-                        )}
-                        {noOne && (
-                          <p className="mt-1 flex items-start gap-1 text-xs text-amber-700">
-                            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> Nobody is staying here — this reading won’t be billed to anyone.
-                          </p>
-                        )}
-                        {r.units === undefined && <p className="mt-1 text-xs text-red-600">Enter units between 0 and {MAX_UNITS.toLocaleString('en-IN')}</p>}
-                        {r.row.reading && !r.changed && (
-                          <p className="mt-1 text-[11px] text-slate-400">
-                            Saved
-                            {r.row.reading.enteredByName ? ` by ${r.row.reading.enteredByName}` : ''}
-                            {r.row.reading.updatedAt ? `, ${formatDateTime(r.row.reading.updatedAt)}` : ''}
-                            {r.row.reading.rate !== rate ? ` · at ${rateText(r.row.reading.rate)}/unit` : ''}
-                          </p>
-                        )}
-                        {r.stale && !r.changed && r.units ? (
-                          <button
-                            type="button"
-                            onClick={() => setForced((f) => new Set(f).add(r.key))}
-                            className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand-700 hover:underline"
-                          >
-                            <RotateCcw className="h-3 w-3" /> Rate or hostelers changed — recalculate
-                          </button>
-                        ) : null}
-                        {r.changed && r.units ? (
-                          <p className="mt-1 text-[11px] text-slate-500">
-                            {r.units} × {rateText(rate)} = {formatMoney(r.amount)}
-                            {n > 1 ? ` · split ${n} ways` : ''}
-                          </p>
-                        ) : null}
-                        {r.changed && !r.units && r.row.reading ? <p className="mt-1 text-xs text-amber-700">Reading will be removed</p> : null}
-                      </div>
-
-                      {/* amount (desktop) */}
-                      <div className="hidden text-right md:order-4 md:block">
-                        <p className="font-semibold tabular-nums text-slate-900">{r.units ? formatMoney(r.amount) : '—'}</p>
-                        {r.changed && <Badge tone="blue">Unsaved</Badge>}
-                      </div>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-            {/* totals */}
-            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 border-t border-slate-200 bg-slate-50 px-4 py-3 text-sm md:grid-cols-[9rem_minmax(0,1fr)_9rem_8rem]">
-              <span className="font-semibold text-slate-900">Total</span>
-              <span className="hidden text-slate-500 md:block">
-                {filledRows} of {rows.length} {basis === 'room' ? 'rooms' : 'beds'} entered
-              </span>
-              <span className="hidden text-right font-semibold tabular-nums text-slate-900 md:block">{totals.units.toLocaleString('en-IN')} units</span>
-              <span className="text-right font-semibold tabular-nums text-slate-900">
-                <span className="md:hidden">{totals.units.toLocaleString('en-IN')} units · </span>
-                {formatMoney(totals.amount)}
-              </span>
-            </div>
-          </Card>
-
-          {/* sticky save bar */}
-          <div className="sticky bottom-0 z-10 -mx-4 border-t border-slate-200 bg-white/95 px-4 py-3 backdrop-blur sm:mx-0 sm:rounded-xl sm:border sm:shadow-lg">
-            <div className="flex items-center justify-between gap-3">
-              <p className="min-w-0 text-sm text-slate-600">
-                {dirty ? (
-                  <>
-                    <b className="text-slate-900">{changedRows.length}</b> unsaved change{changedRows.length === 1 ? '' : 's'}
-                    {invalidRows.length ? <span className="text-red-600"> · {invalidRows.length} invalid</span> : null}
-                  </>
-                ) : (
-                  'All readings saved'
-                )}
-              </p>
-              <div className="flex shrink-0 gap-2">
-                {dirty && (
-                  <Button variant="outline" onClick={resetDraft} disabled={save.isPending}>
-                    Undo
-                  </Button>
-                )}
-                <Button ref={saveBtn} icon={<Save className="h-4 w-4" />} onClick={submit} loading={save.isPending} disabled={!dirty}>
-                  Save readings
-                </Button>
-              </div>
-            </div>
+          <div className="space-y-2">
+            {data.meters.map((m, idx) => {
+              const showFloor = idx === 0 || m.floor !== data.meters[idx - 1]!.floor
+              return (
+                <div key={`${m.roomId}|${m.bedId ?? ''}`}>
+                  {showFloor && <p className="px-1 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{floorName(m.floor)}</p>}
+                  <MeterCard meter={m} hostelId={data.hostel.id} today={data.today} rate={rate} />
+                </div>
+              )
+            })}
           </div>
         </>
       )}
     </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* One meter                                                           */
+/* ------------------------------------------------------------------ */
+
+function MeterCard({ meter, hostelId, today, rate }: { meter: ElectricityMeter; hostelId: ID; today: string; rate: number }) {
+  const [adding, setAdding] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  const last = meter.lastReading
+  const from = meter.suggestedFrom && meter.suggestedFrom <= today ? meter.suggestedFrom : today
+
+  return (
+    <Card className="p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <p className="flex flex-wrap items-center gap-2 font-semibold text-slate-900">
+            {meterName(meter)}
+            <span className="text-xs font-normal text-slate-500">
+              {meter.bedId ? (meter.occupants.length ? 'Occupied' : 'Vacant') : `${meter.occupants.length}/${meter.beds} beds occupied`}
+            </span>
+          </p>
+          <p className="mt-0.5 truncate text-sm text-slate-600">{meter.occupants.length ? meter.occupants.map((o) => o.name).join(', ') : 'Nobody staying now'}</p>
+          <p className="mt-1 text-xs text-slate-500">
+            {last ? (
+              <>
+                Last reading: <span className="font-medium text-slate-700">{formatPeriod(last.fromDate, last.toDate)}</span> · {last.units.toLocaleString('en-IN')} units ·{' '}
+                {formatMoney(last.amount)}
+              </>
+            ) : (
+              'No readings yet'
+            )}
+          </p>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            icon={showHistory ? <ChevronUp className="h-4 w-4" /> : <History className="h-4 w-4" />}
+            onClick={() => setShowHistory((v) => !v)}
+            className="flex-1 sm:flex-none"
+          >
+            History
+          </Button>
+          {!adding && (
+            <Button size="sm" icon={<Plus className="h-4 w-4" />} onClick={() => setAdding(true)} className="flex-1 sm:flex-none">
+              Add reading
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {adding && (
+        <div className="mt-3 border-t border-slate-100 pt-3">
+          <ReadingForm
+            meter={meter}
+            today={today}
+            rate={rate}
+            initial={{ fromDate: from, toDate: today, units: '' }}
+            onDone={() => setAdding(false)}
+          />
+        </div>
+      )}
+
+      {showHistory && (
+        <div className="mt-3 border-t border-slate-100 pt-3">
+          <MeterHistory meter={meter} hostelId={hostelId} today={today} rate={rate} />
+        </div>
+      )}
+    </Card>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Add / edit a reading (with live preview)                            */
+/* ------------------------------------------------------------------ */
+
+function ReadingForm({
+  meter,
+  today,
+  rate,
+  initial,
+  readingId,
+  onDone,
+}: {
+  meter: ElectricityMeter
+  today: string
+  rate: number
+  initial: { fromDate: string; toDate: string; units: string }
+  /** set when editing */
+  readingId?: ID
+  onDone: () => void
+}) {
+  const [fromDate, setFrom] = useState(initial.fromDate)
+  const [toDate, setTo] = useState(initial.toDate)
+  const [units, setUnits] = useState(initial.units)
+
+  const n = Number(units)
+  const unitsOk = units.trim() !== '' && Number.isFinite(n) && n > 0 && n <= MAX_UNITS
+  const datesError = !fromDate || !toDate ? 'Choose both dates' : fromDate > toDate ? '“From” must be on or before “To”' : toDate > today ? 'The period can’t end in the future' : ''
+  const unitsError = units.trim() === '' ? '' : unitsOk ? '' : `Enter units between 1 and ${MAX_UNITS.toLocaleString('en-IN')}`
+
+  // preview as soon as the dates are valid (units 0 still shows each person's days)
+  const input: ReadingInput | null = datesError
+    ? null
+    : { roomId: meter.roomId, bedId: meter.bedId, fromDate, toDate, units: unitsOk ? Math.round(n * 100) / 100 : 0 }
+  const debounced = useDebounced(input ? JSON.stringify(input) : '', 400)
+  const preview = useReadingPreview(debounced ? (JSON.parse(debounced) as ReadingInput) : null)
+  const p = preview.data
+  const settling = !!input && JSON.stringify(input) !== debounced
+
+  const create = useCreateReading((r) => {
+    announce(r, 'Reading saved')
+    onDone()
+  })
+  const update = useUpdateReading((r) => {
+    announce(r, 'Reading updated')
+    onDone()
+  })
+  const saving = create.isPending || update.isPending
+
+  const submit = () => {
+    if (datesError) return toast.error(datesError)
+    if (!unitsOk) return toast.error(`Enter the units used (1 – ${MAX_UNITS.toLocaleString('en-IN')})`)
+    const body = { fromDate, toDate, units: Math.round(n * 100) / 100 }
+    if (readingId) update.mutate({ id: readingId, ...body })
+    else create.mutate({ roomId: meter.roomId, bedId: meter.bedId, ...body })
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <Field label="From">
+          <Input type="date" value={fromDate} max={toDate || today} onChange={(e) => setFrom(e.target.value)} />
+        </Field>
+        <Field label="To">
+          <Input type="date" value={toDate} min={fromDate || undefined} max={today} onChange={(e) => setTo(e.target.value)} />
+        </Field>
+        <Field label="Units used" className="col-span-2 sm:col-span-1" error={unitsError || undefined}>
+          <div className="relative">
+            <Input
+              type="number"
+              inputMode="decimal"
+              min={0}
+              max={MAX_UNITS}
+              step="any"
+              placeholder="0"
+              value={units}
+              autoFocus={!readingId}
+              onChange={(e) => setUnits(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  submit()
+                }
+              }}
+              className="pr-12 text-right font-semibold tabular-nums"
+            />
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">units</span>
+          </div>
+        </Field>
+      </div>
+      {datesError && <p className="text-xs text-red-600">{datesError}</p>}
+
+      {/* preview */}
+      {input && (
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
+          {preview.isLoading || (settling && !p) ? (
+            <p className="flex items-center gap-2 text-slate-500">
+              <Spinner className="h-4 w-4" /> Working out the shares…
+            </p>
+          ) : preview.error ? (
+            <ErrorState error={preview.error} className="py-2" />
+          ) : p ? (
+            <div className={cn('space-y-2', settling && 'opacity-60')}>
+              <p className="flex flex-wrap items-baseline justify-between gap-2">
+                <span className="text-slate-600">
+                  {formatPeriod(fromDate, toDate)} · {plural(p.periodDays, 'day')}
+                </span>
+                <span className="font-semibold tabular-nums text-slate-900">
+                  {unitsOk ? (
+                    <>
+                      {n.toLocaleString('en-IN')} × {rateText(p.rate || rate)} = {formatMoney(p.amount)}
+                    </>
+                  ) : (
+                    'Enter units to see the amount'
+                  )}
+                </span>
+              </p>
+              {p.shares.length ? (
+                <ul className="divide-y divide-slate-200/70">
+                  {p.shares.map((s) => (
+                    <li key={s.hostelerId} className="flex items-baseline gap-2 py-1">
+                      <span className="min-w-0 flex-1 truncate text-slate-800">{s.name}</span>
+                      <span className="shrink-0 text-xs text-slate-500">{plural(s.days, 'day')}</span>
+                      {unitsOk && <span className="w-20 shrink-0 text-right font-medium tabular-nums text-slate-900">{formatMoney(s.amount)}</span>}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="flex items-start gap-1.5 text-xs text-amber-700">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> Nobody stayed here during this period — this reading won’t be billed to anyone.
+                </p>
+              )}
+              {p.shares.length > 1 && (
+                <p className="text-[11px] text-slate-500">Split by days stayed ({p.totalDays} days in total). Shares are whole rupees.</p>
+              )}
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      <div className="flex justify-end gap-2">
+        <Button variant="outline" onClick={onDone} disabled={saving}>
+          Cancel
+        </Button>
+        <Button onClick={submit} loading={saving} disabled={!!datesError || !unitsOk}>
+          {readingId ? 'Save changes' : 'Save reading'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* History                                                             */
+/* ------------------------------------------------------------------ */
+
+function MeterHistory({ meter, hostelId, today, rate }: { meter: ElectricityMeter; hostelId: ID; today: string; rate: number }) {
+  const q = useMeterReadings(hostelId, meter.roomId, meter.bedId)
+  // when the hostel meters per room, the room's list also returns bed readings from before a basis change — keep this meter's only
+  const items = (q.data?.items ?? []).filter((r) => (r.bedId ?? null) === (meter.bedId ?? null))
+
+  if (q.isLoading) return <LoadingState label="Loading history…" className="py-4" />
+  if (q.error) return <ErrorState error={q.error} onRetry={() => void q.refetch()} className="py-4" />
+  if (!items.length) return <p className="py-2 text-sm text-slate-500">No readings for this meter yet.</p>
+  return (
+    <ul className="space-y-2">
+      {items.map((r) => (
+        <ReadingRow key={r.id} reading={r} meter={meter} today={today} rate={rate} />
+      ))}
+    </ul>
+  )
+}
+
+function ReadingRow({ reading: r, meter, today, rate }: { reading: ElectricityReading; meter: ElectricityMeter; today: string; rate: number }) {
+  const [editing, setEditing] = useState(false)
+  const [open, setOpen] = useState(false)
+  const remove = useDeleteReading()
+
+  const onDelete = async () => {
+    const ok = await confirm({
+      title: 'Delete this reading?',
+      message: `${formatPeriod(r.fromDate, r.toDate)} · ${r.units} units · ${formatMoney(r.amount)}. Its electricity lines are removed from the bills they were added to.`,
+      confirmText: 'Delete',
+      danger: true,
+    })
+    if (ok) remove.mutate(r.id)
+  }
+
+  if (editing)
+    return (
+      <li className="rounded-lg border border-brand-200 bg-brand-50/30 p-3">
+        <p className="mb-2 text-sm font-medium text-slate-900">Edit reading</p>
+        <ReadingForm
+          meter={meter}
+          today={today}
+          rate={rate}
+          readingId={r.id}
+          initial={{ fromDate: r.fromDate, toDate: r.toDate, units: String(r.units) }}
+          onDone={() => setEditing(false)}
+        />
+      </li>
+    )
+
+  const waiting = r.splits.filter((s) => s.amount > 0 && !s.invoiceId).length
+  return (
+    <li className="rounded-lg border border-slate-200 p-3">
+      <div className="flex items-start justify-between gap-2">
+        <button type="button" onClick={() => setOpen((v) => !v)} className="min-w-0 flex-1 text-left">
+          <p className="flex flex-wrap items-center gap-x-2 text-sm font-semibold text-slate-900">
+            {formatPeriod(r.fromDate, r.toDate)}
+            {open ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
+          </p>
+          <p className="text-xs text-slate-500">
+            {r.units.toLocaleString('en-IN')} units × {rateText(r.rate)} = <span className="font-medium text-slate-800">{formatMoney(r.amount)}</span> ·{' '}
+            {plural(r.splits.length, 'person')}
+            {waiting ? ` · ${waiting} on next bill` : ''}
+          </p>
+        </button>
+        <div className="flex shrink-0 gap-1">
+          <Button size="sm" variant="ghost" icon={<Pencil className="h-4 w-4" />} onClick={() => setEditing(true)} aria-label="Edit reading">
+            <span className="hidden sm:inline">Edit</span>
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-red-600 hover:bg-red-50"
+            icon={<Trash2 className="h-4 w-4" />}
+            onClick={() => void onDelete()}
+            loading={remove.isPending}
+            aria-label="Delete reading"
+          >
+            <span className="hidden sm:inline">Delete</span>
+          </Button>
+        </div>
+      </div>
+      {open && (
+        <div className="mt-2 border-t border-slate-100 pt-2">
+          {r.splits.length ? (
+            <ul className="space-y-1 text-sm">
+              {r.splits.map((s) => (
+                <li key={s.hostelerId} className="flex flex-wrap items-baseline gap-x-2">
+                  <span className="min-w-0 flex-1 truncate text-slate-800">{s.name}</span>
+                  <span className="text-xs text-slate-500">{plural(s.days, 'day')}</span>
+                  <span className="w-20 text-right font-medium tabular-nums text-slate-900">{formatMoney(s.amount)}</span>
+                  <span className="w-full text-right text-[11px] sm:w-32">
+                    {s.invoiceId ? (
+                      <Badge tone="green">{s.invoiceNumber ?? 'Bill'}</Badge>
+                    ) : s.amount > 0 ? (
+                      <Badge tone="amber">Added to next bill</Badge>
+                    ) : null}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-xs text-amber-700">Nobody stayed here during this period — not billed to anyone.</p>
+          )}
+          <p className="mt-2 text-[11px] text-slate-400">
+            Saved{r.enteredByName ? ` by ${r.enteredByName}` : ''}
+            {r.updatedAt ? `, ${formatDateTime(r.updatedAt)}` : ''}
+          </p>
+        </div>
+      )}
+    </li>
   )
 }

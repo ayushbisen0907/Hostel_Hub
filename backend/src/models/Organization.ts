@@ -3,7 +3,7 @@ import { baseOptions } from './_base.js'
 
 const settingsSchema = new Schema(
   {
-    rentDueDay: { type: Number, default: 5, min: 1, max: 28 },
+    rentDueDay: { type: Number, default: 5, min: 0, max: 28 },
     lateFeePerDay: { type: Number, default: 50, min: 0 },
     receiptPrefix: { type: String, default: 'RCPT', trim: true, maxlength: 10 },
     defaultSecurityDeposit: { type: Number, default: 5000, min: 0 },

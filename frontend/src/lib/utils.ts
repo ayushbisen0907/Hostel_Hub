@@ -1,5 +1,5 @@
 import { clsx, type ClassValue } from 'clsx'
-import { format, parseISO, differenceInCalendarDays } from 'date-fns'
+import { addDays, addMonths, format, parseISO, differenceInCalendarDays } from 'date-fns'
 
 export function cn(...inputs: ClassValue[]) {
   return clsx(inputs)
@@ -49,6 +49,40 @@ export function formatDateTime(s: string | null | undefined): string {
 export function formatMonth(month: string): string {
   // YYYY-MM -> "Oct 2026"
   return formatDate(`${month}-01`, 'MMM yyyy')
+}
+
+/** "13 Oct – 12 Nov 2026" (both years shown when they differ). */
+export function formatPeriod(from: string, to: string): string {
+  return from.slice(0, 4) === to.slice(0, 4) ? `${formatDate(from, 'd MMM')} – ${formatDate(to, 'd MMM yyyy')}` : `${formatDate(from, 'd MMM yyyy')} – ${formatDate(to, 'd MMM yyyy')}`
+}
+
+/** A bill's period ("13 Oct – 12 Nov 2026"), or its month ("Oct 2026") for older bills without one. */
+export function billPeriod(inv: { month: string; periodStart?: string | null; periodEnd?: string | null }): string {
+  return inv.periodStart && inv.periodEnd ? formatPeriod(inv.periodStart, inv.periodEnd) : formatMonth(inv.month)
+}
+
+/** 1 -> "1st", 13 -> "13th", 22 -> "22nd" */
+export function ordinal(n: number): string {
+  const m100 = n % 100
+  const m10 = n % 10
+  return `${n}${m100 >= 11 && m100 <= 13 ? 'th' : m10 === 1 ? 'st' : m10 === 2 ? 'nd' : m10 === 3 ? 'rd' : 'th'}`
+}
+
+/** Rent cycle from a check-in date: "every month on the 13th" (days 29–31 fall back to the month's last day). */
+export function rentCycleText(checkInDate: string | null | undefined): string {
+  const day = Number(checkInDate?.slice(8, 10))
+  if (!day) return ''
+  return `every month on the ${ordinal(day)}${day > 28 ? ' (or the month’s last day)' : ''}`
+}
+
+/** The first rent cycle starting on `checkInDate`: { from, to } (13 Oct – 12 Nov). */
+export function firstRentCycle(checkInDate: string): { from: string; to: string } {
+  return { from: checkInDate, to: format(addDays(addMonths(parseISO(checkInDate), 1), -1), 'yyyy-MM-dd') }
+}
+
+/** YYYY-MM-DD plus n days */
+export function addDaysStr(d: string, n: number): string {
+  return format(addDays(parseISO(d), n), 'yyyy-MM-dd')
 }
 
 export function daysBetween(from: string, to: string): number {

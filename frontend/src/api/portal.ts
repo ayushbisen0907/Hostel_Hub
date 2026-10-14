@@ -57,6 +57,9 @@ export interface PortalOpenBill {
   id: ID
   number: string
   month: string
+  /** rent cycle covered (null / missing on older bills) */
+  periodStart?: string | null
+  periodEnd?: string | null
   dueDate: string
   total: number
   paidAmount: number

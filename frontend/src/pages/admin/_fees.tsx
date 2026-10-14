@@ -14,7 +14,7 @@ import {
   type HostelerListItem,
 } from '@/api/fees'
 import { Avatar, Button, Field, Input, Modal, SearchInput, Select, Spinner, toast } from '@/components/ui'
-import { cn, daysBetween, formatDate, formatMoney, formatMonth, today } from '@/lib/utils'
+import { billPeriod, cn, daysBetween, formatDate, formatMoney, formatMonth, today } from '@/lib/utils'
 
 /* ------------------------------------------------------------------ */
 /* Constants & small helpers                                           */
@@ -62,12 +62,15 @@ export function reminderText(opts: {
   dueDate?: string
   invoiceNo?: string
   month?: string
+  /** bill period ("13 Oct – 12 Nov 2026"); shown instead of the month */
+  period?: string
   hostelName?: string
 }): string {
   const parts = [`Hi ${opts.name.split(' ')[0]},`]
   let line = `This is a gentle reminder that ${formatMoney(opts.amount)} is due`
   if (opts.invoiceNo) line += ` against invoice ${opts.invoiceNo}`
-  if (opts.month) line += ` (${formatMonth(opts.month)})`
+  if (opts.period) line += ` (${opts.period})`
+  else if (opts.month) line += ` (${formatMonth(opts.month)})`
   if (opts.dueDate) line += `. Due date: ${formatDate(opts.dueDate)}`
   parts.push(line + '.')
   parts.push('Kindly clear the payment at the earliest. Please ignore if already paid.')
@@ -577,7 +580,7 @@ export function RecordPaymentModal({
                   options={[
                     ...openInvoices.map((i) => ({
                       value: `inv:${i.id}`,
-                      label: `${i.number} · ${formatMonth(i.month)} · balance ${formatMoney(i.balance)}`,
+                      label: `${i.number} · ${billPeriod(i)} · balance ${formatMoney(i.balance)}`,
                     })),
                     { value: 'deposit', label: 'Security deposit (no invoice)' },
                     { value: 'advance', label: 'Advance payment (no invoice)' },

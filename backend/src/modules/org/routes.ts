@@ -88,7 +88,7 @@ router.patch(
 
 const settingsPatch = z
   .object({
-    rentDueDay: z.coerce.number().int().min(1).max(28),
+    rentDueDay: z.coerce.number().int().min(0).max(28),
     lateFeePerDay: z.coerce.number().min(0).max(100_000),
     receiptPrefix: z
       .string()

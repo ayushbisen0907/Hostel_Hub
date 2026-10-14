@@ -10,6 +10,12 @@ import { Hosteler } from '../src/models/Hosteler.js'
 import { Invoice } from '../src/models/Invoice.js'
 import { Payment } from '../src/models/Payment.js'
 import { PaymentClaim } from '../src/models/PaymentClaim.js'
+import { todayStr } from '../src/lib/http.js'
+import { cycleStart, generateDueBills } from '../src/lib/rentCycle.js'
+
+const today = todayStr()
+/** Runs the bill generator as if it were the first day of the check-in's next rent cycle. */
+const generateNextCycle = (w: World) => generateDueBills(w.org._id, { today: cycleStart(today, 1), notify: false })
 
 type World = Awaited<ReturnType<typeof makeWorld>>
 
@@ -19,7 +25,7 @@ function admission(w: World, extra: Record<string, unknown> = {}) {
     phone: '+91 98765 43211',
     hostelId: String(w.hostel._id),
     bedId: String(w.beds[1]!._id),
-    checkInDate: '2026-10-01',
+    checkInDate: today,
     monthlyRent: 6000,
     securityDeposit: 5000,
     messOpted: false,
@@ -34,10 +40,10 @@ async function checkIn(w: World, extra: Record<string, unknown> = {}) {
   return r.body.hosteler.id as string
 }
 
-const lines = (inv: { items: { key?: string | null; label: string; amount: number }[] }) =>
-  inv.items.map((i) => ({ key: i.key, label: i.label, amount: i.amount }))
+// labels carry the rent period ("Room rent (13 Oct – 12 Nov 2026)"); compare keys and amounts
+const lines = (inv: { items: { key?: string | null; label: string; amount: number }[] }) => inv.items.map((i) => ({ key: i.key, amount: i.amount }))
 
-const bills = (hostelerId: string) => Invoice.find({ hostelerId }).sort({ month: 1, createdAt: 1 }).lean()
+const bills = (hostelerId: string) => Invoice.find({ hostelerId }).sort({ periodStart: 1, createdAt: 1 }).lean()
 
 const pay = (w: World, hostelerId: string, invoiceId: unknown, amount: number) =>
   api().post('/api/payments').set(w.auth).send({ hostelerId, invoiceId: String(invoiceId), amount, mode: 'cash' })
@@ -49,10 +55,12 @@ describe('check-in deposit options', () => {
     const [inv, ...rest] = await bills(id)
     expect(rest).toHaveLength(0)
     expect(lines(inv!)).toEqual([
-      { key: 'rent', label: 'Room rent', amount: 6000 },
-      { key: 'mess', label: 'Mess fees', amount: 3000 },
-      { key: 'deposit', label: 'Security deposit', amount: 5000 },
+      { key: 'rent', amount: 6000 },
+      { key: 'mess', amount: 3000 },
+      { key: 'deposit', amount: 5000 },
     ])
+    expect(inv!.items[2]!.label).toBe('Security deposit')
+    expect(inv!.periodStart).toBe(today)
     expect(inv!.total).toBe(14000)
     expect((await Hosteler.findById(id).lean())!.depositToBill).toBe(0)
     expect(await Payment.countDocuments({ hostelerId: id })).toBe(0)
@@ -62,24 +70,26 @@ describe('check-in deposit options', () => {
     const w = await makeWorld()
     const id = await checkIn(w, { depositOption: 'next_bill' })
     const [first] = await bills(id)
-    expect(lines(first!)).toEqual([{ key: 'rent', label: 'Room rent', amount: 6000 }])
+    expect(lines(first!)).toEqual([{ key: 'rent', amount: 6000 }])
     expect((await Hosteler.findById(id).lean())!.depositToBill).toBe(5000)
+    // nothing new today
+    await api().post('/api/invoices/generate').set(w.auth).send({}).expect(200)
+    expect(await Invoice.countDocuments({ hostelerId: id })).toBe(1)
 
-    await api().post('/api/invoices/generate').set(w.auth).send({ month: '2026-11' }).expect(200)
-    const nov = await Invoice.findOne({ hostelerId: id, month: '2026-11' }).lean()
-    expect(lines(nov!)).toEqual([
-      { key: 'rent', label: 'Room rent', amount: 6000 },
-      { key: 'deposit', label: 'Security deposit', amount: 5000 },
+    await generateNextCycle(w)
+    const next = await Invoice.findOne({ hostelerId: id, periodStart: cycleStart(today, 1) }).lean()
+    expect(lines(next!)).toEqual([
+      { key: 'rent', amount: 6000 },
+      { key: 'deposit', amount: 5000 },
     ])
-    expect(nov!.total).toBe(11000)
+    expect(next!.total).toBe(11000)
     expect((await Hosteler.findById(id).lean())!.depositToBill).toBe(0)
 
-    // generating again (same month: skipped; next month: no deposit line)
-    const again = await api().post('/api/invoices/generate').set(w.auth).send({ month: '2026-11' }).expect(200)
-    expect(again.body.created).toBe(0)
-    await api().post('/api/invoices/generate').set(w.auth).send({ month: '2026-12' }).expect(200)
-    const dec = await Invoice.findOne({ hostelerId: id, month: '2026-12' }).lean()
-    expect(dec!.items.map((i) => i.key)).toEqual(['rent'])
+    // generating again: nothing new; the cycle after that has no deposit line
+    expect((await generateNextCycle(w)).created).toBe(0)
+    await generateDueBills(w.org._id, { today: cycleStart(today, 2), notify: false })
+    const third = await Invoice.findOne({ hostelerId: id, periodStart: cycleStart(today, 2) }).lean()
+    expect(third!.items.map((i) => i.key)).toEqual(['rent'])
     // the other (helper-made) hosteler never had a deposit line
     const others = await Invoice.find({ hostelerId: w.hosteler._id }).lean()
     expect(others.every((i) => i.items.every((x) => x.key !== 'deposit'))).toBe(true)
@@ -90,8 +100,8 @@ describe('check-in deposit options', () => {
     const id = await checkIn(w, { depositPayment: { amount: 2000, mode: 'cash' }, depositOption: 'first_bill' })
     const [inv] = await bills(id)
     expect(lines(inv!)).toEqual([
-      { key: 'rent', label: 'Room rent', amount: 6000 },
-      { key: 'deposit', label: 'Security deposit', amount: 3000 },
+      { key: 'rent', amount: 6000 },
+      { key: 'deposit', amount: 3000 },
     ])
     expect(await Payment.find({ hostelerId: id }).lean()).toMatchObject([{ kind: 'deposit', amount: 2000, invoiceId: null }])
 
@@ -218,7 +228,7 @@ describe('check-out with a deposit collected through bills', () => {
     const id = await checkIn(w, { securityDeposit: 8000 })
     const [inv] = await bills(id)
     await pay(w, id, inv!._id, 14000).expect(201)
-    const r = await api().post(`/api/hostelers/${id}/check-out`).set(w.auth).send({ date: '2026-10-20' }).expect(200)
+    const r = await api().post(`/api/hostelers/${id}/check-out`).set(w.auth).send({ date: today }).expect(200)
     expect(r.body.settlement).toMatchObject({ held: 8000, dues: 0, refund: 8000, toCollect: 0 })
   })
 
@@ -227,7 +237,7 @@ describe('check-out with a deposit collected through bills', () => {
     const id = await checkIn(w)
     const [inv] = await bills(id)
     await pay(w, id, inv!._id, 3000).expect(201) // deposit 3000 of 5000; rent 6000 unpaid
-    const r = await api().post(`/api/hostelers/${id}/check-out`).set(w.auth).send({ date: '2026-10-20' }).expect(200)
+    const r = await api().post(`/api/hostelers/${id}/check-out`).set(w.auth).send({ date: today }).expect(200)
     // the hosteler owes 6000 rent and has paid 3000 deposit -> 3000 to collect
     expect(r.body.settlement).toMatchObject({ toCollect: 3000, refund: 0 })
   })
@@ -235,7 +245,7 @@ describe('check-out with a deposit collected through bills', () => {
   it('a deposit still waiting for the next bill is not treated as held', async () => {
     const w = await makeWorld()
     const id = await checkIn(w, { depositOption: 'next_bill', generateFirstInvoice: false })
-    const r = await api().post(`/api/hostelers/${id}/check-out`).set(w.auth).send({ date: '2026-10-20' }).expect(200)
+    const r = await api().post(`/api/hostelers/${id}/check-out`).set(w.auth).send({ date: today }).expect(200)
     expect(r.body.settlement).toMatchObject({ held: 0, dues: 0, refund: 0, toCollect: 0 })
   })
 })
@@ -244,15 +254,15 @@ describe('POST /api/hostelers/:id/bill-deposit', () => {
   it("'open' adds the outstanding deposit to the latest bill", async () => {
     const w = await makeWorld()
     const id = await checkIn(w, { depositOption: 'collected', depositPayment: { amount: 1500, mode: 'cash' } })
-    await api().post('/api/invoices/generate').set(w.auth).send({ month: '2026-11' }).expect(200)
+    await generateNextCycle(w)
     const r = await api().post(`/api/hostelers/${id}/bill-deposit`).set(w.auth).send({ target: 'open' }).expect(200)
-    const nov = (await Invoice.findOne({ hostelerId: id, month: '2026-11' }).lean())!
-    expect(r.body).toMatchObject({ amount: 3500, target: 'open', invoiceNumber: nov.number })
-    expect(lines(nov).at(-1)).toEqual({ key: 'deposit', label: 'Security deposit', amount: 3500 })
-    expect(nov.total).toBe(9500)
+    const next = (await Invoice.findOne({ hostelerId: id, periodStart: cycleStart(today, 1) }).lean())!
+    expect(r.body).toMatchObject({ amount: 3500, target: 'open', invoiceNumber: next.number })
+    expect(next.items.at(-1)).toMatchObject({ key: 'deposit', label: 'Security deposit', amount: 3500 })
+    expect(next.total).toBe(9500)
     expect(r.body.hosteler.dues).toBe(6000 + 9500)
-    // the October bill is untouched
-    expect((await Invoice.findOne({ hostelerId: id, month: '2026-10' }).lean())!.total).toBe(6000)
+    // the first bill is untouched
+    expect((await Invoice.findOne({ hostelerId: id, periodStart: today }).lean())!.total).toBe(6000)
 
     // everything is now collected or billed
     await api().post(`/api/hostelers/${id}/bill-deposit`).set(w.auth).send({ target: 'open' }).expect(409)
@@ -296,7 +306,7 @@ describe('POST /api/hostelers/:id/bill-deposit', () => {
     const id2 = await checkIn(w, { name: 'Kabir', bedId: String((await makeRoom(w.org._id, w.hostel._id, '102', 1)).beds[0]!._id), depositOption: 'collected' })
     await api().post(`/api/hostelers/${id2}/bill-deposit`).set(other.auth).send({ target: 'next' }).expect(404)
 
-    await api().post(`/api/hostelers/${id2}/check-out`).set(w.auth).send({ date: '2026-10-20' }).expect(200)
+    await api().post(`/api/hostelers/${id2}/check-out`).set(w.auth).send({ date: today }).expect(200)
     await api().post(`/api/hostelers/${id2}/bill-deposit`).set(w.auth).send({ target: 'next' }).expect(409)
   })
 })

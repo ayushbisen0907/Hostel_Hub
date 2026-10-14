@@ -1,12 +1,14 @@
 /**
- * Metered electricity — backend/src/modules/electricity/routes.ts (module 'rooms').
+ * Metered electricity by period — backend/src/modules/electricity/routes.ts (module 'rooms').
  *
- * Each month staff enter the units used per room (hostel.electricityBasis =
- * 'room', split equally among the room's hostelers) or per bed ('bed').
- * Amount = units × hostel.electricityRate, added to each hosteler's bill.
+ * A reading is a meter (a room, or a bed when the hostel meters each bed) +
+ * the period it covers (fromDate–toDate, inclusive) + the units used.
+ * Amount = units × hostel rate, shared among everyone who stayed on that meter
+ * during the period in proportion to the days each stayed. Each share is added
+ * to the hosteler's current bill (or their next bill if they have none yet).
  */
 import { useQuery } from '@tanstack/react-query'
-import { get, put } from './client'
+import { del, get, patch, post } from './client'
 import { useApiMutation } from './query'
 import { useStaffSession } from './session'
 import type { ID } from './types'
@@ -17,21 +19,18 @@ export interface ElectricityOccupant {
   id: ID
   name: string
   loginId: string
-  /** already has a bill for this month (so a reading is added to it right away) */
-  billed: boolean
+  checkInDate: string
 }
 
-export interface ElectricityReading {
+export interface LastReading {
   id: ID
+  fromDate: string
+  toDate: string
   units: number
-  rate: number
   amount: number
-  splits: { hostelerId: ID; name: string; amount: number }[]
-  enteredByName: string
-  updatedAt: string | null
 }
 
-export interface ElectricityRow {
+export interface ElectricityMeter {
   roomId: ID
   roomNumber: string
   floor: number
@@ -40,40 +39,106 @@ export interface ElectricityRow {
   bedLabel: string | null
   beds: number
   occupants: ElectricityOccupant[]
-  reading: ElectricityReading | null
+  lastReading: LastReading | null
+  /** default "from" for the next reading (day after the last one, else first move-in); null = nobody ever stayed */
+  suggestedFrom: string | null
 }
 
-export interface ElectricitySheet {
+export interface ElectricityOverview {
   hostel: { id: ID; name: string; rate: number; basis: ElectricityBasis }
+  /** server's today (YYYY-MM-DD) — the latest allowed "to" date */
+  today: string
+  meters: ElectricityMeter[]
+}
+
+export interface ReadingSplit {
+  hostelerId: ID
+  name: string
+  days: number
+  amount: number
+  /** bill the share was added to; null = waiting for the hosteler's next bill */
+  invoiceId: ID | null
+  invoiceNumber: string | null
+}
+
+export interface ElectricityReading {
+  id: ID
+  hostelId: ID
+  roomId: ID
+  bedId: ID | null
+  roomNumber: string
+  bedLabel: string | null
+  fromDate: string
+  toDate: string
   month: string
-  rows: ElectricityRow[]
-  totals: { units: number; amount: number }
+  units: number
+  rate: number
+  amount: number
+  totalDays: number
+  splits: ReadingSplit[]
+  enteredByName: string
+  createdAt: string
+  updatedAt: string
 }
 
 export interface ReadingInput {
   roomId: ID
   bedId?: ID | null
-  /** null / 0 removes the reading */
-  units: number | null
+  fromDate: string
+  toDate: string
+  units: number
 }
 
-export interface SaveReadingsResult extends ElectricitySheet {
+export interface ReadingPreview {
+  rate: number
+  amount: number
+  periodDays: number
+  totalDays: number
+  shares: { hostelerId: ID; name: string; days: number; amount: number }[]
+}
+
+export interface SaveReadingResult {
+  reading: ElectricityReading
   billsUpdated: number
-  hostelersAffected: number
+  waitingForNextBill: number
   warnings: string[]
 }
 
 export const electricityApi = {
-  sheet: (hostelId: ID, month: string) => get<ElectricitySheet>('/electricity', { hostelId, month }),
-  save: (body: { hostelId: ID; month: string; readings: ReadingInput[] }) => put<SaveReadingsResult>('/electricity', body),
+  overview: (hostelId: ID) => get<ElectricityOverview>('/electricity', { hostelId }),
+  readings: (p: { hostelId: ID; roomId?: ID; bedId?: ID | null }) =>
+    get<{ items: ElectricityReading[] }>('/electricity/readings', { hostelId: p.hostelId, roomId: p.roomId, bedId: p.bedId ?? undefined }),
+  preview: (body: ReadingInput) => post<ReadingPreview>('/electricity/preview', body),
+  create: (body: ReadingInput) => post<SaveReadingResult>('/electricity/readings', body),
+  update: ({ id, ...body }: { id: ID; fromDate?: string; toDate?: string; units?: number }) => patch<SaveReadingResult>(`/electricity/readings/${id}`, body),
+  remove: (id: ID) => del<{ ok: true; id: ID }>(`/electricity/readings/${id}`),
 }
 
-export function useElectricitySheet(hostelId: ID | null, month: string) {
+export function useElectricity(hostelId: ID | null) {
   const staff = useStaffSession()
   return useQuery({
-    queryKey: ['electricity', hostelId, month],
-    queryFn: () => electricityApi.sheet(hostelId!, month),
-    enabled: !!staff && !!hostelId && /^\d{4}-\d{2}$/.test(month),
+    queryKey: ['electricity', hostelId],
+    queryFn: () => electricityApi.overview(hostelId!),
+    enabled: !!staff && !!hostelId,
+  })
+}
+
+export function useMeterReadings(hostelId: ID, roomId: ID, bedId: ID | null, enabled = true) {
+  return useQuery({
+    queryKey: ['electricity', hostelId, 'readings', roomId, bedId],
+    queryFn: () => electricityApi.readings({ hostelId, roomId, bedId }),
+    enabled,
+  })
+}
+
+/** Live split preview (nothing saved). Pass null to disable. */
+export function useReadingPreview(input: ReadingInput | null) {
+  return useQuery({
+    queryKey: ['electricity', 'preview', input],
+    queryFn: () => electricityApi.preview(input!),
+    enabled: !!input,
+    staleTime: 10_000,
+    retry: false,
   })
 }
 
@@ -91,10 +156,22 @@ export const ELECTRICITY_INVALIDATE = [
   ['reports'],
 ]
 
-/** The success toast is shown by the caller (it includes the bill count and warnings). */
-export function useSaveReadings(onSuccess?: (r: SaveReadingsResult) => void) {
-  return useApiMutation(electricityApi.save, {
-    invalidate: ELECTRICITY_INVALIDATE,
-    onSuccess: (r) => onSuccess?.(r),
-  })
+/** The success toast is shown by the caller (it includes the bill counts and warnings). */
+export function useCreateReading(onSuccess?: (r: SaveReadingResult) => void) {
+  return useApiMutation(electricityApi.create, { invalidate: ELECTRICITY_INVALIDATE, onSuccess: (r) => onSuccess?.(r) })
+}
+
+export function useUpdateReading(onSuccess?: (r: SaveReadingResult) => void) {
+  return useApiMutation(electricityApi.update, { invalidate: ELECTRICITY_INVALIDATE, onSuccess: (r) => onSuccess?.(r) })
+}
+
+export function useDeleteReading() {
+  return useApiMutation(electricityApi.remove, { invalidate: ELECTRICITY_INVALIDATE, success: 'Reading deleted — bills updated' })
+}
+
+/** "Saved — 2 bills updated · 1 waiting for the next bill" (+ warnings) for a toast. */
+export function savedMessage(r: SaveReadingResult, verb = 'Saved'): string {
+  const parts = [`${r.billsUpdated} bill${r.billsUpdated === 1 ? '' : 's'} updated`]
+  if (r.waitingForNextBill) parts.push(`${r.waitingForNextBill} share${r.waitingForNextBill === 1 ? '' : 's'} added to the next bill`)
+  return `${verb} — ${parts.join(' · ')}`
 }

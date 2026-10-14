@@ -1,101 +1,52 @@
 /**
- * Electricity meter readings (mounted at /api/electricity, module 'rooms').
+ * Electricity meter readings by period (mounted at /api/electricity, module 'rooms').
  *
- *   GET /api/electricity?hostelId=&month=YYYY-MM
- *       -> { hostel {rate, basis}, month, rows: one per room (basis 'room') or per bed (basis 'bed') }
- *   PUT /api/electricity  { hostelId, month, readings: [{ roomId, bedId?, units }] }
- *       units = 0/null removes a reading. Amount = units × rate, split equally among
- *       the room's current hostelers, and added to their bill for that month.
+ *   GET    /api/electricity?hostelId=          meters (rooms, or beds for bed metering) with the last
+ *                                              reading and the suggested next "from" date
+ *   GET    /api/electricity/readings?hostelId=&roomId=&bedId=   reading history (newest first)
+ *   POST   /api/electricity/preview            { roomId, bedId?, fromDate, toDate, units } -> shares by days (nothing saved)
+ *   POST   /api/electricity/readings           same body -> saves, adds each share to the hosteler's current bill
+ *   PATCH  /api/electricity/readings/:id       { fromDate?, toDate?, units? } -> re-splits and updates the bills
+ *   DELETE /api/electricity/readings/:id       removes the reading and its bill lines
+ *
+ * The amount (units × hostel rate) is shared by the number of days each
+ * hosteler stayed on that meter within the period.
  */
 import { Router } from 'express'
 import { z } from 'zod'
 import { withTransaction } from '../../config/db.js'
 import { requireStaff, staffOf } from '../../middleware/auth.js'
-import { ah, monthStr, objectId, parse, todayStr } from '../../lib/http.js'
+import { ah, dateStr, idParam, objectId, parse, todayStr } from '../../lib/http.js'
 import { assertHostel } from '../../lib/org.js'
-import { saveReadings } from '../../lib/electricity.js'
+import { addDays } from '../../lib/dates.js'
+import { deleteReading, previewReading, saveReading } from '../../lib/electricity.js'
+import { backfillStays } from '../../lib/stays.js'
+import { notFound } from '../../lib/errors.js'
 import { Bed } from '../../models/Bed.js'
 import { ElectricityReading } from '../../models/ElectricityReading.js'
 import { Hosteler } from '../../models/Hosteler.js'
 import { Invoice } from '../../models/Invoice.js'
 import { Room } from '../../models/Room.js'
+import { RoomStay } from '../../models/RoomStay.js'
 import { User } from '../../models/User.js'
+import { toApi } from '../../models/_base.js'
 
 export const router = Router()
 router.use(requireStaff('rooms'))
 
-async function sheet(orgId: string, hostelId: string, month: string) {
-  const hostel = await assertHostel(orgId, hostelId)
-  const basis = hostel.electricityBasis ?? 'room'
-  const [rooms, beds, readings] = await Promise.all([
-    Room.find({ orgId, hostelId: hostel._id }).lean(),
-    Bed.find({ orgId, hostelId: hostel._id }).sort({ label: 1 }).lean(),
-    ElectricityReading.find({ orgId, hostelId: hostel._id, month }).lean(),
+async function readingOut(orgId: string, r: Record<string, unknown> & { _id: unknown; roomId: unknown; bedId?: unknown; splits: { invoiceId?: unknown }[] }) {
+  const [room, bed] = await Promise.all([
+    Room.findById(r.roomId).select('number').lean(),
+    r.bedId ? Bed.findById(r.bedId).select('label').lean() : null,
   ])
-  rooms.sort((a, b) => a.floor - b.floor || a.number.localeCompare(b.number, undefined, { numeric: true }))
-  const occupantIds = beds.map((b) => b.hostelerId).filter(Boolean)
-  const occupants = new Map(
-    (await Hosteler.find({ orgId, _id: { $in: occupantIds }, status: 'active' }).select('name loginId').lean()).map((h) => [String(h._id), h]),
-  )
-  // which hostelers already have a bill for the month (to show "added to bill" vs "added when bills are generated")
-  const billed = new Set((await Invoice.distinct('hostelerId', { orgId, month, cancelled: false, hostelerId: { $in: occupantIds } })).map(String))
-  const readingOf = (roomId: unknown, bedId: unknown) =>
-    readings.find((r) => String(r.roomId) === String(roomId) && String(r.bedId ?? '') === String(bedId ?? ''))
-  const occ = (bedList: typeof beds) =>
-    bedList
-      .map((b) => (b.hostelerId ? occupants.get(String(b.hostelerId)) : undefined))
-      .filter(Boolean)
-      .map((h) => ({ id: String(h!._id), name: h!.name, loginId: h!.loginId, billed: billed.has(String(h!._id)) }))
-  const out = (r: (typeof readings)[number] | undefined) =>
-    r
-      ? {
-          id: String(r._id),
-          units: r.units,
-          rate: r.rate,
-          amount: r.amount,
-          splits: r.splits.map((s) => ({ hostelerId: String(s.hostelerId), name: s.name, amount: s.amount })),
-          enteredByName: r.enteredByName,
-          updatedAt: (r as { updatedAt?: Date }).updatedAt ?? null,
-        }
-      : null
-
-  const rows =
-    basis === 'room'
-      ? rooms.map((room) => {
-          const roomBeds = beds.filter((b) => String(b.roomId) === String(room._id))
-          return {
-            roomId: String(room._id),
-            roomNumber: room.number,
-            floor: room.floor,
-            bedId: null,
-            bedLabel: null,
-            beds: roomBeds.length,
-            occupants: occ(roomBeds),
-            reading: out(readingOf(room._id, null)),
-          }
-        })
-      : rooms.flatMap((room) =>
-          beds
-            .filter((b) => String(b.roomId) === String(room._id))
-            .map((b) => ({
-              roomId: String(room._id),
-              roomNumber: room.number,
-              floor: room.floor,
-              bedId: String(b._id),
-              bedLabel: b.label,
-              beds: 1,
-              occupants: occ([b]),
-              reading: out(readingOf(room._id, b._id)),
-            })),
-        )
+  const invIds = r.splits.map((s) => s.invoiceId).filter(Boolean)
+  const invs = new Map((await Invoice.find({ orgId, _id: { $in: invIds } }).select('number').lean()).map((i) => [String(i._id), i.number]))
+  const out = toApi(r)
   return {
-    hostel: { id: String(hostel._id), name: hostel.name, rate: hostel.electricityRate ?? 0, basis },
-    month,
-    rows,
-    totals: {
-      units: readings.reduce((a, r) => a + r.units, 0),
-      amount: readings.reduce((a, r) => a + r.amount, 0),
-    },
+    ...out,
+    roomNumber: room?.number ?? '',
+    bedLabel: bed?.label ?? null,
+    splits: r.splits.map((s) => ({ ...(s as object), invoiceNumber: s.invoiceId ? (invs.get(String(s.invoiceId)) ?? null) : null })),
   }
 }
 
@@ -103,33 +54,123 @@ router.get(
   '/',
   ah(async (req, res) => {
     const { orgId } = staffOf(req)
-    const q = parse(z.object({ hostelId: objectId, month: monthStr.default(todayStr().slice(0, 7)) }), req.query)
-    res.json(await sheet(orgId, q.hostelId, q.month))
+    const q = parse(z.object({ hostelId: objectId }), req.query)
+    const hostel = await assertHostel(orgId, q.hostelId)
+    await backfillStays(orgId)
+    const basis = hostel.electricityBasis ?? 'room'
+    const [rooms, beds, readings, stays] = await Promise.all([
+      Room.find({ orgId, hostelId: hostel._id }).lean(),
+      Bed.find({ orgId, hostelId: hostel._id }).sort({ label: 1 }).lean(),
+      ElectricityReading.find({ orgId, hostelId: hostel._id }).sort({ toDate: -1 }).lean(),
+      RoomStay.find({ orgId, hostelId: hostel._id }).sort({ from: 1 }).lean(),
+    ])
+    rooms.sort((a, b) => a.floor - b.floor || a.number.localeCompare(b.number, undefined, { numeric: true }))
+    const current = new Map(
+      (await Hosteler.find({ orgId, _id: { $in: beds.map((b) => b.hostelerId).filter(Boolean) }, status: 'active' }).select('name loginId checkInDate bedId').lean()).map(
+        (h) => [String(h.bedId), h],
+      ),
+    )
+    const meter = (room: (typeof rooms)[number], bedList: typeof beds, bedId: unknown) => {
+      const last = readings.find((r) => String(r.roomId) === String(room._id) && String(r.bedId ?? '') === String(bedId ?? ''))
+      const meterStays = stays.filter((s) => (bedId ? String(s.bedId) === String(bedId) : String(s.roomId) === String(room._id)))
+      const firstStay = meterStays[0]?.from ?? null
+      return {
+        roomId: String(room._id),
+        roomNumber: room.number,
+        floor: room.floor,
+        bedId: bedId ? String(bedId) : null,
+        bedLabel: bedId ? (bedList[0]?.label ?? null) : null,
+        beds: bedList.length,
+        occupants: bedList
+          .map((b) => current.get(String(b._id)))
+          .filter(Boolean)
+          .map((h) => ({ id: String(h!._id), name: h!.name, loginId: h!.loginId, checkInDate: h!.checkInDate })),
+        lastReading: last ? { id: String(last._id), fromDate: last.fromDate, toDate: last.toDate, units: last.units, amount: last.amount } : null,
+        /** default "from" for the next reading: the day after the last one, else when someone first moved in */
+        suggestedFrom: last ? addDays(last.toDate, 1) : firstStay,
+      }
+    }
+    const meters =
+      basis === 'room'
+        ? rooms.map((room) => meter(room, beds.filter((b) => String(b.roomId) === String(room._id)), null))
+        : rooms.flatMap((room) => beds.filter((b) => String(b.roomId) === String(room._id)).map((b) => meter(room, [b], b._id)))
+    res.json({ hostel: { id: String(hostel._id), name: hostel.name, rate: hostel.electricityRate ?? 0, basis }, today: todayStr(), meters })
   }),
 )
 
-const putSchema = z.object({
-  hostelId: objectId,
-  month: monthStr,
-  readings: z
-    .array(
-      z.object({
-        roomId: objectId,
-        bedId: objectId.nullable().optional(),
-        units: z.coerce.number().min(0).max(100_000).nullable(),
-      }),
-    )
-    .min(1)
-    .max(1000),
+router.get(
+  '/readings',
+  ah(async (req, res) => {
+    const { orgId } = staffOf(req)
+    const q = parse(z.object({ hostelId: objectId, roomId: objectId.optional(), bedId: objectId.optional(), limit: z.coerce.number().int().min(1).max(200).default(50) }), req.query)
+    await assertHostel(orgId, q.hostelId)
+    const docs = await ElectricityReading.find({ orgId, hostelId: q.hostelId, ...(q.roomId ? { roomId: q.roomId } : {}), ...(q.bedId ? { bedId: q.bedId } : {}) })
+      .sort({ toDate: -1 })
+      .limit(q.limit)
+      .lean()
+    res.json({ items: await Promise.all(docs.map((d) => readingOut(orgId, d))) })
+  }),
+)
+
+const readingSchema = z.object({
+  roomId: objectId,
+  bedId: objectId.nullable().optional(),
+  fromDate: dateStr,
+  toDate: dateStr,
+  units: z.coerce.number().min(0).max(100_000),
 })
 
-router.put(
-  '/',
+router.post(
+  '/preview',
+  ah(async (req, res) => {
+    const { orgId } = staffOf(req)
+    res.json(await previewReading(orgId, parse(readingSchema, req.body)))
+  }),
+)
+
+async function staffName(userId: string) {
+  return (await User.findById(userId).select('name').lean())?.name ?? ''
+}
+
+router.post(
+  '/readings',
   ah(async (req, res) => {
     const { orgId, userId } = staffOf(req)
-    const body = parse(putSchema, req.body)
-    const user = await User.findById(userId).select('name').lean()
-    const result = await withTransaction((session) => saveReadings(orgId, body.hostelId, body.month, body.readings, user?.name ?? '', session))
-    res.json({ ...result, ...(await sheet(orgId, body.hostelId, body.month)) })
+    const body = parse(readingSchema, req.body)
+    await backfillStays(orgId)
+    const name = await staffName(userId)
+    const r = await withTransaction((session) => saveReading(orgId, null, body, name, session))
+    res.status(201).json({ reading: await readingOut(orgId, r.reading.toObject()), billsUpdated: r.billsUpdated, waitingForNextBill: r.waitingForNextBill, warnings: r.warnings })
+  }),
+)
+
+router.patch(
+  '/readings/:id',
+  ah(async (req, res) => {
+    const { orgId, userId } = staffOf(req)
+    const id = idParam(req)
+    const body = parse(z.object({ fromDate: dateStr, toDate: dateStr, units: z.coerce.number().min(0).max(100_000) }).partial().strict(), req.body)
+    const existing = await ElectricityReading.findOne({ _id: id, orgId }).lean()
+    if (!existing) throw notFound('Reading')
+    const name = await staffName(userId)
+    const input = {
+      roomId: String(existing.roomId),
+      bedId: existing.bedId ? String(existing.bedId) : null,
+      fromDate: body.fromDate ?? existing.fromDate,
+      toDate: body.toDate ?? existing.toDate,
+      units: body.units ?? existing.units,
+    }
+    const r = await withTransaction((session) => saveReading(orgId, id, input, name, session))
+    res.json({ reading: await readingOut(orgId, r.reading.toObject()), billsUpdated: r.billsUpdated, waitingForNextBill: r.waitingForNextBill, warnings: r.warnings })
+  }),
+)
+
+router.delete(
+  '/readings/:id',
+  ah(async (req, res) => {
+    const { orgId } = staffOf(req)
+    const id = idParam(req)
+    await withTransaction((session) => deleteReading(orgId, id, session))
+    res.json({ ok: true, id })
   }),
 )

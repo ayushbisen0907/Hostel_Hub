@@ -25,8 +25,10 @@ import { requireStaff, staffOf } from '../../middleware/auth.js'
 import { formatLoginId, generateTempPassword, hashPassword } from '../../lib/auth.js'
 import { AppError, badRequest, conflict, forbidden, notFound } from '../../lib/errors.js'
 import { ah, dateStr, escapeRegex, idParam, money, objectId, paginate, paginationQuery, parse, phone, todayStr } from '../../lib/http.js'
-import { createInvoice, recordPayment } from '../../lib/money.js'
-import { monthlyBillItems } from '../../lib/billing.js'
+import { recordPayment } from '../../lib/money.js'
+import { billHostelerNow } from '../../lib/rentCycle.js'
+import { closeStay, ensureStay, moveStay, openStay } from '../../lib/stays.js'
+import { RoomStay } from '../../models/RoomStay.js'
 import { assertHostel, getSettings, hostelScope, logActivity } from '../../lib/org.js'
 import { requirePlan } from '../../lib/plans.js'
 import { removeStoredFile, sendStoredFile, upload } from '../../lib/upload.js'
@@ -347,6 +349,7 @@ router.post(
       )
       const hosteler = h!
       if (bedRef) await occupyBed(orgId, bedRef._id, hosteler._id, session)
+      if (bedRef && !reserveOnly) await openStay(orgId, hosteler, { _id: bedRef._id, roomId: bedRef.roomId, hostelId }, hosteler.checkInDate, session)
 
       if (depositPayment && depositPayment.amount > 0) {
         await recordPayment(
@@ -368,19 +371,17 @@ router.post(
       const depositLeft = Math.max(hosteler.securityDeposit - collectedNow, 0)
       const option = depositOption ?? (collectedNow > 0 ? 'collected' : 'first_bill')
       const firstBill = generateFirstInvoice && !reserveOnly
-      let depositOnFirstBill = 0
-      if (depositLeft > 0 && option === 'first_bill' && firstBill) depositOnFirstBill = depositLeft
-      else if (depositLeft > 0 && option !== 'collected') {
-        hosteler.depositToBill = depositLeft
-        await hosteler.save({ session })
-      }
-      if (firstBill) {
-        const month = hosteler.checkInDate.slice(0, 7)
-        const hostelDoc = await Hostel.findById(hosteler.hostelId).select('charges').session(session).lean()
-        const items = monthlyBillItems(hosteler, hostelDoc?.charges, settings.messMonthlyCharge)
-        if (depositOnFirstBill > 0) items.push({ key: 'deposit', label: 'Security deposit', amount: depositOnFirstBill })
-        await createInvoice(orgId, { hostelerId: hosteler._id, month, items, dueDate: hosteler.checkInDate }, session)
-      }
+      // the next bill created picks up depositToBill. 'first_bill' (or no first bill): set it now, so the
+      // first bill created takes it; 'next_bill' with a first bill: set it after the first bill(s) are made
+      const billDeposit = depositLeft > 0 && option !== 'collected'
+      const afterFirstBill = billDeposit && option === 'next_bill' && firstBill
+      if (billDeposit && !afterFirstBill) hosteler.depositToBill = depositLeft
+      // no first bill -> start billing from the second rent cycle (the first month is settled outside the app)
+      if (!firstBill && !reserveOnly) hosteler.billFromCycle = 1
+      await hosteler.save({ session })
+      // first bill = rent cycle starting on the check-in date (plus any cycles already due for a back-dated check-in)
+      if (firstBill) await billHostelerNow(orgId, hosteler, session)
+      if (afterFirstBill) await Hosteler.updateOne({ _id: hosteler._id }, { $set: { depositToBill: depositLeft } }, { session })
       if (!reserveOnly) await gateLog(hosteler, 'in', 'Check-in', session)
       await logActivity(orgId, reserveOnly ? `${hosteler.name} reserved a bed` : `${hosteler.name} checked in`, 'checkin', hostelId, session)
       return { id: hosteler._id, loginId }
@@ -407,6 +408,7 @@ router.post(
       h.status = 'active'
       h.checkInDate = body.date ?? todayStr()
       await h.save({ session })
+      if (h.bedId && h.roomId) await openStay(orgId, h, { _id: h.bedId, roomId: h.roomId, hostelId: h.hostelId }, h.checkInDate, session)
       await gateLog(h, 'in', 'Check-in', session)
       await logActivity(orgId, `${h.name} checked in`, 'checkin', h.hostelId, session)
     })
@@ -427,9 +429,11 @@ router.post(
       if (h.status === 'checked_out') throw conflict('This hosteler has checked out')
       if (h.bedId && String(h.bedId) === body.bedId) throw badRequest('Already in this bed')
       const { bed, room } = await vacantBed(orgId, body.bedId, session)
+      await ensureStay(orgId, h, session) // older data: record the stay on the old bed first
       // free the old bed first (a hosteler can hold only one bed — unique index)
       await Bed.updateMany({ orgId, hostelerId: h._id }, { $set: { hostelerId: null } }, { session })
       await occupyBed(orgId, bed._id, h._id, session)
+      if (h.status === 'active') await moveStay(orgId, h, { _id: bed._id, roomId: bed.roomId, hostelId: bed.hostelId }, todayStr(), session)
       h.bedId = bed._id
       h.roomId = bed.roomId
       h.hostelId = bed.hostelId
@@ -472,6 +476,7 @@ router.post(
       const h = await loadHosteler(orgId, id, session)
       if (h.status === 'checked_out') throw conflict('Already checked out')
       if (body.date < h.checkInDate) throw badRequest('Checkout date cannot be before check-in')
+      await ensureStay(orgId, h, session) // older data: record the stay before the bed is freed
 
       const bed = h.bedId ? await Bed.findOne({ _id: h.bedId, orgId }).session(session).lean() : null
       const room = h.roomId ? await Room.findOne({ _id: h.roomId, orgId }).session(session).lean() : null
@@ -537,6 +542,7 @@ router.post(
       h.tokenVersion += 1 // logs the hosteler out of the portal
       await h.save({ session })
       await Bed.updateMany({ orgId, hostelerId: h._id }, { $set: { hostelerId: null } }, { session })
+      await closeStay(orgId, h._id, body.date, session)
       await gateLog(h, 'out', 'Check-out', session)
       await logActivity(orgId, `${h.name} checked out`, 'checkout', h.hostelId, session)
 
@@ -737,6 +743,7 @@ router.delete(
       // complaints are kept for the hostel's records, just unlinked
       await Complaint.updateMany(q, { $set: { hostelerId: null } }, { session })
       await Bed.updateMany(q, { $set: { hostelerId: null } }, { session })
+      await RoomStay.deleteMany(q, { session })
       await Hosteler.deleteOne({ _id: h._id, orgId }, { session })
       await logActivity(orgId, `${h.name} (${h.loginId}) was deleted`, 'general', h.hostelId, session)
       return docs.map((d) => d.storageKey)

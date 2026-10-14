@@ -60,7 +60,7 @@ export async function makeRoom(orgId: mongoose.Types.ObjectId, hostelId: mongoos
 export async function makeHosteler(
   orgId: mongoose.Types.ObjectId,
   hostel: { _id: mongoose.Types.ObjectId; code: string; hostelerSeq: number },
-  opts: { bed?: { _id: mongoose.Types.ObjectId; roomId: mongoose.Types.ObjectId }; password?: string; mustChangePassword?: boolean; name?: string; messOpted?: boolean; monthlyRent?: number } = {},
+  opts: { bed?: { _id: mongoose.Types.ObjectId; roomId: mongoose.Types.ObjectId }; password?: string; mustChangePassword?: boolean; name?: string; messOpted?: boolean; monthlyRent?: number; checkInDate?: string } = {},
 ) {
   const h = await Hostel.findByIdAndUpdate(hostel._id, { $inc: { hostelerSeq: 1 } }, { new: true })
   const password = opts.password ?? 'Hostel@123'
@@ -74,7 +74,7 @@ export async function makeHosteler(
     roomId: opts.bed?.roomId ?? null,
     bedId: opts.bed?._id ?? null,
     status: 'active',
-    checkInDate: '2026-09-01',
+    checkInDate: opts.checkInDate ?? '2026-09-01',
     monthlyRent: opts.monthlyRent ?? 6000,
     securityDeposit: 5000,
     messOpted: opts.messOpted ?? true,

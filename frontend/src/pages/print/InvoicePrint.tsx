@@ -6,7 +6,7 @@ import { usePrintInvoice } from '@/api/fees'
 import { useSession } from '@/api/session'
 import { Button, LoadingState } from '@/components/ui'
 import { UpiQr } from '@/components/UpiQr'
-import { cn, formatDate, formatMoney, formatMonth } from '@/lib/utils'
+import { billPeriod, cn, formatDate, formatMoney } from '@/lib/utils'
 import { PrintMessage, PrintSheet, PrintToolbar, amountInWords, modeLabel } from '@/pages/admin/_fees'
 
 export default function InvoicePrint() {
@@ -93,7 +93,7 @@ export default function InvoicePrint() {
               <dt className="text-slate-500">Invoice date</dt>
               <dd className="text-slate-800">{formatDate(inv.createdAt.slice(0, 10))}</dd>
               <dt className="text-slate-500">Billing period</dt>
-              <dd className="text-slate-800">{formatMonth(inv.month)}</dd>
+              <dd className="text-slate-800">{billPeriod(inv)}</dd>
               <dt className="text-slate-500">Due date</dt>
               <dd className="font-semibold text-slate-900">{formatDate(inv.dueDate)}</dd>
             </dl>
@@ -166,7 +166,7 @@ export default function InvoicePrint() {
                   <dt className="text-slate-600">
                     Previous balance
                     <span className="block text-xs text-slate-500">
-                      Unpaid: {prev.invoices.map((x) => `${x.number} (${formatMonth(x.month)})`).join(', ')}
+                      Unpaid: {prev.invoices.map((x) => `${x.number} (${billPeriod(x)})`).join(', ')}
                     </span>
                   </dt>
                   <dd className="tabular-nums text-slate-900">+ {formatMoney(previous)}</dd>

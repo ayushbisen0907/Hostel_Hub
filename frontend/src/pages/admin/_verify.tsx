@@ -35,7 +35,7 @@ import {
   Textarea,
   toast,
 } from '@/components/ui'
-import { cn, formatDate, formatDateTime, formatMoney, formatMonth } from '@/lib/utils'
+import { billPeriod, cn, formatDate, formatDateTime, formatMoney } from '@/lib/utils'
 import { Pager, useDebounced } from './_fees'
 
 const PAGE_SIZE = 30
@@ -422,7 +422,7 @@ function VerifyModal({ claim, onClose, onReject }: { claim: PaymentClaim | null;
                         <p className="text-sm">
                           <span className="font-mono font-medium text-slate-800">{b.number}</span>
                           <span className="ml-2 text-slate-500">
-                            {formatMonth(b.month)} · due {formatDate(b.dueDate)}
+                            {billPeriod(b)} · due {formatDate(b.dueDate)}
                           </span>
                         </p>
                         <p className="text-sm">

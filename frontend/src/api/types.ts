@@ -83,7 +83,7 @@ export interface Hostel {
   charges: HostelCharges
   /** ₹ per unit of electricity (0 = not charged) */
   electricityRate: number
-  /** 'room': one meter per room, amount split equally among its hostelers; 'bed': one meter per bed */
+  /** 'room': one meter per room, amount shared among its hostelers by days stayed; 'bed': one meter per bed */
   electricityBasis: 'room' | 'bed'
   createdAt: string
   counts?: { rooms: number; beds: number; occupied: number; vacant: number; activeHostelers: number }
@@ -170,6 +170,8 @@ export interface InvoiceItem {
   key?: ChargeKey
   label: string
   amount: number
+  /** links an automatic line (e.g. an electricity reading) to its source — keep it when editing */
+  ref?: string | null
 }
 
 export type PaymentClaimStatus = 'pending' | 'verified' | 'rejected'
@@ -202,6 +204,9 @@ export interface Invoice {
   hostelerId: ID
   number: string
   month: string
+  /** rent cycle covered by the bill (from the hosteler's check-in date), e.g. 2026-10-13 – 2026-11-12; null on older bills */
+  periodStart?: string | null
+  periodEnd?: string | null
   items: InvoiceItem[]
   total: number
   paidAmount: number

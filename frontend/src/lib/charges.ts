@@ -26,7 +26,7 @@ export const CHARGE_KEY_OPTIONS: { value: ChargeKey; label: string }[] = (Object
   label: CHARGE_KEY_LABELS[k],
 }))
 
-/** How a hostel's electricity meters are read: one per room (split equally among its hostelers) or one per bed. */
+/** How a hostel's electricity meters are read: one per room (shared among its hostelers by days stayed) or one per bed. */
 export type { ElectricityBasis }
 
 export const ELECTRICITY_BASIS_LABELS: Record<ElectricityBasis, string> = {
@@ -85,9 +85,9 @@ export function monthlyBillItems(
   hosteler: { monthlyRent: number; messOpted: boolean },
   charges: Partial<HostelCharges> | null | undefined,
   fallbackMess = 0,
-): Required<InvoiceItem>[] {
+): Required<Omit<InvoiceItem, 'ref'>>[] {
   const c = charges ?? {}
-  const items: Required<InvoiceItem>[] = [{ key: 'rent', label: 'Room rent', amount: hosteler.monthlyRent }]
+  const items: Required<Omit<InvoiceItem, 'ref'>>[] = [{ key: 'rent', label: 'Room rent', amount: hosteler.monthlyRent }]
   const mess = c.mess && c.mess > 0 ? c.mess : fallbackMess
   if (hosteler.messOpted && mess > 0) items.push({ key: 'mess', label: 'Mess fees', amount: mess })
   return items

@@ -17,11 +17,12 @@ export interface InvoiceItemInput {
   key?: ChargeKey
   label: string
   amount: number
+  ref?: string | null
 }
 
 export async function createInvoice(
   orgId: Id,
-  input: { hostelerId: Id; month: string; items: InvoiceItemInput[]; dueDate: string },
+  input: { hostelerId: Id; month: string; items: InvoiceItemInput[]; dueDate: string; periodStart?: string | null; periodEnd?: string | null },
   session?: ClientSession,
 ) {
   const h = await Hosteler.findOne({ _id: input.hostelerId, orgId }).session(session ?? null)
@@ -30,7 +31,20 @@ export async function createInvoice(
   const total = input.items.reduce((a, i) => a + Number(i.amount || 0), 0)
   const number = await nextInvoiceNumber(orgId, session)
   const [inv] = await Invoice.create(
-    [{ orgId, hostelId: h.hostelId, hostelerId: h._id, number, month: input.month, items: input.items, total, dueDate: input.dueDate }],
+    [
+      {
+        orgId,
+        hostelId: h.hostelId,
+        hostelerId: h._id,
+        number,
+        month: input.month,
+        items: input.items,
+        total,
+        dueDate: input.dueDate,
+        periodStart: input.periodStart ?? null,
+        periodEnd: input.periodEnd ?? null,
+      },
+    ],
     { session },
   )
   return inv!

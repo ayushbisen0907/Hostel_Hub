@@ -47,7 +47,7 @@ import {
   confirm,
   toast,
 } from '@/components/ui'
-import { cn, formatBytes, formatDate, formatMoney, titleCase, today } from '@/lib/utils'
+import { addDaysStr, cn, firstRentCycle, formatBytes, formatDate, formatMoney, formatPeriod, rentCycleText, titleCase, today } from '@/lib/utils'
 import { electricityText, monthlyBillItems } from '@/lib/charges'
 import {
   AcademicFields,
@@ -598,6 +598,7 @@ export default function CheckIn() {
                   value: formatDate(h.checkInDate),
                 },
                 { label: 'Monthly rent', value: formatMoney(h.monthlyRent) },
+                { label: 'Rent cycle', value: h.checkInDate ? rentCycleText(h.checkInDate) : '—' },
                 {
                   label: 'Security deposit',
                   value: formatMoney(h.securityDeposit),
@@ -862,11 +863,28 @@ export default function CheckIn() {
               checked={genInvoice && !reserveOnly}
               disabled={reserveOnly}
               onChange={setGenInvoice}
-              label={reserveOnly ? 'First invoice is generated at check-in' : 'Generate first month invoice now'}
+              label={
+                reserveOnly
+                  ? 'First bill is created at check-in'
+                  : checkInDate
+                    ? `Create the first bill now (${formatPeriod(firstRentCycle(checkInDate).from, firstRentCycle(checkInDate).to)})`
+                    : 'Create the first bill now'
+              }
             />
+            {checkInDate && (
+              <p className="text-xs text-slate-500">
+                Rent cycle: {rentCycleText(checkInDate)}. Later bills are created automatically on the same date each month and are due{' '}
+                {settings.rentDueDay ? `${settings.rentDueDay} day${settings.rentDueDay === 1 ? '' : 's'} later` : 'the same day'}.
+                {!reserveOnly && !genInvoice
+                  ? ` With this off, the first month is settled outside the app and billing starts on ${formatDate(addDaysStr(firstRentCycle(checkInDate).to, 1))}.`
+                  : ''}
+              </p>
+            )}
           </div>
           <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
-            <p className="text-sm font-medium text-slate-800">{reserveOnly ? 'Monthly bill (estimate)' : 'First month’s bill (estimate)'}</p>
+            <p className="text-sm font-medium text-slate-800">
+              {reserveOnly || !checkInDate ? 'Monthly bill (estimate)' : `First bill, ${formatPeriod(firstRentCycle(checkInDate).from, firstRentCycle(checkInDate).to)} (estimate)`}
+            </p>
             <ul className="mt-2 space-y-1 text-sm">
               {billItems.map((it, i) => (
                 <li key={i} className="flex justify-between gap-3 text-slate-600">
@@ -900,7 +918,7 @@ export default function CheckIn() {
             <p className="mt-2 text-xs text-slate-500">
               Rent{messOpted ? ' and mess' : ''} (rent includes water, Wi-Fi, cleaning and maintenance).
               {elecNote
-                ? ` Electricity is added each month from the meter reading (${electricityText(elecRate, hostel?.electricityBasis)}${hostel?.electricityBasis === 'bed' ? '' : ', split equally among the room'}).`
+                ? ` Electricity is added from each meter reading (${electricityText(elecRate, hostel?.electricityBasis)}${hostel?.electricityBasis === 'bed' ? '' : ', shared in the room by days stayed'}).`
                 : ''}{' '}
               {depOnFirstBill > 0
                 ? 'The security deposit is added to the first bill only.'
@@ -1091,6 +1109,7 @@ export default function CheckIn() {
                 value: formatDate(checkInDate),
               },
               { label: 'Monthly rent', value: formatMoney(Number(rent) || 0) },
+              { label: 'Rent cycle', value: checkInDate ? rentCycleText(checkInDate) : '—' },
               {
                 label: 'Mess',
                 value: messOpted ? `Yes (${formatMoney(messCharge)})` : 'No',

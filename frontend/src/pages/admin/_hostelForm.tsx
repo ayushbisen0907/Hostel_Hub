@@ -81,7 +81,7 @@ const BASIS_CHOICES: {
   {
     value: 'room',
     title: 'Meter per room',
-    hint: "Bill split equally among the room's hostelers",
+    hint: "Bill shared among the room's hostelers by days stayed",
   },
   {
     value: 'bed',

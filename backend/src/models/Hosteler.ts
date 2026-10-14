@@ -37,6 +37,8 @@ const hostelerSchema = new Schema(
     depositRefunded: { type: Number, default: null },
     /** security deposit to add to the next monthly bill (chosen at check-in or later) */
     depositToBill: { type: Number, default: 0, min: 0 },
+    /** first rent cycle to bill (1 = the first month was settled outside the app, e.g. no first bill at check-in) */
+    billFromCycle: { type: Number, default: 0, min: 0 },
     messOpted: { type: Boolean, default: false },
     notes: { type: String, default: '' },
     // portal credentials

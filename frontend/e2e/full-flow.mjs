@@ -197,14 +197,15 @@ try {
   /* ------------------------------------------------------------ */
   await page.setViewportSize({ width: 1280, height: 860 })
   await page.goto(`${WEB}/app/rooms?view=electricity`, { waitUntil: 'networkidle' })
-  await page.getByLabel(/Units for Room 101/).fill('100')
-  await page.getByRole('button', { name: /Save readings/ }).click()
-  await page.getByText(/Saved —/).first().waitFor({ timeout: 15000 })
+  await page.getByRole('button', { name: /^Add reading/ }).first().click() // Room 101 (first meter)
+  await page.getByLabel(/Units used/).fill('100')
+  await page.getByRole('button', { name: /^Save reading/ }).click()
+  await page.waitForTimeout(1500)
   const elecLines = async (hostelerId) =>
     (await apiCall('GET', `/invoices?hostelerId=${hostelerId}`, null, token)).items.flatMap((i) => i.items.filter((x) => x.key === 'electricity'))
   const e1 = await elecLines(a1.hosteler.id)
   const e2 = await elecLines(a2.hosteler.id)
-  ok('room reading 100 units × ₹10 split equally on both bills (UI)', e1.length === 1 && e2.length === 1 && e1[0].amount === 500 && e2[0].amount === 500, e1[0]?.label)
+  ok('room reading 100 units × ₹10 split by days stayed (both since today → equal) (UI)', e1.length === 1 && e2.length === 1 && e1[0].amount === 500 && e2[0].amount === 500, e1[0]?.label)
 
   /* ------------------------------------------------------------ */
   /* 4. Hosteler: temp password -> forced password change -> portal */
@@ -310,23 +311,25 @@ try {
   const verified = hNotes.items.find((n) => n.type === 'payment_verified')
   ok('hosteler is notified with the remaining due', !!verified && /Remaining due: ₹1,000/.test(verified.body), verified?.body)
 
-  // next month's bill shows the carried-over balance
-  const nextMonth = (() => {
-    // local calendar month (toISOString would shift 1st-of-month midnight IST back into the previous month)
+  // rent cycles follow the check-in date: a hosteler checked in 35 days ago has 2 bills right away
+  const back = (() => {
     const d = new Date()
-    const y = d.getMonth() === 11 ? d.getFullYear() + 1 : d.getFullYear()
-    const m = (d.getMonth() + 1) % 12
-    return `${y}-${String(m + 1).padStart(2, '0')}`
+    d.setDate(d.getDate() - 35)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
   })()
-  await apiCall('POST', '/invoices/generate', { month: nextMonth }, token)
-  const nextInfo = await apiCall('GET', '/portal/payment-info', null, hTok)
-  const newBill = nextInfo.bills.find((b) => b.month === nextMonth)
-  ok('next month: previous balance + new bill', nextInfo.bills.length === 2 && nextInfo.totalDue === 1000 + (newBill?.total ?? 0), `₹1,000 + ₹${newBill?.total} · bills: ${nextInfo.bills.map((b) => `${b.month}:${b.balance}[${b.items.map((i) => i.key + '=' + i.amount).join('/')}]`).join(' ; ')} · due ₹${nextInfo.totalDue}`)
-  const detail = await apiCall('GET', `/invoices/${newBill.id}`, null, token)
-  ok('new bill shows the previous balance', detail.previousBalance.amount === 1000)
-  await visit(page, `/print/invoice/${newBill.id}`, 'print (with previous balance)')
-  const billNote = (await apiCall('GET', '/portal/notifications', null, hTok)).items.find((n) => n.type === 'bill_generated')
-  ok('hosteler is notified about the new bill', !!billNote, billNote?.title)
+  const freeBeds = (await apiCall('GET', `/beds/vacant?hostelId=${hostel.id}`, null, token)).items
+  const a4 = await apiCall('POST', '/hostelers', {
+    name: 'Ishaan Joshi', phone: '9876543299', gender: 'male', guardianName: 'Mr Joshi', guardianPhone: '9876500009', guardianRelation: 'Father',
+    hostelId: hostel.id, bedId: freeBeds[0].id, reserveOnly: false, checkInDate: back, monthlyRent: 6000, securityDeposit: 5000,
+    messOpted: false, depositPayment: { amount: 5000, mode: 'cash', reference: '' }, generateFirstInvoice: true,
+  }, token)
+  const a4Bills = (await apiCall('GET', `/invoices?hostelerId=${a4.hosteler.id}`, null, token)).items.sort((x, y) => x.periodStart.localeCompare(y.periodStart))
+  ok('back-dated check-in: one bill per started rent cycle, from the check-in date', a4Bills.length === 2 && a4Bills[0].periodStart === back, a4Bills.map((b) => `${b.periodStart}→${b.periodEnd}`).join(' , '))
+  const a4Detail = await apiCall('GET', `/invoices/${a4Bills[1].id}`, null, token)
+  ok('newer bill shows the unpaid older bill as previous balance', a4Detail.previousBalance.amount === a4Bills[0].total, `₹${a4Detail.previousBalance.amount}`)
+  await visit(page, `/print/invoice/${a4Bills[1].id}`, 'print (with previous balance)')
+  const regen = await apiCall('POST', '/invoices/generate', {}, token)
+  ok('generating again creates nothing new (each cycle billed once)', regen.created === 0, JSON.stringify(regen))
   for (const pth of ['/portal', '/portal/fees']) await visit(pp, pth, 'hosteler phone (after payments)')
 } catch (e) {
   results.push(false)

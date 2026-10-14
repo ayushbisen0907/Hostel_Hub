@@ -3,7 +3,7 @@ import { Building2 } from 'lucide-react'
 import { ApiError } from '@/api/client'
 import { usePrintReceipt } from '@/api/fees'
 import { Button, LoadingState } from '@/components/ui'
-import { formatDate, formatMoney, formatMonth } from '@/lib/utils'
+import { billPeriod, formatDate, formatMoney } from '@/lib/utils'
 import { PrintMessage, PrintSheet, PrintToolbar, amountInWords, isDeposit, modeLabel } from '@/pages/admin/_fees'
 
 export default function ReceiptPrint() {
@@ -38,7 +38,7 @@ export default function ReceiptPrint() {
 
   const { payment: p, invoice: inv, organization: org, hostel, hosteler: h } = query.data
   const against = inv
-    ? `${isDeposit(p) ? 'Security deposit · ' : ''}Invoice ${inv.number} · ${formatMonth(inv.month)}`
+    ? `${isDeposit(p) ? 'Security deposit · ' : ''}Invoice ${inv.number} · ${billPeriod(inv)}`
     : isDeposit(p)
       ? 'Security deposit'
       : p.invoiceId

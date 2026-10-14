@@ -345,12 +345,12 @@ router.get(
     const { hostelerId, orgId } = hostelerOf(req)
     const items = await Payment.find({ orgId, hostelerId }).sort({ date: -1, createdAt: -1 }).lean()
     const invIds = items.map((p) => p.invoiceId).filter(Boolean)
-    const invs = await Invoice.find({ _id: { $in: invIds }, orgId, hostelerId }).select('number month').lean()
+    const invs = await Invoice.find({ _id: { $in: invIds }, orgId, hostelerId }).select('number month periodStart periodEnd').lean()
     const byId = new Map(invs.map((i) => [String(i._id), i]))
     res.json({
       items: items.map((p) => {
         const inv = p.invoiceId ? byId.get(String(p.invoiceId)) : undefined
-        return toApi({ ...p, invoiceNumber: inv?.number ?? null, invoiceMonth: inv?.month ?? null })
+        return toApi({ ...p, invoiceNumber: inv?.number ?? null, invoiceMonth: inv?.month ?? null, invoicePeriodStart: inv?.periodStart ?? null, invoicePeriodEnd: inv?.periodEnd ?? null })
       }),
     })
   }),
@@ -394,6 +394,8 @@ router.get(
         id: String(i._id),
         number: i.number,
         month: i.month,
+        periodStart: i.periodStart ?? null,
+        periodEnd: i.periodEnd ?? null,
         dueDate: i.dueDate,
         total: i.total,
         paidAmount: i.paidAmount,

@@ -53,7 +53,7 @@ import {
   toast,
   PasswordInput,
 } from '@/components/ui'
-import { cn, currentMonth, formatBytes, formatDate, formatDateTime, titleCase, today } from '@/lib/utils'
+import { cn, currentMonth, formatBytes, formatDate, formatDateTime, rentCycleText, titleCase, today } from '@/lib/utils'
 import { NotLoggedIn, PortalTitle, SectionTitle, useMoney, useScrollToHash } from './_shared'
 
 /** Same limits as the server (backend/src/modules/portal/routes.ts) */
@@ -330,6 +330,7 @@ export default function Profile() {
                 { label: 'Hostel', value: hostel ? `${hostel.name}${hostel.city ? `, ${hostel.city}` : ''}` : '' },
                 { label: 'Room & bed', value: bed },
                 { label: 'Check-in date', value: formatDate(me.checkInDate) },
+                { label: 'Rent cycle', value: me.checkInDate ? rentCycleText(me.checkInDate) : '' },
                 { label: 'Expected check-out', value: me.expectedCheckOut ? formatDate(me.expectedCheckOut) : 'Not set' },
                 { label: 'Mess', value: me.messOpted ? 'Enrolled' : 'Not enrolled' },
               ]}

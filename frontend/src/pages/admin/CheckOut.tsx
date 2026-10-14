@@ -31,7 +31,7 @@ import {
   confirm,
   toast,
 } from '@/components/ui'
-import { cn, daysBetween, formatDate, formatMoney, formatMonth, today, uid } from '@/lib/utils'
+import { billPeriod, cn, daysBetween, formatDate, formatMoney, today, uid } from '@/lib/utils'
 import { HostelerAvatar, Pager, bedText, useDebounced } from './_residents'
 
 interface Deduction {
@@ -440,7 +440,7 @@ function SettlementForm({ h, onBack, onDone }: { h: HostelerDetail; onBack: () =
                           {unpaid.map((inv) => (
                             <TR key={inv.id}>
                               <TD className="font-medium text-slate-900">{inv.number}</TD>
-                              <TD>{formatMonth(inv.month)}</TD>
+                              <TD>{billPeriod(inv)}</TD>
                               <TD className="whitespace-nowrap">{formatDate(inv.dueDate)}</TD>
                               <TD className="text-right font-medium text-red-600">{formatMoney(inv.balance)}</TD>
                             </TR>

@@ -4,7 +4,7 @@
  *
  *   GET    /api/invoices                 ?month ?status ?hostelerId ?hostelId ?q ?page ?limit
  *   GET    /api/invoices/:id             everything the printable invoice needs
- *   POST   /api/invoices/generate        { month, hostelId? } -> { created, skipped }
+ *   POST   /api/invoices/generate        { hostelId? } -> { created, hostelers, skipped, errors } (bills every started rent cycle)
  *   POST   /api/invoices                 custom invoice { hostelerId, month, items[], dueDate }
  *   PATCH  /api/invoices/:id             { items?, dueDate? }
  *   POST   /api/invoices/:id/late-fee    add / replace "Late fee (N days)" line
@@ -33,9 +33,8 @@ import { Bed } from '../../models/Bed.js'
 import { Hostel } from '../../models/Hostel.js'
 import { Hosteler } from '../../models/Hosteler.js'
 import { CHARGE_KEYS, Invoice, invoiceStatus, type ChargeKey, type InvoiceStatus } from '../../models/Invoice.js'
-import { monthlyBillItems, previousBalance } from '../../lib/billing.js'
-import { applyElectricityToBill } from '../../lib/electricity.js'
-import { notifyHostelers } from '../../lib/notify.js'
+import { previousBalance } from '../../lib/billing.js'
+import { generateDueBills } from '../../lib/rentCycle.js'
 import { Organization } from '../../models/Organization.js'
 import { Payment, PAYMENT_MODES } from '../../models/Payment.js'
 import { PaymentClaim } from '../../models/PaymentClaim.js'
@@ -72,11 +71,6 @@ function daysBetween(from: string, to: string) {
 }
 function daysOverdue(dueDate: string, today = todayStr()) {
   return Math.max(daysBetween(dueDate, today), 0)
-}
-
-function dueDateFor(month: string, dueDay: number) {
-  const d = Math.min(Math.max(dueDay || 1, 1), 28)
-  return `${month}-${String(d).padStart(2, '0')}`
 }
 
 const sum = <T>(xs: T[], f: (x: T) => number) => xs.reduce((a, x) => a + f(x), 0)
@@ -184,7 +178,11 @@ async function matchHostelers(orgId: Types.ObjectId, q: string) {
  * exceed the new total — checked inside the same update so a concurrent
  * payment can't slip in between.
  */
-async function applyInvoiceChange(orgId: Types.ObjectId, id: string, set: { items?: { key?: ChargeKey; label: string; amount: number }[]; dueDate?: string }) {
+async function applyInvoiceChange(
+  orgId: Types.ObjectId,
+  id: string,
+  set: { items?: { key?: ChargeKey; label: string; amount: number; ref?: string | null }[]; dueDate?: string },
+) {
   const $set: Filter = {}
   let guard: Filter = {}
   if (set.items) {
@@ -206,7 +204,8 @@ async function applyInvoiceChange(orgId: Types.ObjectId, id: string, set: { item
 /* Invoices                                                            */
 /* ------------------------------------------------------------------ */
 
-const itemSchema = z.object({ key: z.enum(CHARGE_KEYS).default('other'), label: z.string().trim().min(1).max(120), amount: money })
+// `ref` links an automatic line (e.g. an electricity reading) to its source — keep it when editing
+const itemSchema = z.object({ key: z.enum(CHARGE_KEYS).default('other'), label: z.string().trim().min(1).max(120), amount: money, ref: z.string().max(64).nullable().optional() })
 const itemsSchema = z.array(itemSchema).min(1, 'Add at least one line item').max(50)
 
 const invoiceListQuery = paginationQuery.extend({
@@ -273,71 +272,21 @@ router.get(
   }),
 )
 
+/**
+ * Creates every bill that is due: each hosteler is billed per rent cycle from
+ * their check-in date (13 Oct → 13 Nov → …). The server also does this every
+ * hour; this endpoint runs it now. Body: { hostelId? } (`month` is ignored).
+ */
 router.post(
   '/invoices/generate',
   fees,
   ah(async (req, res) => {
     const orgId = oid(staffOf(req).orgId)
-    const body = parse(z.object({ month: validMonth, hostelId: z.union([objectId, z.literal('all')]).optional() }), req.body)
+    const body = parse(z.object({ month: z.string().optional(), hostelId: z.union([objectId, z.literal('all')]).optional() }), req.body ?? {})
     const hostelId = body.hostelId && body.hostelId !== 'all' ? oid(body.hostelId) : undefined
     if (hostelId) await assertHostel(orgId, hostelId)
-    const { settings } = await getSettings(orgId)
-    const dueDate = dueDateFor(body.month, settings.rentDueDay)
-
-    // The "already billed" check runs inside the transaction: concurrent
-    // generate calls conflict on the org's invoice counter, and the retried
-    // transaction sees what the other call committed — so it stays idempotent.
-    const result = await withTransaction(async (session) => {
-      const eligible = await Hosteler.find({
-        orgId,
-        status: 'active',
-        ...(hostelId ? { hostelId } : {}),
-        checkInDate: { $lte: `${body.month}-31` },
-      })
-        .select('hostelId monthlyRent messOpted depositToBill')
-        .session(session)
-        .lean()
-      const billedIds = await Invoice.distinct('hostelerId', {
-        orgId,
-        month: body.month,
-        cancelled: false,
-        hostelerId: { $in: eligible.map((h) => h._id) },
-      }).session(session)
-      const billed = new Set(billedIds.map(String))
-      const targets = eligible.filter((h) => !billed.has(String(h._id)))
-      const hostelDocs = await Hostel.find({ orgId, _id: { $in: [...new Set(targets.map((h) => String(h.hostelId)))] } })
-        .select('charges name')
-        .session(session)
-        .lean()
-      const chargesByHostel = new Map(hostelDocs.map((x) => [String(x._id), x.charges]))
-      const monthLabel = new Date(`${body.month}-01T00:00:00Z`).toLocaleString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' })
-      for (const h of targets) {
-        const items = monthlyBillItems(h, chargesByHostel.get(String(h.hostelId)), settings.messMonthlyCharge)
-        if (h.depositToBill > 0) {
-          items.push({ key: 'deposit', label: 'Security deposit', amount: h.depositToBill })
-          await Hosteler.updateOne({ _id: h._id }, { $set: { depositToBill: 0 } }, { session })
-        }
-        let inv = await createInvoice(orgId, { hostelerId: h._id, month: body.month, items, dueDate }, session)
-        // electricity readings entered before the bill existed
-        if (await applyElectricityToBill(orgId, h._id, body.month, session)) inv = (await Invoice.findById(inv._id).session(session))!
-        await notifyHostelers(
-          orgId,
-          [h._id],
-          {
-            type: 'bill_generated',
-            hostelId: h.hostelId,
-            title: `${monthLabel} bill: ₹${inv.total.toLocaleString('en-IN')}`,
-            body: `Your bill ${inv.number} is ready. Due by ${dueDate}. Pay to the hostel's UPI and report the transaction ID in the app.`,
-            link: '/portal/fees',
-          },
-          session,
-        )
-      }
-      if (targets.length)
-        await logActivity(orgId, `${targets.length} invoice${targets.length === 1 ? '' : 's'} generated for ${body.month}`, 'payment', hostelId ?? null, session)
-      return { created: targets.length, skipped: eligible.length - targets.length }
-    })
-    res.json({ month: body.month, dueDate, ...result })
+    const r = await generateDueBills(orgId, { hostelId })
+    res.json({ created: r.created, hostelers: r.hostelers, skipped: r.skipped, errors: r.errors })
   }),
 )
 
@@ -412,7 +361,7 @@ router.post(
     const kept = inv.items.filter((it) => it.key !== 'late_fee' && !LATE_FEE_RX.test(it.label))
     const replaced = kept.length !== inv.items.length
     const items = [
-      ...kept.map((it) => ({ key: it.key ?? ('other' as const), label: it.label, amount: it.amount })),
+      ...kept.map((it) => ({ key: it.key ?? ('other' as const), label: it.label, amount: it.amount, ref: it.ref ?? null })),
       { key: 'late_fee' as const, label: `Late fee (${days} day${days === 1 ? '' : 's'})`, amount: fee },
     ]
     const updated = await applyInvoiceChange(orgId, id, { items })
@@ -486,7 +435,7 @@ router.get(
     ])
     const [info, invs, hostels] = await Promise.all([
       hostelerInfo(orgId, docs.map((d) => d.hostelerId)),
-      Invoice.find({ orgId, _id: { $in: docs.map((d) => d.invoiceId).filter(Boolean) } }).select('number month').lean(),
+      Invoice.find({ orgId, _id: { $in: docs.map((d) => d.invoiceId).filter(Boolean) } }).select('number month periodStart periodEnd').lean(),
       hostelNames(orgId, docs.map((d) => d.hostelId)),
     ])
     const invMap = new Map(invs.map((i) => [String(i._id), i]))
@@ -497,7 +446,7 @@ router.get(
         ...toApi(d),
         hosteler: h ? { id: h.id, name: h.name, phone: h.phone, loginId: h.loginId } : null,
         roomLabel: h?.roomLabel ?? 'Not allotted',
-        invoice: inv ? { id: String(inv._id), number: inv.number, month: inv.month } : null,
+        invoice: inv ? { id: String(inv._id), number: inv.number, month: inv.month, periodStart: inv.periodStart ?? null, periodEnd: inv.periodEnd ?? null } : null,
         hostelName: hostels.get(String(d.hostelId)) ?? '',
       }
     })
@@ -612,6 +561,8 @@ router.get(
             id: String(i._id),
             number: i.number,
             month: i.month,
+            periodStart: i.periodStart ?? null,
+            periodEnd: i.periodEnd ?? null,
             total: i.total,
             paidAmount: i.paidAmount,
             balance: i.total - i.paidAmount,

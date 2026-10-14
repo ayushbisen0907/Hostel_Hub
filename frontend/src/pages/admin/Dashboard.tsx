@@ -128,7 +128,7 @@ function useSetupSteps(counts: { hostels: number; rooms: number; hostelers: numb
     { done: counts.hostels > 0, title: 'Add your hostel', text: 'Name, address, type and the UPI ID where rent is paid.', to: '/app/settings?tab=hostels', cta: 'Add hostel', icon: <Building2 className="h-5 w-5" />, allowed: can('hostels') },
     { done: counts.rooms > 0, title: 'Add rooms & beds', text: 'Create rooms in bulk with sharing and rent per bed.', to: '/app/rooms', cta: 'Add rooms', icon: <BedDouble className="h-5 w-5" />, allowed: can('rooms') },
     { done: counts.hostelers > 0, title: 'Check in your first hosteler', text: 'Capture details, allot a bed and collect the deposit.', to: '/app/check-in', cta: 'Check in', icon: <LogIn className="h-5 w-5" />, allowed: can('checkin') },
-    { done: counts.invoices > 0, title: 'Generate monthly rent', text: 'Create rent invoices for everyone in one click.', to: '/app/fees', cta: 'Generate rent', icon: <Wallet className="h-5 w-5" />, allowed: can('fees') },
+    { done: counts.invoices > 0, title: 'Bill your hostelers', text: 'Bills are created on each hosteler’s check-in date every month — or create the due ones now.', to: '/app/fees', cta: 'Generate due bills', icon: <Wallet className="h-5 w-5" />, allowed: can('fees') },
   ]
 }
 

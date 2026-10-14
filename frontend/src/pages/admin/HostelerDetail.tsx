@@ -72,7 +72,7 @@ import {
   confirm,
   toast,
 } from '@/components/ui'
-import { cn, currentMonth, daysBetween, formatBytes, formatDate, formatDateTime, formatMoney, formatMonth, titleCase, today } from '@/lib/utils'
+import { billPeriod, rentCycleText, cn, currentMonth, daysBetween, formatBytes, formatDate, formatDateTime, formatMoney, formatMonth, titleCase, today } from '@/lib/utils'
 import {
   AcademicFields,
   DOC_TYPE_LABELS,
@@ -399,14 +399,14 @@ function DepositSection({ h, canFees }: { h: HostelerDetailT; canFees: boolean }
   const onBillsUnpaid = Math.max(billed - paidOnBills, 0)
   // same rule as the backend: agreed − collected outside bills − already on bills − waiting for the next bill
   const toBill = known && !out ? Math.max(agreed - collectedDirect - billed - waiting, 0) : 0
-  const latestBill = [...bills].sort((a, b) => b.month.localeCompare(a.month) || b.createdAt.localeCompare(a.createdAt))[0]
+  const latestBill = [...bills].sort((a, b) => (b.periodStart ?? b.month).localeCompare(a.periodStart ?? a.month) || b.createdAt.localeCompare(a.createdAt))[0]
 
   const addToBill = async (target: 'open' | 'next') => {
     const ok = await confirm(
       target === 'open'
         ? {
             title: 'Add deposit to the current bill?',
-            message: `${formatMoney(toBill)} security deposit will be added to bill ${latestBill?.number ?? ''}${latestBill ? ` (${formatMonth(latestBill.month)})` : ''}.`,
+            message: `${formatMoney(toBill)} security deposit will be added to bill ${latestBill?.number ?? ''}${latestBill ? ` (${billPeriod(latestBill)})` : ''}.`,
             confirmText: 'Add to bill',
           }
         : {
@@ -518,7 +518,7 @@ function FeesTab({ h }: { h: HostelerDetailT }) {
                 {invoices.map((inv) => (
                   <TR key={inv.id}>
                     <TD className="font-medium text-slate-900">{inv.number}</TD>
-                    <TD>{formatMonth(inv.month)}</TD>
+                    <TD>{billPeriod(inv)}</TD>
                     <TD className="whitespace-nowrap">{formatDate(inv.dueDate)}</TD>
                     <TD className="text-right">{formatMoney(inv.total)}</TD>
                     <TD className={cn('text-right', inv.balance > 0 && 'font-medium text-red-600')}>{formatMoney(inv.balance)}</TD>
@@ -1104,6 +1104,7 @@ function Profile({ h }: { h: HostelerDetailT }) {
           <div>
             <p className="text-xs text-slate-500">Monthly rent</p>
             <p className="font-semibold text-slate-900">{formatMoney(h.monthlyRent)}</p>
+            {h.checkInDate && <p className="text-[11px] text-slate-500">Rent cycle: {rentCycleText(h.checkInDate)}</p>}
           </div>
           <div>
             <p className="text-xs text-slate-500">Outstanding</p>
@@ -1187,6 +1188,7 @@ function Profile({ h }: { h: HostelerDetailT }) {
                   { label: 'Expected check-out', value: h.expectedCheckOut ? formatDate(h.expectedCheckOut) : '' },
                   { label: 'Checked out', value: h.checkOutDate ? formatDate(h.checkOutDate) : '' },
                   { label: 'Monthly rent', value: formatMoney(h.monthlyRent) },
+                  { label: 'Rent cycle', value: h.checkInDate ? rentCycleText(h.checkInDate) : '' },
                   {
                     label: 'Mess',
                     value: (

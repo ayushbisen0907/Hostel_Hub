@@ -293,3 +293,21 @@ export async function pendingElectricity(orgId: Id, hostelerId: Id, session?: Cl
   }
   return { lines, markBilled }
 }
+
+/**
+ * Readings saved before periods existed only have `month`: give them the
+ * month's first day → last day (or today for the current month).
+ * Runs at server start, before indexes are synced. Safe to run repeatedly.
+ */
+export async function migrateLegacyReadings() {
+  const legacy = await ElectricityReading.collection.find({ $or: [{ fromDate: { $exists: false } }, { fromDate: null }] }).toArray()
+  const today = todayStr()
+  for (const r of legacy) {
+    const month = String(r.month ?? today.slice(0, 7))
+    const [y, m] = month.split('-').map(Number)
+    const last = new Date(Date.UTC(y!, m!, 0)).toISOString().slice(0, 10)
+    const toDate = last > today ? today : last
+    await ElectricityReading.collection.updateOne({ _id: r._id }, { $set: { fromDate: `${month}-01`, toDate, totalDays: r.totalDays ?? 0 } })
+  }
+  return legacy.length
+}

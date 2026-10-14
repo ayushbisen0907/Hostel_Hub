@@ -414,3 +414,18 @@ describe('portal', () => {
     expect(inv.body.invoice.items.some((i: { key: string; amount: number }) => i.key === 'electricity' && i.amount === 550)).toBe(true)
   })
 })
+
+describe('legacy readings (saved before periods existed)', () => {
+  it('get the month as their period at startup', async () => {
+    const { migrateLegacyReadings } = await import('../src/lib/electricity.js')
+    const { ElectricityReading } = await import('../src/models/ElectricityReading.js')
+    const w = await makeWorld()
+    await ElectricityReading.collection.insertOne({
+      orgId: w.org._id, hostelId: w.hostel._id, roomId: w.room._id, bedId: null, month: '2026-02', units: 12, rate: 10, amount: 120, splits: [],
+    })
+    expect(await migrateLegacyReadings()).toBe(1)
+    const r = await ElectricityReading.findOne({ roomId: w.room._id }).lean()
+    expect(r).toMatchObject({ fromDate: '2026-02-01', toDate: '2026-02-28' })
+    expect(await migrateLegacyReadings()).toBe(0)
+  })
+})

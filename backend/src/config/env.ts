@@ -34,7 +34,11 @@ if (!parsed.success) {
 
 export const env = {
   ...parsed.data,
-  corsOrigins: parsed.data.CORS_ORIGIN.split(',').map((s) => s.trim()).filter(Boolean),
+  // a bare host (e.g. Render's `fromService … property: host`) means https://<host>
+  corsOrigins: parsed.data.CORS_ORIGIN.split(',')
+    .map((s) => s.trim().replace(/\/+$/, ''))
+    .filter(Boolean)
+    .map((s) => (/^https?:\/\//.test(s) ? s : `https://${s}`)),
   isProd: parsed.data.NODE_ENV === 'production',
   isTest: parsed.data.NODE_ENV === 'test',
 }

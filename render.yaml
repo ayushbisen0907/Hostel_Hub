@@ -22,8 +22,11 @@ services:
         generateValue: true
       - key: JWT_EXPIRES_IN
         value: 7d
-      - key: CORS_ORIGIN # the website's URL (update if you rename the static site or add a custom domain)
-        value: https://hostelhub-web.onrender.com
+      - key: CORS_ORIGIN # the website's host, filled in by Render (add a custom domain here comma-separated if needed)
+        fromService:
+          type: web
+          name: hostelhub-web
+          property: host
       - key: UPLOAD_DIR
         value: uploads
       - key: MAX_UPLOAD_MB
@@ -39,8 +42,11 @@ services:
     buildCommand: npm ci --include=dev && npm run build
     staticPublishPath: dist
     envVars:
-      - key: VITE_API_URL # the API's URL + /api (update if you rename the API service)
-        value: https://hostelhub-api.onrender.com/api
+      - key: VITE_API_URL # the API's host, filled in by Render; the app calls https://<host>/api
+        fromService:
+          type: web
+          name: hostelhub-api
+          property: host
       - key: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD # e2e tests only
         value: '1'
     routes:

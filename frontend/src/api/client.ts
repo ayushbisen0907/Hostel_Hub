@@ -11,7 +11,15 @@
 import axios, { AxiosError, type AxiosRequestConfig } from 'axios'
 import { getSession, useSession } from './session'
 
-export const API_BASE_URL: string = import.meta.env.VITE_API_URL || '/api'
+function resolveApiUrl(raw: string | undefined): string {
+  const v = raw?.trim().replace(/\/+$/, '')
+  if (!v) return '/api'
+  // a bare host (e.g. Render's `fromService … property: host`) means https://<host>/api
+  if (!/^https?:\/\//.test(v) && !v.startsWith('/')) return `https://${v}/api`
+  return v
+}
+
+export const API_BASE_URL: string = resolveApiUrl(import.meta.env.VITE_API_URL)
 
 export const api = axios.create({
   baseURL: API_BASE_URL,

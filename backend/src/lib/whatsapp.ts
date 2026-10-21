@@ -158,10 +158,13 @@ export async function sendTemplate(apiKey: string, to: string, templateName: str
       status?: string
       message?: string
       error?: { message?: string } | string
-      data?: { metaResponse?: { messages?: { id?: string }[] } }
+      data?: { metaResponse?: { messages?: { id?: string }[] } } | string
     } | null
-    if (res.ok && body?.status === 'success') return { ok: true, id: body.data?.metaResponse?.messages?.[0]?.id ?? '' }
-    const detail = body?.message || (typeof body?.error === 'string' ? body.error : body?.error?.message) || ''
+    if (res.ok && body?.status === 'success' && typeof body.data !== 'string') return { ok: true, id: body.data?.metaResponse?.messages?.[0]?.id ?? '' }
+    // Chatflow puts the real reason in `data`, e.g. "Approved Template not found by name:hostel_bill"
+    const reason = typeof body?.data === 'string' ? body.data.trim() : ''
+    const message = (body?.message || (typeof body?.error === 'string' ? body.error : body?.error?.message) || '').trim()
+    const detail = [message, reason].filter(Boolean).join(': ')
     const error = res.status === 401 || res.status === 403 ? 'Pabbly Chatflow rejected the API key' : detail || `Pabbly Chatflow answered ${res.status}`
     return { ok: false, error: String(error).slice(0, 300), retry: res.status >= 500 || res.status === 429 }
   } catch (e) {

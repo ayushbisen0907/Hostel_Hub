@@ -64,9 +64,9 @@ When a bill is made, the hosteler gets it on WhatsApp with the breakdown, total 
 (Starter plan and up; each hostel switches it on in Settings → Hostels → WhatsApp).
 
 - **Default:** HostelHub's number for every hostel — set `CHATFLOW_API_KEY` (secret, in the Render
-  dashboard), `CHATFLOW_TEMPLATE` (`hostel_bill`), `CHATFLOW_NUMBER` and `CHATFLOW_BASE_URL`
+  dashboard), `CHATFLOW_TEMPLATE` (`hostel_bills`), `CHATFLOW_NUMBER` and `CHATFLOW_BASE_URL`
   (`https://testchatflow.pabbly.com` or `https://chatflow.pabbly.com`) on the API.
-- **A hostel's own number:** connect it in Chatflow (with the `hostel_bill` template approved), then
+- **A hostel's own number:** connect it in Chatflow (with the `hostel_bills` template approved), then
 
 ```bash
 cd backend

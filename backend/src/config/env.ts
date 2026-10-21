@@ -14,7 +14,7 @@ const schema = z.object({
   CHATFLOW_BASE_URL: z.string().url().default('https://chatflow.pabbly.com'),
   // one HostelHub WhatsApp number for every hostel: its Chatflow API key (secret) and approved template name
   CHATFLOW_API_KEY: z.string().trim().default(''),
-  CHATFLOW_TEMPLATE: z.string().trim().default('hostel_bill'),
+  CHATFLOW_TEMPLATE: z.string().trim().default('hostel_bills'),
   // the default number, shown to owners, e.g. +91 96913 03358
   CHATFLOW_NUMBER: z.string().trim().default(''),
 })

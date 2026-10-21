@@ -111,17 +111,17 @@ function StepBlock({
           className={cn(
             'flex h-10 w-10 items-center justify-center rounded-full text-sm font-bold transition-all duration-500',
             desktop && 'absolute left-0 top-1/2 -translate-y-1/2',
-            active ? 'bg-brand-600 text-white shadow-lg shadow-brand-200' : 'bg-white text-slate-500 ring-1 ring-slate-200',
+            active ? 'bg-brand-600 text-white shadow-lg shadow-brand-200 dark:shadow-black/40' : 'bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 ring-1 ring-slate-200 dark:ring-slate-700',
           )}
         >
           {i + 1}
         </span>
         <h3 className={cn('text-2xl font-bold tracking-tight', !desktop && 'mt-4')}>{step.title}</h3>
-        <p className="mt-2 max-w-md text-slate-600">{step.text}</p>
+        <p className="mt-2 max-w-md text-slate-600 dark:text-slate-300">{step.text}</p>
         <ul className="mt-4 flex flex-wrap gap-2">
           {step.points.map((p) => (
-            <li key={p} className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700">
-              <Check className="h-3.5 w-3.5 text-emerald-600" /> {p}
+            <li key={p} className="flex items-center gap-1.5 rounded-full border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1 text-xs font-medium text-slate-700 dark:text-slate-200">
+              <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> {p}
             </li>
           ))}
         </ul>
@@ -153,12 +153,12 @@ const TITLES = ['New hostel', 'Rooms', 'Check in', 'Bills', 'Payments']
 
 function AppWindow({ step, children }: { step: number; children: ReactNode }) {
   return (
-    <div className="w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-brand-200/50">
-      <div className="flex items-center gap-2 border-b border-slate-100 bg-slate-50 px-4 py-3">
+    <div className="w-full overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xl shadow-brand-200/50 dark:shadow-black/40">
+      <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 px-4 py-3">
         <span className="h-2.5 w-2.5 rounded-full bg-red-300" />
         <span className="h-2.5 w-2.5 rounded-full bg-amber-300" />
         <span className="h-2.5 w-2.5 rounded-full bg-emerald-300" />
-        <span className="ml-3 truncate text-xs font-medium text-slate-500">HostelHub · {TITLES[step]}</span>
+        <span className="ml-3 truncate text-xs font-medium text-slate-500 dark:text-slate-400">HostelHub · {TITLES[step]}</span>
       </div>
       <div className="min-h-[400px] p-5">{children}</div>
     </div>
@@ -176,10 +176,10 @@ function Screen({ step }: { step: number }) {
 function ScreenTitle({ icon, title, sub }: { icon: ReactNode; title: string; sub?: string }) {
   return (
     <div className="mb-4 flex items-center gap-3">
-      <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-50 text-brand-600">{icon}</span>
+      <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-50 dark:bg-brand-500/15 text-brand-600 dark:text-brand-400">{icon}</span>
       <div>
         <p className="font-semibold">{title}</p>
-        {sub && <p className="text-xs text-slate-500">{sub}</p>}
+        {sub && <p className="text-xs text-slate-500 dark:text-slate-400">{sub}</p>}
       </div>
     </div>
   )
@@ -188,11 +188,11 @@ function ScreenTitle({ icon, title, sub }: { icon: ReactNode; title: string; sub
 function FakeField({ label, value, focus }: { label: string; value: string; focus: boolean }) {
   return (
     <div>
-      <p className="mb-1 text-xs font-medium text-slate-500">{label}</p>
+      <p className="mb-1 text-xs font-medium text-slate-500 dark:text-slate-400">{label}</p>
       <div
         className={cn(
           'flex h-10 items-center rounded-lg border px-3 text-sm transition-colors',
-          focus ? 'border-brand-500 ring-2 ring-brand-100' : 'border-slate-200',
+          focus ? 'border-brand-500 ring-2 ring-brand-100 dark:ring-brand-500/30' : 'border-slate-200 dark:border-slate-800',
         )}
       >
         <span className="truncate">{value}</span>
@@ -217,15 +217,15 @@ function SetupScreen() {
         <div className="grid grid-cols-2 gap-3">
           <FakeField label="Electricity rate" value={rate.typed ? `₹${rate.typed} per unit` : ''} focus={upi.done && !rate.done} />
           <div>
-            <p className="mb-1 text-xs font-medium text-slate-500">Split electricity</p>
-            <div className="relative grid h-10 grid-cols-2 rounded-lg bg-slate-100 p-1 text-xs font-semibold">
+            <p className="mb-1 text-xs font-medium text-slate-500 dark:text-slate-400">Split electricity</p>
+            <div className="relative grid h-10 grid-cols-2 rounded-lg bg-slate-100 dark:bg-slate-800 p-1 text-xs font-semibold">
               <motion.span
-                className="absolute inset-y-1 left-1 w-[calc(50%-4px)] rounded-md bg-white shadow"
+                className="absolute inset-y-1 left-1 w-[calc(50%-4px)] rounded-md bg-white dark:bg-slate-900 shadow"
                 animate={{ x: stage >= 1 ? '100%' : '0%' }}
                 transition={{ duration: 0.4, ease: EASE }}
               />
-              <span className="relative z-10 flex items-center justify-center text-slate-600">Per room</span>
-              <span className={cn('relative z-10 flex items-center justify-center', stage >= 1 ? 'text-brand-700' : 'text-slate-600')}>Per bed</span>
+              <span className="relative z-10 flex items-center justify-center text-slate-600 dark:text-slate-300">Per room</span>
+              <span className={cn('relative z-10 flex items-center justify-center', stage >= 1 ? 'text-brand-700 dark:text-brand-300' : 'text-slate-600 dark:text-slate-300')}>Per bed</span>
             </div>
           </div>
         </div>
@@ -256,20 +256,20 @@ function RoomsScreen() {
         {ROOMS.map((r, i) => (
           <motion.div
             key={r.n}
-            className="rounded-xl border border-slate-200 p-3"
+            className="rounded-xl border border-slate-200 dark:border-slate-800 p-3"
             initial={{ opacity: 0, scale: 0.9, y: 12 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             transition={{ delay: 0.15 + i * 0.18, duration: 0.45, ease: EASE }}
           >
             <div className="flex items-baseline justify-between">
               <p className="font-semibold">Room {r.n}</p>
-              <p className="text-[11px] text-slate-500">{formatMoney(r.rent)}</p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">{formatMoney(r.rent)}</p>
             </div>
             <div className="mt-2 flex gap-1">
               {Array.from({ length: r.beds }, (_, b) => (
                 <motion.span
                   key={b}
-                  className="flex h-7 w-7 items-center justify-center rounded-md bg-brand-50 text-brand-600"
+                  className="flex h-7 w-7 items-center justify-center rounded-md bg-brand-50 dark:bg-brand-500/15 text-brand-600 dark:text-brand-400"
                   initial={{ opacity: 0, scale: 0 }}
                   animate={{ opacity: 1, scale: 1 }}
                   transition={{ delay: 0.5 + i * 0.18 + b * 0.08, type: 'spring', stiffness: 400, damping: 18 }}
@@ -282,13 +282,13 @@ function RoomsScreen() {
         ))}
       </div>
       <motion.div
-        className="mt-4 flex items-center justify-between rounded-xl bg-emerald-50 px-4 py-3 text-sm"
+        className="mt-4 flex items-center justify-between rounded-xl bg-emerald-50 dark:bg-emerald-500/15 px-4 py-3 text-sm"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 1.6 }}
       >
-        <span className="font-medium text-emerald-800">Beds ready to fill</span>
-        <CountUp value={total} className="text-lg font-bold text-emerald-700" duration={1.4} />
+        <span className="font-medium text-emerald-800 dark:text-emerald-300">Beds ready to fill</span>
+        <CountUp value={total} className="text-lg font-bold text-emerald-700 dark:text-emerald-300" duration={1.4} />
       </motion.div>
     </div>
   )
@@ -303,22 +303,22 @@ function CheckInScreen() {
   return (
     <div>
       <ScreenTitle icon={<UserPlus className="h-5 w-5" />} title="Check in" sub="Shree Balaji Boys Hostel" />
-      <div className="flex items-center gap-3 rounded-xl border border-slate-200 p-3">
+      <div className="flex items-center gap-3 rounded-xl border border-slate-200 dark:border-slate-800 p-3">
         <Initials name={name.typed || 'R'} />
         <div className="min-w-0 flex-1">
           <p className="h-5 font-semibold">{name.typed}</p>
-          <Appear show={stage >= 1} className="text-xs text-slate-500">
+          <Appear show={stage >= 1} className="text-xs text-slate-500 dark:text-slate-400">
             Room 102 · Bed C · from 11 Oct
           </Appear>
         </div>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-3">
-        <div className="rounded-xl bg-slate-50 p-3">
-          <p className="text-[11px] text-slate-500">Hosteler ID</p>
-          <p className="mt-0.5 h-6 font-mono text-base font-bold tracking-wider text-brand-700">{id}</p>
+        <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 p-3">
+          <p className="text-[11px] text-slate-500 dark:text-slate-400">Hosteler ID</p>
+          <p className="mt-0.5 h-6 font-mono text-base font-bold tracking-wider text-brand-700 dark:text-brand-300">{id}</p>
         </div>
-        <div className="rounded-xl bg-slate-50 p-3">
-          <p className="flex items-center gap-1 text-[11px] text-slate-500">
+        <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 p-3">
+          <p className="flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400">
             <KeyRound className="h-3 w-3" /> Temporary password
           </p>
           <p className="mt-0.5 h-6 font-mono text-base font-bold tracking-wider">{pwd}</p>
@@ -327,8 +327,8 @@ function CheckInScreen() {
       <ul className="mt-4 space-y-2 text-sm">
         {['Deposit ₹5,000 collected', 'Mess ON', 'Login sent on WhatsApp'].map((t, i) => (
           <li key={t} className="h-6">
-            <Appear show={stage >= i + 2} className="flex items-center gap-2 text-slate-700">
-              <CheckCircle2 className="h-4 w-4 text-emerald-600" /> {t}
+            <Appear show={stage >= i + 2} className="flex items-center gap-2 text-slate-700 dark:text-slate-200">
+              <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" /> {t}
             </Appear>
           </li>
         ))}
@@ -348,20 +348,20 @@ function BillScreen() {
   return (
     <div>
       <ScreenTitle icon={<ReceiptText className="h-5 w-5" />} title="Bill · 13 Oct – 12 Nov" sub="Rahul Verma · SBH-0044" />
-      <div className="rounded-xl border border-slate-200">
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800">
         {lines.map(([k, sub, v], i) => (
-          <div key={k} className="h-14 border-b border-slate-100 px-4 last:border-0">
+          <div key={k} className="h-14 border-b border-slate-100 dark:border-slate-800 px-4 last:border-0">
             <Appear show={stage >= i + 1} className="flex h-14 items-center justify-between">
               <div>
                 <p className="text-sm font-medium">{k}</p>
-                <p className="text-[11px] text-slate-500">{sub}</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">{sub}</p>
               </div>
               <p className="font-semibold">{formatMoney(v)}</p>
             </Appear>
           </div>
         ))}
       </div>
-      <div className="mt-3 flex items-center justify-between rounded-xl bg-slate-900 px-4 py-3 text-white">
+      <div className="mt-3 flex items-center justify-between rounded-xl bg-slate-900 px-4 py-3 text-white dark:bg-slate-800">
         <div>
           <p className="text-[11px] text-slate-400">Total</p>
           <p className="text-xl font-bold">{stage >= 4 ? <CountUp value={DEMO_BILL_TOTAL} format={(n) => formatMoney(n)} /> : '—'}</p>
@@ -369,8 +369,8 @@ function BillScreen() {
         <span className="rounded-full bg-amber-400 px-3 py-1 text-xs font-bold text-slate-900">Due 13 Nov</span>
       </div>
       <Appear show={stage >= 5} className="mt-3 flex justify-center">
-        <span className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold shadow-lg">
-          <Bell className="h-4 w-4 text-brand-600" /> Sent to Rahul’s app
+        <span className="flex items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-semibold shadow-lg">
+          <Bell className="h-4 w-4 text-brand-600 dark:text-brand-400" /> Sent to Rahul’s app
         </span>
       </Appear>
     </div>
@@ -383,16 +383,16 @@ function UpiScreen() {
   const stage = useStage([2100, 2700, 4300])
   return (
     <div className="grid gap-4 sm:grid-cols-2">
-      <div className="rounded-2xl bg-slate-900 p-1.5">
-        <div className="rounded-xl bg-white p-3">
-          <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500">
+      <div className="rounded-2xl bg-slate-900 p-1.5 dark:bg-slate-700">
+        <div className="rounded-xl bg-white dark:bg-slate-900 p-3">
+          <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
             <Smartphone className="h-3.5 w-3.5" /> Rahul’s phone
           </p>
-          <p className="mt-2 text-xs text-slate-500">Pay to balajihostel@okicici</p>
-          <FakeQr className="mx-auto mt-2 w-24 border border-slate-200" />
-          <p className="mt-3 text-[11px] font-medium text-slate-500">Amount paid</p>
+          <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">Pay to balajihostel@okicici</p>
+          <FakeQr className="mx-auto mt-2 w-24 border border-slate-200 dark:border-slate-800" />
+          <p className="mt-3 text-[11px] font-medium text-slate-500 dark:text-slate-400">Amount paid</p>
           <p className="text-sm font-bold">{formatMoney(DEMO_PAID)}</p>
-          <p className="mt-2 text-[11px] font-medium text-slate-500">UTR / transaction ID</p>
+          <p className="mt-2 text-[11px] font-medium text-slate-500 dark:text-slate-400">UTR / transaction ID</p>
           <p className="h-5 font-mono text-sm">{utr.typed}</p>
           <DemoButton done={stage >= 1} label="I have paid" doneLabel="Sent for checking" className="mt-3 w-full" pointerDelay={0.8} />
         </div>
@@ -401,20 +401,20 @@ function UpiScreen() {
         <AnimatePresence>
           {stage >= 2 && (
             <motion.div
-              className="rounded-2xl border border-slate-200 p-4 shadow-lg"
+              className="rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-lg"
               initial={{ opacity: 0, x: -24 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.5, ease: EASE }}
             >
-              <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500">
+              <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
                 <IndianRupee className="h-3.5 w-3.5" /> Owner · payment to verify
               </p>
               <p className="mt-2 text-lg font-bold">{formatMoney(DEMO_PAID)}</p>
-              <p className="text-xs text-slate-500">Rahul · UTR 4182…7731</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Rahul · UTR 4182…7731</p>
               <DemoButton done={stage >= 3} label="Verify" doneLabel="Verified" className="mt-3 w-full" pointerDelay={0.4} />
               <Appear show={stage >= 3} className="mt-3 space-y-1 text-xs">
-                <p className="text-emerald-700">✓ Receipt sent to Rahul</p>
-                <p className="text-amber-700">{formatMoney(DEMO_BILL_TOTAL - DEMO_PAID)} added to next bill</p>
+                <p className="text-emerald-700 dark:text-emerald-300">✓ Receipt sent to Rahul</p>
+                <p className="text-amber-700 dark:text-amber-300">{formatMoney(DEMO_BILL_TOTAL - DEMO_PAID)} added to next bill</p>
               </Appear>
             </motion.div>
           )}

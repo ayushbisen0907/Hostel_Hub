@@ -106,3 +106,31 @@ export function splitByWeight(total: number, weights: number[]): number[] {
   }
   return out
 }
+
+const THEME_KEY = 'hostelhub-landing-theme'
+
+function savedTheme(): 'light' | 'dark' | null {
+  try {
+    const v = localStorage.getItem(THEME_KEY)
+    return v === 'light' || v === 'dark' ? v : null
+  } catch {
+    return null
+  }
+}
+
+/** Follows the device's light/dark setting until the visitor picks one; the pick is remembered. */
+export function useLandingTheme() {
+  const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
+  const [choice, setChoice] = useState(savedTheme)
+  const dark = choice ? choice === 'dark' : systemDark
+  const toggle = () => {
+    const next = dark ? 'light' : 'dark'
+    setChoice(next)
+    try {
+      localStorage.setItem(THEME_KEY, next)
+    } catch {
+      // private mode / blocked storage: the choice just isn't remembered
+    }
+  }
+  return { dark, toggle }
+}

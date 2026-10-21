@@ -55,7 +55,7 @@ export function HeroDemo() {
 
   return (
     <div ref={ref} className="relative mx-auto w-full max-w-lg">
-      <div className="absolute -top-4 right-4 z-10 flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-md">
+      <div className="absolute -top-4 right-4 z-10 flex items-center gap-2 rounded-full border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 shadow-md">
         <span className="relative flex h-2 w-2">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
           <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
@@ -63,13 +63,13 @@ export function HeroDemo() {
         Live demo
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl shadow-brand-200/60 sm:p-5">
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-2xl shadow-brand-200/60 dark:shadow-black/40 sm:p-5">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-xs text-slate-500">Shree Balaji Hostel</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">Shree Balaji Hostel</p>
             <p className="font-semibold">Dashboard</p>
           </div>
-          <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+          <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
             <Bell className="h-4 w-4" />
             <AnimatePresence>
               {acted && (
@@ -87,11 +87,11 @@ export function HeroDemo() {
         </div>
 
         <div className="mt-4 grid grid-cols-3 gap-2">
-          <Stat label="Beds filled" className="text-brand-600">
+          <Stat label="Beds filled" className="text-brand-600 dark:text-brand-400">
             <CountUp value={filled} duration={0.6} />
             /50
           </Stat>
-          <Stat label="Collected" className="text-emerald-600">
+          <Stat label="Collected" className="text-emerald-600 dark:text-emerald-400">
             <CountUp value={collected} format={(n) => formatMoney(n)} />
           </Stat>
           <Stat label="Due" className="text-amber-600">
@@ -99,7 +99,7 @@ export function HeroDemo() {
           </Stat>
         </div>
 
-        <p className="mt-4 text-xs font-medium text-slate-500">Beds</p>
+        <p className="mt-4 text-xs font-medium text-slate-500 dark:text-slate-400">Beds</p>
         <div className="mt-2 grid grid-cols-10 gap-1.5">
           {Array.from({ length: 50 }, (_, i) => {
             const isTarget = i === TARGET_BED
@@ -112,7 +112,7 @@ export function HeroDemo() {
                 transition={{ delay: isTarget ? 0 : i * 0.012, duration: 0.4 }}
                 className={cn(
                   'h-4 rounded transition-colors duration-500 sm:h-5',
-                  state === 'o' ? 'bg-brand-500' : state === 'v' ? 'border border-dashed border-slate-300 bg-white' : 'bg-amber-400',
+                  state === 'o' ? 'bg-brand-500' : state === 'v' ? 'border border-dashed border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900' : 'bg-amber-400',
                   isTarget && scene === 0 && !acted && 'ring-2 ring-brand-300 ring-offset-1',
                 )}
               />
@@ -151,7 +151,7 @@ export function HeroDemo() {
               onClick={() => setScene(i)}
               className={cn(
                 'relative flex flex-col items-center justify-center gap-1 overflow-hidden rounded-xl border px-1 py-2 text-[11px] font-semibold transition-colors sm:flex-row sm:text-xs',
-                active ? 'border-brand-200 bg-brand-50 text-brand-700' : 'border-slate-200 bg-white text-slate-500 hover:text-slate-800',
+                active ? 'border-brand-200 dark:border-brand-500/40 bg-brand-50 dark:bg-brand-500/15 text-brand-700 dark:text-brand-300' : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white',
               )}
             >
               <Icon className="h-3.5 w-3.5" /> {s.label}
@@ -174,14 +174,14 @@ export function HeroDemo() {
 
 function Stat({ label, className, children }: { label: string; className: string; children: ReactNode }) {
   return (
-    <div className="rounded-xl bg-slate-50 p-2.5 sm:p-3">
-      <p className="text-[11px] text-slate-500">{label}</p>
+    <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 p-2.5 sm:p-3">
+      <p className="text-[11px] text-slate-500 dark:text-slate-400">{label}</p>
       <p className={cn('mt-0.5 truncate text-sm font-bold sm:text-base', className)}>{children}</p>
     </div>
   )
 }
 
-const panel = 'flex h-full flex-col justify-center rounded-xl border border-slate-200 bg-slate-50 p-3'
+const panel = 'flex h-full flex-col justify-center rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 p-3'
 
 function CheckInPanel({ acted }: { acted: boolean }) {
   return (
@@ -190,11 +190,11 @@ function CheckInPanel({ acted }: { acted: boolean }) {
         <Initials name="Rahul Verma" />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold">Rahul Verma</p>
-          <p className="truncate text-xs text-slate-500">Room 102 · Bed C · Deposit ₹5,000</p>
+          <p className="truncate text-xs text-slate-500 dark:text-slate-400">Room 102 · Bed C · Deposit ₹5,000</p>
         </div>
         <DemoButton done={acted} label="Check in" doneLabel="Done" />
       </div>
-      <Appear show={acted} className="mt-2 flex items-center gap-1.5 text-xs font-medium text-emerald-700">
+      <Appear show={acted} className="mt-2 flex items-center gap-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-300">
         <CheckCircle2 className="h-3.5 w-3.5" /> Hosteler ID SBH-0044 · login sent on WhatsApp
       </Appear>
     </div>
@@ -211,18 +211,18 @@ function BillPanel({ acted }: { acted: boolean }) {
     <div className={panel}>
       <div className="flex items-center justify-between gap-2">
         <p className="truncate text-xs font-semibold">Bill made · Rahul · 13 Oct – 12 Nov</p>
-        <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">Due 13 Nov</span>
+        <span className="shrink-0 rounded-full bg-amber-100 dark:bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-800 dark:text-amber-300">Due 13 Nov</span>
       </div>
       <div className="mt-2 grid grid-cols-3 gap-1.5">
         {lines.map(([k, v], i) => (
           <motion.div
             key={k}
-            className="rounded-lg bg-white px-2 py-1.5"
+            className="rounded-lg bg-white dark:bg-slate-900 px-2 py-1.5"
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.25 + i * 0.25, duration: 0.4 }}
           >
-            <p className="text-[10px] text-slate-500">{k}</p>
+            <p className="text-[10px] text-slate-500 dark:text-slate-400">{k}</p>
             <p className="text-xs font-semibold">{formatMoney(v)}</p>
           </motion.div>
         ))}
@@ -231,7 +231,7 @@ function BillPanel({ acted }: { acted: boolean }) {
         <span className="font-semibold">
           Total <CountUp value={DEMO_BILL_TOTAL} format={(n) => formatMoney(n)} duration={1.2} />
         </span>
-        <Appear show={acted} className="flex items-center gap-1 font-medium text-brand-700">
+        <Appear show={acted} className="flex items-center gap-1 font-medium text-brand-700 dark:text-brand-300">
           <Bell className="h-3.5 w-3.5" /> Sent to Rahul’s app
         </Appear>
       </div>
@@ -243,17 +243,17 @@ function UpiPanel({ acted }: { acted: boolean }) {
   return (
     <div className={panel}>
       <div className="flex items-center gap-3">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-50 dark:bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
           <IndianRupee className="h-5 w-5" />
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold">{formatMoney(DEMO_PAID)} paid by UPI</p>
-          <p className="truncate text-xs text-slate-500">Rahul · UTR 4182…7731</p>
+          <p className="truncate text-xs text-slate-500 dark:text-slate-400">Rahul · UTR 4182…7731</p>
         </div>
         <DemoButton done={acted} label="Verify" doneLabel="Verified" />
       </div>
-      <Appear show={acted} className="mt-2 text-xs font-medium text-slate-600">
-        Receipt sent · <span className="text-amber-700">{formatMoney(DEMO_BILL_TOTAL - DEMO_PAID)} moves to next bill</span>
+      <Appear show={acted} className="mt-2 text-xs font-medium text-slate-600 dark:text-slate-300">
+        Receipt sent · <span className="text-amber-700 dark:text-amber-300">{formatMoney(DEMO_BILL_TOTAL - DEMO_PAID)} moves to next bill</span>
       </Appear>
     </div>
   )
@@ -272,15 +272,15 @@ function PowerPanel({ acted }: { acted: boolean }) {
         <p className="font-semibold">
           Room 102 · {POWER.units} units × ₹{POWER.rate} = {formatMoney(total)}
         </p>
-        <Appear show={acted} className="shrink-0 font-medium text-emerald-700">
+        <Appear show={acted} className="shrink-0 font-medium text-emerald-700 dark:text-emerald-300">
           ✓ Added to bills
         </Appear>
       </div>
       <div className="mt-2 space-y-1.5">
         {POWER.people.map((p, i) => (
           <div key={p.name} className="flex items-center gap-2 text-[11px]">
-            <span className="w-11 shrink-0 text-slate-600">{p.name}</span>
-            <div className="h-2 flex-1 rounded-full bg-white">
+            <span className="w-11 shrink-0 text-slate-600 dark:text-slate-300">{p.name}</span>
+            <div className="h-2 flex-1 rounded-full bg-white dark:bg-slate-900">
               <motion.div
                 className="h-2 rounded-full bg-amber-400"
                 initial={{ width: 0 }}
@@ -288,8 +288,8 @@ function PowerPanel({ acted }: { acted: boolean }) {
                 transition={{ delay: 0.2 + i * 0.2, duration: 0.8, ease: EASE }}
               />
             </div>
-            <span className="w-16 shrink-0 text-right text-slate-500">
-              {p.days}d · <b className="text-slate-800">₹{shares[i]}</b>
+            <span className="w-16 shrink-0 text-right text-slate-500 dark:text-slate-400">
+              {p.days}d · <b className="text-slate-800 dark:text-slate-100">₹{shares[i]}</b>
             </span>
           </div>
         ))}

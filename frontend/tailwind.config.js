@@ -1,6 +1,8 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
+  // only the landing page uses dark: (it puts .dark on its own root)
+  darkMode: 'class',
   theme: {
     extend: {
       colors: {

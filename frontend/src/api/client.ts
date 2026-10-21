@@ -14,8 +14,9 @@ import { getSession, useSession } from './session'
 function resolveApiUrl(raw: string | undefined): string {
   const v = raw?.trim().replace(/\/+$/, '')
   if (!v) return '/api'
-  // a bare host (e.g. Render's `fromService … property: host`) means https://<host>/api
-  if (!/^https?:\/\//.test(v) && !v.startsWith('/')) return `https://${v}/api`
+  // a bare host means https://<host>/api; a bare Render service name (Render's `fromService … property: host`)
+  // has no dot — its public address is <name>.onrender.com
+  if (!/^https?:\/\//.test(v) && !v.startsWith('/')) return `https://${v.includes('.') ? v : `${v}.onrender.com`}/api`
   return v
 }
 

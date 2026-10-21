@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { lazy, Suspense, type ReactNode } from 'react'
 import { BrowserRouter, Link, Navigate, Route, Routes } from 'react-router-dom'
 import { Lock } from 'lucide-react'
 import { QueryClientProvider } from '@tanstack/react-query'
@@ -10,12 +10,14 @@ import { PortalLayout } from '@/components/layout/PortalLayout'
 import { Button, Card, ConfirmHost, LoadingState, Toaster } from '@/components/ui'
 import { hasModule, planInfo, PLANS, type ModuleKey } from '@/lib/plans'
 
-import Landing from '@/pages/auth/Landing'
 import Login from '@/pages/auth/Login'
 import Signup from '@/pages/auth/Signup'
 import PortalLogin from '@/pages/auth/PortalLogin'
 import SetPassword from '@/pages/auth/SetPassword'
 import PortalRules from '@/pages/portal/Rules'
+
+// the landing page (and its animation libraries) loads only for visitors
+const Landing = lazy(() => import('@/pages/landing/Landing'))
 
 import Dashboard from '@/pages/admin/Dashboard'
 import Rooms from '@/pages/admin/Rooms'
@@ -117,7 +119,11 @@ function Home() {
   const session = useSession((s) => s.session)
   if (session?.kind === 'staff') return <Navigate to="/app/dashboard" replace />
   if (session?.kind === 'hosteler') return <Navigate to="/portal" replace />
-  return <Landing />
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-white" />}>
+      <Landing />
+    </Suspense>
+  )
 }
 
 export default function App() {

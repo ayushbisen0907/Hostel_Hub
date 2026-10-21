@@ -67,3 +67,18 @@ body { @apply bg-slate-50 text-slate-800 antialiased; }
   .no-print { display: none !important; }
   body { background: white; }
 }
+
+/* ---- Landing page ---- */
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+.animate-marquee { animation: marquee 32s linear infinite; }
+.animate-marquee:hover { animation-play-state: paused; }
+/* soft glow that follows the mouse (--x / --y set from JS) */
+.spotlight-card {
+  background-image: radial-gradient(260px circle at var(--x, -300px) var(--y, -300px), rgb(59 110 246 / 0.09), transparent 70%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-marquee { animation: none; }
+}

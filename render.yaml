@@ -30,6 +30,14 @@ services:
         value: uploads
       - key: MAX_UPLOAD_MB
         value: '5'
+      - key: CHATFLOW_BASE_URL # Pabbly Chatflow server for WhatsApp bill messages
+        value: https://testchatflow.pabbly.com
+      - key: CHATFLOW_API_KEY # secret: HostelHub's Chatflow API key (set it in the Render dashboard)
+        sync: false
+      - key: CHATFLOW_TEMPLATE # the approved bill template's name in Chatflow
+        value: hostel_bill
+      - key: CHATFLOW_NUMBER # the default number, shown to owners
+        value: +91 96913 03358
       - key: MONGOMS_DISABLE_POSTINSTALL # tests-only in-memory MongoDB: don't download it on Render
         value: '1'
 

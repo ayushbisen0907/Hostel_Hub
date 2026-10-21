@@ -19,6 +19,7 @@ import { monthlyBillItems, type BillItem } from './billing.js'
 import { pendingElectricity } from './electricity.js'
 import { createInvoice } from './money.js'
 import { notifyNewBill } from './notify.js'
+import { kickWhatsApp, queueBillWhatsApp } from './whatsapp.js'
 import { todayStr } from './http.js'
 import { logActivity } from './org.js'
 
@@ -105,7 +106,10 @@ export async function billDueCycles(
       session,
     )
     if (elec.lines.length) await elec.markBilled(inv._id)
-    if (ctx.notify) await notifyNewBill(orgId, inv, label, session)
+    if (ctx.notify) {
+      await notifyNewBill(orgId, inv, label, session)
+      await queueBillWhatsApp(orgId, inv, label, session)
+    }
     created.push(inv)
     billed.add(k)
   }
@@ -152,7 +156,10 @@ export async function generateDueBills(orgId: Id, opts: { hostelId?: Id; today?:
       if ((e as { code?: number }).code !== 11000) errors.push(`${String(h._id)}: ${(e as Error).message}`)
     }
   }
-  if (created) await logActivity(orgId, `${created} bill${created === 1 ? '' : 's'} generated`, 'payment', opts.hostelId ?? null)
+  if (created) {
+    await logActivity(orgId, `${created} bill${created === 1 ? '' : 's'} generated`, 'payment', opts.hostelId ?? null)
+    if (ctx.notify) kickWhatsApp()
+  }
   // skipped = hostelers with nothing new to bill
   return { created, hostelers: hs.length, skipped: hs.length - billedHostelers - errors.length, errors }
 }

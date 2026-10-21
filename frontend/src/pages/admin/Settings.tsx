@@ -23,6 +23,7 @@ import { useHostels, useOrg, useScopeStore } from '@/api/common'
 import { useCan, useStaffSession } from '@/api/session'
 import { useDeleteHostel } from '@/api/hostels'
 import { HOSTEL_TYPES, HostelChargeChips, HostelModal, HostelStayChips } from './_hostelForm'
+import { WhatsAppModal } from './_whatsapp'
 import {
   orgApi,
   useChangeOwnPassword,
@@ -303,6 +304,7 @@ function HostelsTab() {
 
   const [editing, setEditing] = useState<Hostel | null>(null)
   const [open, setOpen] = useState(false)
+  const [whatsappFor, setWhatsappFor] = useState<Hostel | null>(null)
   const hostelLimit = usePlanLimit('hostels')
 
   const openNew = () => {
@@ -373,6 +375,7 @@ function HostelsTab() {
                                 {HOSTEL_TYPES.find((t) => t.value === h.type)?.label}
                               </Badge>
                               <Badge>IDs: {h.code}-0001</Badge>
+                              {h.whatsapp?.enabled && <Badge tone="green">{h.whatsapp.ownNumber ? 'WhatsApp · own number' : 'WhatsApp on'}</Badge>}
                             </div>
                           </div>
                         </div>
@@ -441,6 +444,9 @@ function HostelsTab() {
                           </Button>
                         )}
                         <div className="flex-1" />
+                        <Button size="sm" variant="ghost" icon={<MessageCircle className="h-3.5 w-3.5" />} onClick={() => setWhatsappFor(h)}>
+                          WhatsApp
+                        </Button>
                         <Button size="sm" variant="ghost" icon={<Pencil className="h-3.5 w-3.5" />} onClick={() => openEdit(h)}>
                           Edit
                         </Button>
@@ -463,6 +469,7 @@ function HostelsTab() {
             )}
 
             {open && <HostelModal key={editing?.id ?? 'new'} editing={editing} onClose={() => setOpen(false)} />}
+            <WhatsAppModal hostel={whatsappFor} onClose={() => setWhatsappFor(null)} />
           </div>
         )
       }}

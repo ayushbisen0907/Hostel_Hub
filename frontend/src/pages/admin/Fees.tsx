@@ -1,3 +1,6 @@
+import { useHasModule } from '@/api/plan'
+import { useResendBillWhatsApp } from '@/api/whatsapp'
+import { BillWhatsAppIcon } from './_whatsapp'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
@@ -13,6 +16,7 @@ import {
   FileText,
   IndianRupee,
   MessageCircle,
+  Send,
   Pencil,
   Plus,
   Printer,
@@ -307,6 +311,8 @@ function InvoicesTab({ onPay, onRemindAll, overdueCount }: { onPay: (inv: Invoic
   const [page, setPage] = useState(1)
   const [editing, setEditing] = useState<InvoiceRow | null>(null)
   const [busyId, setBusyId] = useState<ID | null>(null)
+  const resendWhatsApp = useResendBillWhatsApp()
+  const canWhatsApp = useHasModule('whatsapp')
   const [exporting, setExporting] = useState(false)
   const dq = useDebounced(q.trim())
 
@@ -493,7 +499,10 @@ function InvoicesTab({ onPay, onRemindAll, overdueCount }: { onPay: (inv: Invoic
                       {st === 'overdue' && <p className="text-xs text-red-600">{daysOverdue(inv.dueDate)}d overdue</p>}
                     </TD>
                     <TD>
-                      <StatusBadge status={st} />
+                      <div className="flex items-center gap-2">
+                        <StatusBadge status={st} />
+                        <BillWhatsAppIcon wa={inv.whatsapp} />
+                      </div>
                     </TD>
                     <TD>
                       <div className="flex items-center justify-end gap-1">
@@ -536,6 +545,12 @@ function InvoicesTab({ onPay, onRemindAll, overdueCount }: { onPay: (inv: Invoic
                               icon: <MessageCircle />,
                               onClick: () => remind(inv),
                               hidden: inv.balance <= 0,
+                            },
+                            {
+                              label: inv.whatsapp ? 'Send on WhatsApp again' : 'Send on WhatsApp',
+                              icon: <Send />,
+                              onClick: () => resendWhatsApp.mutate(inv.id),
+                              hidden: inv.cancelled || !canWhatsApp,
                             },
                             {
                               label: 'Cancel invoice',

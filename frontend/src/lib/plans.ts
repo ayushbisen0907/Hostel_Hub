@@ -23,6 +23,7 @@ export type ModuleKey =
   | 'reports'
   | 'expenses'
   | 'export'
+  | 'whatsapp'
 
 export interface PlanInfo extends PricedPlan {
   id: Plan
@@ -32,7 +33,7 @@ export interface PlanInfo extends PricedPlan {
 }
 
 const FREE: ModuleKey[] = ['rooms', 'hostelers', 'checkin', 'fees', 'portal']
-const STARTER: ModuleKey[] = [...FREE, 'electricity', 'mess', 'documents', 'complaints', 'notices', 'rules']
+const STARTER: ModuleKey[] = [...FREE, 'electricity', 'mess', 'documents', 'complaints', 'notices', 'rules', 'whatsapp']
 const PRO: ModuleKey[] = [...STARTER, 'attendance', 'visitors', 'staff', 'reports', 'expenses']
 const BUSINESS: ModuleKey[] = [...PRO, 'export']
 

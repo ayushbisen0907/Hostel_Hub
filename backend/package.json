@@ -9,7 +9,8 @@
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "plan:set": "tsx src/scripts/setPlan.ts"
+    "plan:set": "tsx src/scripts/setPlan.ts",
+    "whatsapp:set": "tsx src/scripts/setWhatsApp.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

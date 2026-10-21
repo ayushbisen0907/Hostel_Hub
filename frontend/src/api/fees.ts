@@ -3,6 +3,7 @@
  * (backend/src/modules/fees/routes.ts), plus the printable invoice / receipt
  * data for both staff and hostelers (backend/src/modules/portal/routes.ts).
  */
+import type { InvoiceWhatsApp } from './whatsapp'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { del, get, patch, post } from './client'
 import { useApiMutation } from './query'
@@ -27,6 +28,8 @@ export interface InvoiceRow extends InvoiceWithStatus {
   hosteler: HostelerRef | null
   roomLabel: string
   hostelName: string
+  /** latest WhatsApp message of the bill, if any */
+  whatsapp?: InvoiceWhatsApp | null
 }
 
 export interface InvoiceList extends Paginated<InvoiceRow> {

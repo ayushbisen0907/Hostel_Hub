@@ -58,6 +58,24 @@ It uses `MONGODB_URI` from `backend/.env`. Monthly/yearly plans get an end date;
 account works like Free (nothing is deleted) until the plan is set again. Set `VITE_SUPPORT_WHATSAPP` /
 `VITE_SUPPORT_EMAIL` on the website so the Upgrade dialog shows how to reach you.
 
+## WhatsApp bill messages (Pabbly Chatflow)
+
+When a bill is made, the hosteler gets it on WhatsApp with the breakdown, total and due date
+(Starter plan and up; each hostel switches it on in Settings → Hostels → WhatsApp).
+
+- **Default:** HostelHub's number for every hostel — set `CHATFLOW_API_KEY` (secret, in the Render
+  dashboard), `CHATFLOW_TEMPLATE` (`hostel_bill`), `CHATFLOW_NUMBER` and `CHATFLOW_BASE_URL`
+  (`https://testchatflow.pabbly.com` or `https://chatflow.pabbly.com`) on the API.
+- **A hostel's own number:** connect it in Chatflow (with the `hostel_bill` template approved), then
+
+```bash
+cd backend
+npm run whatsapp:set -- SBH pcf_xxxxxxxx "+91 98260 00000"      # [template name]
+npm run whatsapp:set -- SBH --default                          # back to HostelHub's number
+```
+
+`SBH` is the hostel code (the prefix of its Hosteler IDs). API keys are never shown in the app or exported.
+
 ## Deploy on Render
 
 `render.yaml` sets up both services:

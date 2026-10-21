@@ -36,7 +36,10 @@ import { CHARGE_KEYS, Invoice, invoiceStatus, type ChargeKey, type InvoiceStatus
 import { previousBalance } from '../../lib/billing.js'
 import { generateDueBills } from '../../lib/rentCycle.js'
 import { notifyNewBill } from '../../lib/notify.js'
-import { monthLabel } from '../../lib/dates.js'
+import { SENDER_FIELDS, flushWhatsApp, kickWhatsApp, queueBillWhatsApp, senderFor, waNumber } from '../../lib/whatsapp.js'
+import { requirePlan } from '../../lib/plans.js'
+import { WhatsAppMessage } from '../../models/WhatsAppMessage.js'
+import { monthLabel, periodLabel } from '../../lib/dates.js'
 import { Organization } from '../../models/Organization.js'
 import { Payment, PAYMENT_MODES } from '../../models/Payment.js'
 import { PaymentClaim } from '../../models/PaymentClaim.js'
@@ -253,9 +256,10 @@ router.get(
         },
       ]),
     ])
-    const [info, hostels] = await Promise.all([
+    const [info, hostels, whatsapp] = await Promise.all([
       hostelerInfo(orgId, docs.map((d) => d.hostelerId)),
       hostelNames(orgId, docs.map((d) => d.hostelId)),
+      lastWhatsApp(orgId, docs.map((d) => d._id)),
     ])
     const items = docs.map((d) => {
       const h = info.get(String(d.hostelerId))
@@ -264,6 +268,7 @@ router.get(
         hosteler: h ? { id: h.id, name: h.name, phone: h.phone, loginId: h.loginId } : null,
         roomLabel: h?.roomLabel ?? 'Not allotted',
         hostelName: hostels.get(String(d.hostelId)) ?? '',
+        whatsapp: whatsapp.get(String(d._id)) ?? null,
       }
     })
     const t = agg[0] ?? { total: 0, paid: 0, balance: 0 }
@@ -292,6 +297,55 @@ router.post(
   }),
 )
 
+/** Latest WhatsApp message per bill: { status, error, sentAt }. */
+async function lastWhatsApp(orgId: Types.ObjectId, invoiceIds: unknown[]) {
+  if (!invoiceIds.length) return new Map<string, { status: string; error: string; sentAt: Date | null }>()
+  const rows = await WhatsAppMessage.aggregate<{ _id: Types.ObjectId; status: string; error: string; sentAt: Date | null }>([
+    { $match: { orgId, invoiceId: { $in: invoiceIds } } },
+    { $sort: { createdAt: -1 } },
+    { $group: { _id: '$invoiceId', status: { $first: '$status' }, error: { $first: '$error' }, sentAt: { $first: '$sentAt' } } },
+  ])
+  return new Map(rows.map((r) => [String(r._id), { status: r.status, error: r.error, sentAt: r.sentAt }]))
+}
+
+/** WhatsApp messages of a bill, newest first. */
+router.get(
+  '/invoices/:id/whatsapp',
+  fees,
+  ah(async (req, res) => {
+    const orgId = oid(staffOf(req).orgId)
+    const inv = await Invoice.findOne({ _id: idParam(req), orgId }).select('_id').lean()
+    if (!inv) throw notFound('Invoice')
+    const items = await WhatsAppMessage.find({ orgId, invoiceId: inv._id }).sort({ createdAt: -1 }).limit(10).lean()
+    res.json({ items: items.map((m) => toApi(m, ['params', 'templateName', 'providerMessageId', 'orgId'])) })
+  }),
+)
+
+/** Sends a bill on WhatsApp again (e.g. after fixing the number); answers with the message's status. */
+router.post(
+  '/invoices/:id/whatsapp',
+  fees,
+  requirePlan('whatsapp'),
+  ah(async (req, res) => {
+    const orgId = oid(staffOf(req).orgId)
+    const inv = await Invoice.findOne({ _id: idParam(req), orgId }).lean()
+    if (!inv) throw notFound('Invoice')
+    if (inv.cancelled) throw conflict('This bill is cancelled')
+    const [hostel, h] = await Promise.all([
+      Hostel.findById(inv.hostelId).select(SENDER_FIELDS).lean(),
+      Hosteler.findById(inv.hostelerId).select('phone').lean(),
+    ])
+    if (!senderFor(hostel)) throw conflict("WhatsApp messages aren't set up yet")
+    if (!hostel?.whatsappEnabled) throw conflict('WhatsApp messages are off for this hostel. Turn them on in Settings → Hostels.')
+    if (!waNumber(h?.phone)) throw conflict("The hosteler's phone number is not a valid WhatsApp number")
+    const period = inv.periodStart && inv.periodEnd ? periodLabel(inv.periodStart, inv.periodEnd) : monthLabel(inv.month)
+    const msg = await queueBillWhatsApp(orgId, inv, period, undefined, false)
+    if (!msg) throw conflict('Could not queue the WhatsApp message')
+    await flushWhatsApp()
+    res.json(toApi((await WhatsAppMessage.findById(msg._id).lean())!, ['params', 'templateName', 'providerMessageId', 'orgId']))
+  }),
+)
+
 router.post(
   '/invoices',
   fees,
@@ -301,8 +355,10 @@ router.post(
     const inv = await withTransaction(async (session) => {
       const created = await createInvoice(orgId, body, session)
       await notifyNewBill(orgId, created, monthLabel(created.month), session)
+      await queueBillWhatsApp(orgId, created, monthLabel(created.month), session)
       return created
     })
+    kickWhatsApp()
     res.status(201).json({
       ...inv.toJSON(),
       status: invoiceStatus(inv, todayStr()),

@@ -29,6 +29,7 @@ import { AppError, badRequest, conflict, forbidden, notFound } from '../../lib/e
 import { ah, dateStr, escapeRegex, idParam, money, objectId, paginate, paginationQuery, parse, phone, todayStr } from '../../lib/http.js'
 import { recordPayment } from '../../lib/money.js'
 import { billHostelerNow, cycleIndexOf } from '../../lib/rentCycle.js'
+import { kickWhatsApp } from '../../lib/whatsapp.js'
 import { closeStay, ensureStay, moveStay, openStay } from '../../lib/stays.js'
 import { RoomStay } from '../../models/RoomStay.js'
 import { assertHostel, getSettings, hostelScope, logActivity } from '../../lib/org.js'
@@ -400,6 +401,7 @@ router.post(
       await logActivity(orgId, reserveOnly ? `${hosteler.name} reserved a bed` : `${hosteler.name} checked in`, 'checkin', hostelId, session)
       return { id: hosteler._id, loginId }
     })
+    kickWhatsApp() // the first bill's WhatsApp message, if any
 
     res.status(201).json({
       hosteler: await decorateOne(orgId, created.id),

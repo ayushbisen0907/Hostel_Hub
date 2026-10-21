@@ -238,7 +238,7 @@ router.delete(
 /* Backup                                                              */
 /* ------------------------------------------------------------------ */
 
-const SECRET_FIELDS = ['passwordHash', 'tokenVersion', 'storageKey']
+const SECRET_FIELDS = ['passwordHash', 'tokenVersion', 'storageKey', 'whatsappApiKey']
 
 router.get(
   '/export',

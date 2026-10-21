@@ -205,6 +205,11 @@ try {
   }
 
   for (const p of ADMIN) await visit(page, p, 'owner desktop')
+  // WhatsApp bill messages: the hostel's Chatflow setup dialog (not switched on here — no real messages)
+  await page.goto(WEB + '/app/settings?tab=hostels', { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'WhatsApp', exact: true }).first().click()
+  ok('WhatsApp setup dialog shows the Chatflow template (UI)', await page.getByText('Pay by UPI to {{7}}', { exact: false }).isVisible())
+  await page.keyboard.press('Escape')
   await page.setViewportSize({ width: 375, height: 812 })
   for (const p of ADMIN) await visit(page, p, 'owner phone')
 

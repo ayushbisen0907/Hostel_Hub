@@ -59,7 +59,7 @@ export const PLANS: Plan[] = [
     hostels: 1,
     price: { monthly: 499, yearly: 4990, onetime: 9999 },
     includes: 'Everything in Free, plus',
-    features: ['Electricity bill split', 'Mess management', 'Documents', 'Complaints & notices', 'Rules signing & move-out'],
+    features: ['Bills on WhatsApp with breakdown', 'Electricity bill split', 'Mess management', 'Documents', 'Complaints & notices', 'Rules signing & move-out'],
   },
   {
     id: 'pro',

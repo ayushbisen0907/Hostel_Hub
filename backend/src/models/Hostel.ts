@@ -56,8 +56,18 @@ const hostelSchema = new Schema(
     rulesText: { type: String, default: '', maxlength: 10000 },
     /** bumped automatically whenever rulesText changes; hostelers re-sign when it goes up (0 = never set) */
     rulesVersion: { type: Number, default: 0, min: 0 },
+
+    // ---- WhatsApp bill messages (Pabbly Chatflow, see lib/whatsapp.ts) ----
+    whatsappEnabled: { type: Boolean, default: false },
+    // The hostel's OWN number, connected by HostelHub (npm run whatsapp:set). Empty = HostelHub's default number.
+    /** Chatflow API key of the hostel's own number — secret: never returned by the API or exported */
+    whatsappApiKey: { type: String, default: '' },
+    /** the own number, for display, e.g. +91 98260 00000 */
+    whatsappNumber: { type: String, default: '' },
+    /** template name approved for the own number ('' = the default template name) */
+    whatsappTemplate: { type: String, default: '' },
   },
-  baseOptions(['qrStorageKey', 'qrMimeType']),
+  baseOptions(['qrStorageKey', 'qrMimeType', 'whatsappApiKey']),
 )
 // unique across ALL organizations: hosteler IDs (CODE-0001) must be globally unique
 // because the hosteler login page has no organization field

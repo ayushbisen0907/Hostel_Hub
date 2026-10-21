@@ -5,6 +5,7 @@ import { createApp } from './app.js'
 import { backfillStays } from './lib/stays.js'
 import { migrateLegacyReadings } from './lib/electricity.js'
 import { migrateLegacyPlans } from './lib/plans.js'
+import { flushWhatsApp } from './lib/whatsapp.js'
 import { generateDueBillsForAllOrgs } from './lib/rentCycle.js'
 
 const HOUR = 60 * 60 * 1000
@@ -32,9 +33,13 @@ async function main() {
   })
   void billingTick()
   const timer = setInterval(() => void billingTick(), HOUR)
+  // WhatsApp bill messages waiting to be sent (or retried)
+  void flushWhatsApp()
+  const waTimer = setInterval(() => void flushWhatsApp(), 60_000)
   const shutdown = async (signal: string) => {
     console.log(`\n${signal} received, shutting down…`)
     clearInterval(timer)
+    clearInterval(waTimer)
     server.close()
     await disconnectDB()
     process.exit(0)

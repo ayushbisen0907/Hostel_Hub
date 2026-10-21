@@ -86,6 +86,8 @@ export interface Hostel {
   payeeName: string
   /** an uploaded QR image exists (GET /hostels/:id/qr); otherwise draw one from upiId */
   hasQr?: boolean
+  /** WhatsApp bill messages: switched on? and the hostel's own number, if HostelHub connected one */
+  whatsapp?: { enabled: boolean; ownNumber: string | null }
   charges: HostelCharges
   /** ₹ per unit of electricity (0 = not charged) */
   electricityRate: number

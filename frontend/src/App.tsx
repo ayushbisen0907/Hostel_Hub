@@ -90,7 +90,7 @@ function LockedCard({ title, message, action }: { title: string; message: string
  * organization's plan doesn't include it (the API enforces the same rules).
  */
 /** Plan modules that aren't staff permissions of their own map to the permission that covers them. */
-const ROLE_MODULE: Partial<Record<ModuleKey, StaffModule>> = { electricity: 'rooms', rules: 'checkin', export: 'org', portal: 'hostelers' }
+const ROLE_MODULE: Partial<Record<ModuleKey, StaffModule>> = { electricity: 'rooms', rules: 'checkin', export: 'org', portal: 'hostelers', whatsapp: 'hostels' }
 
 function Gate({ module, children }: { module: ModuleKey; children: ReactNode }) {
   const staff = useStaffSession()

@@ -3,7 +3,7 @@
  * The server enforces these so locked modules and limits can't be bypassed via the API.
  *
  *   Free      7 beds,   1 hostel,   no staff logins — the basics
- *   Starter   30 beds,  1 hostel,   no staff logins — + electricity, mess, documents, complaints, notices, rules & move-out
+ *   Starter   30 beds,  1 hostel,   no staff logins — + electricity, mess, documents, complaints, notices, rules & move-out, WhatsApp bills
  *   Pro       100 beds, 3 hostels,  3 staff logins  — + attendance, visitors & gate log, staff, reports, expenses
  *   Business  unlimited                             — + data export
  *
@@ -38,6 +38,7 @@ export type PlanModule =
   | 'reports'
   | 'expenses'
   | 'export'
+  | 'whatsapp'
 
 export type PlanLimit = 'beds' | 'hostels' | 'staffLogins'
 
@@ -49,7 +50,7 @@ export interface PlanInfo {
 }
 
 const FREE: PlanModule[] = ['rooms', 'hostelers', 'checkin', 'fees', 'portal']
-const STARTER: PlanModule[] = [...FREE, 'electricity', 'mess', 'documents', 'complaints', 'notices', 'rules']
+const STARTER: PlanModule[] = [...FREE, 'electricity', 'mess', 'documents', 'complaints', 'notices', 'rules', 'whatsapp']
 const PRO: PlanModule[] = [...STARTER, 'attendance', 'visitors', 'staff', 'reports', 'expenses']
 const BUSINESS: PlanModule[] = [...PRO, 'export']
 
@@ -87,6 +88,7 @@ const MODULE_LABEL: Record<PlanModule, string> = {
   reports: 'Reports',
   expenses: 'Expenses',
   export: 'Data export',
+  whatsapp: 'WhatsApp bill messages',
 }
 
 const LIMIT_LABEL: Record<PlanLimit, string> = { beds: 'beds', hostels: 'hostels', staffLogins: 'staff logins' }

@@ -10,6 +10,9 @@
  *   GET    /api/hostels/:id/qr   any staff
  *   DELETE /api/hostels/:id/qr
  *   GET    /api/hostels/:id/default-rules   { rulesText } — suggested rules built from the hostel + org settings
+ *   GET    /api/hostels/:id/whatsapp        WhatsApp bill messages: { enabled, ready, sender: 'own' | 'default' | null, number, templateText }
+ *   PUT    /api/hostels/:id/whatsapp        { enabled } (Starter plan and up; HostelHub's number, or the hostel's own once connected)
+ *   POST   /api/hostels/:id/whatsapp/test   { phone } -> sends a sample bill message now
  *
  * Stay terms: noticePeriodDays (0–90, default 30) for move-out requests;
  * depositMinStayMonths (0 = always refundable, else 1–12 full rent cycles)
@@ -25,14 +28,15 @@ import { Router } from 'express'
 import mongoose, { type Types } from 'mongoose'
 import { z } from 'zod'
 import { ah, idParam, parse } from '../../lib/http.js'
-import { badRequest, conflict, notFound } from '../../lib/errors.js'
+import { AppError, badRequest, conflict, notFound } from '../../lib/errors.js'
 import { removeStoredFile, sendStoredFile, upload } from '../../lib/upload.js'
 import { makeHostelCode } from '../../lib/auth.js'
 import { getSettings, logActivity } from '../../lib/org.js'
 import { notifyHostelers } from '../../lib/notify.js'
 import { defaultRulesText } from '../../lib/rules.js'
 import { withTransaction } from '../../config/db.js'
-import { assertLimit, orgPlan } from '../../lib/plans.js'
+import { assertLimit, orgPlan, requirePlan } from '../../lib/plans.js'
+import { BILL_TEMPLATE_TEXT, sampleBillParams, senderFor, sendTemplate, waNumber } from '../../lib/whatsapp.js'
 import { requireStaff, staffOf } from '../../middleware/auth.js'
 import { Hostel, UPI_ID_RE } from '../../models/Hostel.js'
 import { Room } from '../../models/Room.js'
@@ -135,7 +139,12 @@ async function hostelCounts(orgId: string, hostelIds: Types.ObjectId[]) {
 
 async function withCounts(orgId: string, hostels: InstanceType<typeof Hostel>[]) {
   const counts = await hostelCounts(orgId, hostels.map((h) => h._id))
-  return hostels.map((h) => ({ ...h.toJSON(), hasQr: !!h.qrStorageKey, counts: counts.get(String(h._id))! }))
+  return hostels.map((h) => ({
+    ...h.toJSON(),
+    hasQr: !!h.qrStorageKey,
+    whatsapp: { enabled: !!h.whatsappEnabled, ownNumber: h.whatsappApiKey ? h.whatsappNumber || 'connected' : null },
+    counts: counts.get(String(h._id))!,
+  }))
 }
 
 async function hostelOr404(orgId: string, id: string) {
@@ -311,5 +320,61 @@ router.delete(
     hostel.set('qrMimeType', null)
     await hostel.save()
     res.json((await withCounts(orgId, [hostel]))[0])
+  }),
+)
+
+/* ------------------------------------------------------------------ */
+/* WhatsApp bill messages (Pabbly Chatflow)                            */
+/* ------------------------------------------------------------------ */
+
+function whatsappOut(h: InstanceType<typeof Hostel>) {
+  const sender = senderFor(h)
+  return {
+    enabled: !!h.whatsappEnabled,
+    ready: !!sender,
+    sender: sender ? (sender.own ? 'own' : 'default') : null,
+    number: sender?.number ?? '',
+    templateText: BILL_TEMPLATE_TEXT,
+  }
+}
+
+router.get(
+  '/:id/whatsapp',
+  requireStaff('hostels'),
+  ah(async (req, res) => {
+    res.json(whatsappOut(await hostelOr404(staffOf(req).orgId, idParam(req))))
+  }),
+)
+
+router.put(
+  '/:id/whatsapp',
+  requireStaff('hostels'),
+  requirePlan('whatsapp'),
+  ah(async (req, res) => {
+    const body = parse(z.object({ enabled: z.boolean() }).strict(), req.body)
+    const { orgId } = staffOf(req)
+    const hostel = await hostelOr404(orgId, idParam(req))
+    if (body.enabled && !senderFor(hostel)) throw conflict("WhatsApp messages aren't set up yet")
+    hostel.whatsappEnabled = body.enabled
+    await hostel.save()
+    await logActivity(orgId, `WhatsApp bill messages ${hostel.whatsappEnabled ? 'on' : 'off'} for "${hostel.name}"`, 'general', hostel._id)
+    res.json(whatsappOut(hostel))
+  }),
+)
+
+router.post(
+  '/:id/whatsapp/test',
+  requireStaff('hostels'),
+  requirePlan('whatsapp'),
+  ah(async (req, res) => {
+    const body = parse(z.object({ phone: z.string().trim().min(10).max(20) }), req.body)
+    const hostel = await hostelOr404(staffOf(req).orgId, idParam(req))
+    const sender = senderFor(hostel)
+    if (!sender) throw conflict("WhatsApp messages aren't set up yet")
+    const to = waNumber(body.phone)
+    if (!to) throw badRequest('Enter a valid WhatsApp number')
+    const r = await sendTemplate(sender.apiKey, to, sender.templateName, sampleBillParams(hostel.name, hostel.upiId ?? ''))
+    if (!r.ok) throw new AppError(502, `WhatsApp test failed: ${r.error}`, 'WHATSAPP_FAILED')
+    res.json({ ok: true, to, messageId: r.id })
   }),
 )

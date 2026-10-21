@@ -17,7 +17,9 @@ export function createApp() {
       origin: (origin, cb) => {
         // allow tools like curl/Postman (no origin) and the configured frontends
         if (!origin || env.corsOrigins.includes(origin)) return cb(null, true)
-        cb(new Error(`Origin ${origin} not allowed by CORS`))
+        // not an error (that would be a 500): answer without CORS headers so the browser blocks it
+        console.warn(`CORS: blocked ${origin} — add it to CORS_ORIGIN (allowed: ${env.corsOrigins.join(', ') || 'none'})`)
+        cb(null, false)
       },
       credentials: true,
     }),

@@ -57,10 +57,10 @@ export default function Home() {
   const actions = [
     { to: '/portal/fees', label: 'Pay rent', icon: Wallet, tone: 'bg-brand-50 text-brand-600', show: true },
     { to: '/portal/mess', label: 'Skip a meal', icon: UtensilsCrossed, tone: 'bg-amber-50 text-amber-600', show: h.features.mess && me.messOpted },
-    { to: '/portal/complaints', label: 'Raise complaint', icon: MessageSquareWarning, tone: 'bg-red-50 text-red-600', show: true },
+    { to: '/portal/complaints', label: 'Raise complaint', icon: MessageSquareWarning, tone: 'bg-red-50 text-red-600', show: h.features.complaints },
     { to: '/portal/leave', label: 'Apply leave', icon: CalendarDays, tone: 'bg-violet-50 text-violet-600', show: h.features.attendance },
-    { to: '/portal/leave#notices', label: 'Notices', icon: BellRing, tone: 'bg-emerald-50 text-emerald-600', show: true },
-    { to: '/portal/profile#documents', label: 'My documents', icon: FileText, tone: 'bg-cyan-50 text-cyan-600', show: true },
+    { to: '/portal/leave#notices', label: 'Notices', icon: BellRing, tone: 'bg-emerald-50 text-emerald-600', show: h.features.notices },
+    { to: '/portal/profile#documents', label: 'My documents', icon: FileText, tone: 'bg-cyan-50 text-cyan-600', show: h.features.documents },
   ].filter((a) => a.show)
 
   return (
@@ -164,6 +164,8 @@ export default function Home() {
         </>
       )}
 
+      {h.features.notices && (
+        <>
       {/* Notices */}
       <SectionTitle
         action={
@@ -188,8 +190,11 @@ export default function Home() {
         </div>
       )}
 
+        </>
+      )}
       {/* Complaints & attendance */}
-      <div className={cn('grid grid-cols-1 gap-x-4', last7 && 'md:grid-cols-2')}>
+      <div className={cn('grid grid-cols-1 gap-x-4', last7 && h.features.complaints && 'md:grid-cols-2')}>
+        {h.features.complaints && (
         <div>
           <SectionTitle
             action={
@@ -222,6 +227,7 @@ export default function Home() {
             )}
           </Card>
         </div>
+        )}
         {last7 && (
         <div>
           <SectionTitle>My attendance · last 7 days</SectionTitle>

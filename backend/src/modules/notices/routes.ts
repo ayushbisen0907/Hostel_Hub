@@ -8,6 +8,7 @@
  */
 import { Router } from 'express'
 import { z } from 'zod'
+import { requirePlan } from '../../lib/plans.js'
 import { requireStaff, staffOf } from '../../middleware/auth.js'
 import { notFound } from '../../lib/errors.js'
 import { ah, idParam, objectId, parse } from '../../lib/http.js'
@@ -17,7 +18,7 @@ import { Notice } from '../../models/Operations.js'
 export const router = Router()
 
 // mounted at /api/notices
-router.use(requireStaff('notices'))
+router.use(requireStaff('notices'), requirePlan('notices'))
 
 const fields = z.object({
   hostelId: objectId.nullable(),

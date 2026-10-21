@@ -13,6 +13,7 @@ import { Hostel } from '../models/Hostel.js'
 import { Hosteler } from '../models/Hosteler.js'
 import { Invoice } from '../models/Invoice.js'
 import { Organization } from '../models/Organization.js'
+import { effectivePlan, hasModule } from './plans.js'
 import { addDays, addMonthsAnchored, periodLabel } from './dates.js'
 import { monthlyBillItems, type BillItem } from './billing.js'
 import { pendingElectricity } from './electricity.js'
@@ -78,7 +79,7 @@ interface BillTarget {
 export async function billDueCycles(
   orgId: Id,
   h: BillTarget,
-  ctx: { today: string; dueDays: number; fallbackMess: number; notify: boolean },
+  ctx: { today: string; dueDays: number; fallbackMess: number; messBilled: boolean; notify: boolean },
   session: ClientSession,
 ) {
   const billed = await billedCycles(orgId, h, session)
@@ -90,7 +91,7 @@ export async function billDueCycles(
     if (billed.has(k)) continue
     const end = cycleEnd(h.checkInDate, k)
     const label = periodLabel(start, end)
-    const items: BillItem[] = monthlyBillItems(h, hostel?.charges, ctx.fallbackMess).map((i) => ({ ...i, label: `${i.label} (${label})` }))
+    const items: BillItem[] = monthlyBillItems({ monthlyRent: h.monthlyRent, messOpted: h.messOpted && ctx.messBilled }, hostel?.charges, ctx.fallbackMess).map((i) => ({ ...i, label: `${i.label} (${label})` }))
     const hostelerDoc = await Hosteler.findById(h._id).select('depositToBill').session(session)
     if (hostelerDoc && hostelerDoc.depositToBill > 0) {
       items.push({ key: 'deposit', label: 'Security deposit', amount: hostelerDoc.depositToBill })
@@ -112,9 +113,16 @@ export async function billDueCycles(
 }
 
 async function billContext(orgId: Id, today: string, notify: boolean) {
-  const org = await Organization.findById(orgId).select('settings').lean()
+  const org = await Organization.findById(orgId).select('settings plan planExpiresAt').lean()
   const s = org?.settings
-  return { today, dueDays: Math.max(0, Math.min(s?.rentDueDay ?? 5, 28)), fallbackMess: s?.messMonthlyCharge ?? 0, notify }
+  return {
+    today,
+    dueDays: Math.max(0, Math.min(s?.rentDueDay ?? 5, 28)),
+    fallbackMess: s?.messMonthlyCharge ?? 0,
+    // mess fees are billed only on plans that include Mess
+    messBilled: hasModule(effectivePlan(org), 'mess'),
+    notify,
+  }
 }
 
 /** Bills a single hosteler inside the caller's transaction (used at check-in; notifies the hosteler by default). */

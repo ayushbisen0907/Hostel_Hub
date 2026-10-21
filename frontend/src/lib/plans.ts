@@ -1,68 +1,72 @@
-import type { Plan } from '@/api/types'
+import type { Organization, OrgDetails, Plan } from '@/api/types'
+import { PLANS as PRICED, type Plan as PricedPlan } from '@/lib/pricing'
 
-export interface PlanInfo {
-  id: Plan
-  name: string
-  pricePerBed: number // ₹ / bed / month
-  maxBeds: number | null
-  tagline: string
-  features: string[]
-  /** Modules unlocked by this plan */
-  modules: ModuleKey[]
-}
-
+/**
+ * What each plan unlocks — mirrors backend/src/lib/plans.ts (the API enforces it).
+ * Names, prices and feature lists come from lib/pricing.ts (the landing page).
+ */
 export type ModuleKey =
   | 'rooms'
   | 'hostelers'
   | 'checkin'
-  | 'documents'
   | 'fees'
-  | 'expenses'
+  | 'portal'
+  | 'electricity'
   | 'mess'
-  | 'attendance'
+  | 'documents'
   | 'complaints'
-  | 'visitors'
   | 'notices'
+  | 'rules'
+  | 'attendance'
+  | 'visitors'
   | 'staff'
   | 'reports'
-  | 'portal'
+  | 'expenses'
+  | 'export'
 
-const BASIC_MODULES: ModuleKey[] = ['rooms', 'hostelers', 'checkin', 'documents', 'fees', 'complaints', 'notices']
+export interface PlanInfo extends PricedPlan {
+  id: Plan
+  /** staff logins besides the owner; null = unlimited */
+  staffLogins: number | null
+  modules: ModuleKey[]
+}
 
-export const PLANS: PlanInfo[] = [
-  {
-    id: 'free',
-    name: 'Free',
-    pricePerBed: 0,
-    maxBeds: 20,
-    tagline: 'For small PGs getting started',
-    features: ['Up to 20 beds', 'Rooms & beds', 'Hosteler records', 'Check-in / check-out', 'Documents', 'Rent tracking'],
-    modules: BASIC_MODULES,
-  },
-  {
-    id: 'basic',
-    name: 'Basic',
-    pricePerBed: 29,
-    maxBeds: 200,
-    tagline: 'Everything to run one hostel',
-    features: ['Up to 200 beds', 'Everything in Free', 'Expenses', 'Visitors log', 'Staff management', 'Hosteler portal'],
-    modules: [...BASIC_MODULES, 'expenses', 'visitors', 'staff', 'portal'],
-  },
-  {
-    id: 'pro',
-    name: 'Pro',
-    pricePerBed: 49,
-    maxBeds: null,
-    tagline: 'Multi-hostel operators',
-    features: ['Unlimited beds & hostels', 'Everything in Basic', 'Mess management', 'Attendance & leave', 'Reports & analytics', 'Priority support'],
-    modules: [...BASIC_MODULES, 'expenses', 'visitors', 'staff', 'portal', 'mess', 'attendance', 'reports'],
-  },
-]
+const FREE: ModuleKey[] = ['rooms', 'hostelers', 'checkin', 'fees', 'portal']
+const STARTER: ModuleKey[] = [...FREE, 'electricity', 'mess', 'documents', 'complaints', 'notices', 'rules']
+const PRO: ModuleKey[] = [...STARTER, 'attendance', 'visitors', 'staff', 'reports', 'expenses']
+const BUSINESS: ModuleKey[] = [...PRO, 'export']
 
-export function planInfo(plan: Plan): PlanInfo {
+const EXTRA: Record<Plan, { staffLogins: number | null; modules: ModuleKey[] }> = {
+  free: { staffLogins: 0, modules: FREE },
+  starter: { staffLogins: 0, modules: STARTER },
+  pro: { staffLogins: 3, modules: PRO },
+  business: { staffLogins: null, modules: BUSINESS },
+}
+
+export const PLANS: PlanInfo[] = PRICED.map((p) => ({ ...p, ...EXTRA[p.id] }))
+
+export function planInfo(plan: Plan | undefined): PlanInfo {
   return PLANS.find((p) => p.id === plan) ?? PLANS[0]!
 }
 
 export function hasModule(plan: Plan | undefined, m: ModuleKey): boolean {
   return planInfo(plan ?? 'free').modules.includes(m)
+}
+
+/** The cheapest plan that includes a module. */
+export function planWithModule(m: ModuleKey): PlanInfo {
+  return PLANS.find((p) => p.modules.includes(m)) ?? PLANS[PLANS.length - 1]!
+}
+
+type PlanSource = Pick<Organization, 'plan' | 'planExpiresAt'> & { limits?: OrgDetails['limits'] }
+
+/**
+ * The plan that works right now: the API's `limits.plan` when we have it, otherwise
+ * worked out from the bought plan (a monthly/yearly plan past its expiry works like Free).
+ */
+export function effectivePlan(org: PlanSource | null | undefined): Plan {
+  if (!org) return 'free'
+  if (org.limits) return org.limits.plan
+  if (org.plan !== 'free' && org.planExpiresAt && new Date(org.planExpiresAt).getTime() <= Date.now()) return 'free'
+  return PLANS.some((p) => p.id === org.plan) ? org.plan : 'free'
 }

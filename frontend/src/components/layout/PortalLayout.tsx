@@ -24,10 +24,12 @@ export function PortalLayout() {
     { to: '/portal', label: 'Home', icon: Home, end: true },
     { to: '/portal/fees', label: 'Fees', icon: Wallet },
     ...(features?.mess === false ? [] : [{ to: '/portal/mess', label: 'Mess', icon: UtensilsCrossed }]),
-    { to: '/portal/complaints', label: 'Help', icon: MessageSquareWarning },
-    features?.attendance === false
-      ? { to: '/portal/leave', label: 'Notices', icon: BellRing }
-      : { to: '/portal/leave', label: 'Leave', icon: CalendarDays },
+    ...(features?.complaints === false ? [] : [{ to: '/portal/complaints', label: 'Help', icon: MessageSquareWarning }]),
+    ...(features?.attendance !== false
+      ? [{ to: '/portal/leave', label: 'Leave', icon: CalendarDays }]
+      : features.notices
+        ? [{ to: '/portal/leave', label: 'Notices', icon: BellRing }]
+        : []),
     { to: '/portal/profile', label: 'Profile', icon: UserRound },
   ]
 

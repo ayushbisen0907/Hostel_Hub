@@ -2,6 +2,7 @@
  * Test helpers. They create data directly through the models (not through
  * other modules' endpoints) so each module's tests stay independent.
  */
+import type { Plan } from '../src/lib/plans.js'
 import request from 'supertest'
 import mongoose from 'mongoose'
 import { createApp } from '../src/app.js'
@@ -19,8 +20,8 @@ export const api = () => request(app)
 let codeCounter = 0
 
 /** Creates an organization with an owner and returns an auth header for it. */
-export async function makeOrg(opts: { plan?: 'free' | 'basic' | 'pro'; email?: string } = {}) {
-  const org = await Organization.create({ name: 'Test Hostels', ownerName: 'Owner', email: opts.email ?? `owner${Date.now()}${Math.random()}@test.in`, plan: opts.plan ?? 'pro' })
+export async function makeOrg(opts: { plan?: Plan; email?: string } = {}) {
+  const org = await Organization.create({ name: 'Test Hostels', ownerName: 'Owner', email: opts.email ?? `owner${Date.now()}${Math.random()}@test.in`, plan: opts.plan ?? 'business' })
   const owner = await User.create({ orgId: org._id, name: 'Owner', email: org.email, passwordHash: await hashPassword('Owner@123'), role: 'owner' })
   return { org, owner, auth: staffAuth(owner) }
 }
@@ -93,7 +94,7 @@ export function hostelerAuth(h: { _id: unknown; orgId: unknown; hostelId: unknow
 }
 
 /** Full fixture: org + owner, a hostel, a 2-bed room and one hosteler in bed A. */
-export async function makeWorld(opts: { plan?: 'free' | 'basic' | 'pro' } = {}) {
+export async function makeWorld(opts: { plan?: Plan } = {}) {
   const { org, owner, auth } = await makeOrg(opts)
   const hostel = await makeHostel(org._id)
   const { room, beds } = await makeRoom(org._id, hostel._id)

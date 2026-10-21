@@ -1,17 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { api, makeOrg, makeRoom, makeStaffUser, makeWorld, staffAuth } from './helpers.js'
+import { api, makeOrg, makeStaffUser, makeWorld, staffAuth } from './helpers.js'
 import { User } from '../src/models/User.js'
 import { HDocument } from '../src/models/Document.js'
 
 describe('organization', () => {
   it('GET returns org, settings, usage and plan limits to any staff', async () => {
-    const w = await makeWorld({ plan: 'basic' })
+    const w = await makeWorld({ plan: 'pro' })
     const warden = await makeStaffUser(w.org._id, 'warden')
     const r = await api().get('/api/org').set(warden.auth).expect(200)
     expect(r.body.id).toBe(String(w.org._id))
     expect(r.body.settings.rentDueDay).toBe(5)
-    expect(r.body.usage).toEqual({ hostels: 1, beds: 2, activeHostelers: 1 })
-    expect(r.body.limits.maxBeds).toBe(200)
+    expect(r.body.usage).toEqual({ hostels: 1, beds: 2, activeHostelers: 1, staffLogins: 1 })
+    expect(r.body.limits).toMatchObject({ plan: 'pro', name: 'Pro', beds: 100, hostels: 3, staffLogins: 3, expired: false })
+    expect(r.body.limits.modules).toContain('attendance')
+    expect(r.body.limits.modules).not.toContain('export')
     expect(r.body).not.toHaveProperty('invoiceSeq')
     await api().get('/api/org').expect(401)
   })
@@ -34,16 +36,10 @@ describe('organization', () => {
     await api().patch('/api/org/settings').set(manager.auth).send({ rentDueDay: 3 }).expect(403)
   })
 
-  it('plan change refuses a downgrade below the bed count', async () => {
-    const { org, auth } = await makeOrg({ plan: 'pro' })
-    const hostel = (await api().post('/api/hostels').set(auth).send({ name: 'Big Hostel', type: 'boys', city: 'Pune', upiId: 'big@ybl', payeeName: 'Big Hostel' }).expect(201)).body
-    await makeRoom(org._id, hostel.id, '101', 20)
-    await makeRoom(org._id, hostel.id, '102', 2)
-    const r = await api().patch('/api/org/plan').set(auth).send({ plan: 'free' }).expect(409)
-    expect(r.body.error.message).toMatch(/22 beds/)
-    const ok = await api().patch('/api/org/plan').set(auth).send({ plan: 'basic' }).expect(200)
-    expect(ok.body.plan).toBe('basic')
-    await api().patch('/api/org/plan').set(auth).send({ plan: 'gold' }).expect(400)
+  it('owners cannot change their own plan from the app', async () => {
+    const { auth } = await makeOrg({ plan: 'free' })
+    await api().patch('/api/org/plan').set(auth).send({ plan: 'business' }).expect(404)
+    await api().patch('/api/org').set(auth).send({ plan: 'business' }).expect(400)
   })
 })
 

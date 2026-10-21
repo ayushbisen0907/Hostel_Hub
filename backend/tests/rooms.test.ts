@@ -84,9 +84,9 @@ describe('rooms', () => {
   })
 
   it('enforces the plan bed limit with 402 PLAN_LIMIT', async () => {
-    const { org, auth } = await makeOrg({ plan: 'free' })
+    const { org, auth } = await makeOrg({ plan: 'free' }) // 7 beds
     const hostel = await makeHostel(org._id)
-    await makeRoom(org._id, hostel._id, '101', 18)
+    await makeRoom(org._id, hostel._id, '101', 5)
     const r = await api().post('/api/rooms').set(auth).send({ hostelId: String(hostel._id), number: '102', sharing: 3, rentPerBed: 1 }).expect(402)
     expect(r.body.error.code).toBe('PLAN_LIMIT')
     await api().post('/api/rooms').set(auth).send({ hostelId: String(hostel._id), number: '102', sharing: 2, rentPerBed: 1 }).expect(201)

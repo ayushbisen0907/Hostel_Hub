@@ -1,3 +1,4 @@
+import type { Plan } from '../src/lib/plans.js'
 import { afterEach, describe, expect, it } from 'vitest'
 import mongoose from 'mongoose'
 import { api, makeHosteler, makeWorld } from './helpers.js'
@@ -34,7 +35,7 @@ async function makeInvoice(w: { org: { _id: mongoose.Types.ObjectId } }, h: { _i
 }
 
 /** Two hostelers in the same hostel/room. */
-async function twoHostelers(plan: 'basic' | 'pro' = 'pro') {
+async function twoHostelers(plan: Plan = 'business') {
   const w = await makeWorld({ plan })
   const hostel = (await Hostel.findById(w.hostel._id))!
   const other = await makeHosteler(w.org._id, hostel, { bed: w.beds[1]!, name: 'Vikram Rao' })
@@ -51,19 +52,27 @@ describe('portal access control', () => {
     await api().get('/api/portal/invoices').set(temp.auth).expect(403)
   })
 
-  it('free-plan org gets 402; basic plan has portal but not mess/attendance', async () => {
+  it('free plan: the app works for bills and payments only; Starter adds mess, notices…, Pro adds attendance', async () => {
     const free = await makeWorld({ plan: 'free' })
-    const r = await api().get('/api/portal/home').set(free.hostelerAuth).expect(402)
-    expect(r.body.error.code).toBe('PLAN_UPGRADE_REQUIRED')
-
-    const basic = await makeWorld({ plan: 'basic' })
-    const home = await api().get('/api/portal/home').set(basic.hostelerAuth).expect(200)
+    const home = await api().get('/api/portal/home').set(free.hostelerAuth).expect(200)
     expect(home.body.todayMenu).toBeNull()
     expect(home.body.last7DaysAttendance).toBeNull()
-    expect(home.body.features).toEqual({ mess: false, attendance: false })
-    await api().get('/api/portal/mess/menu').set(basic.hostelerAuth).expect(402)
-    await api().get('/api/portal/leaves').set(basic.hostelerAuth).expect(402)
-    await api().get('/api/portal/attendance').set(basic.hostelerAuth).expect(402)
+    expect(home.body.features).toEqual({ mess: false, attendance: false, notices: false, complaints: false, documents: false, gateLog: false, moveOut: false })
+    await api().get('/api/portal/invoices').set(free.hostelerAuth).expect(200)
+    await api().get('/api/portal/payment-info').set(free.hostelerAuth).expect(200)
+    for (const path of ['/mess/menu', '/leaves', '/attendance', '/complaints', '/notices', '/documents', '/gate-logs', '/move-out']) {
+      const r = await api().get(`/api/portal${path}`).set(free.hostelerAuth).expect(402)
+      expect(r.body.error.code).toBe('PLAN_UPGRADE_REQUIRED')
+    }
+
+    const starter = await makeWorld({ plan: 'starter' })
+    const s = await api().get('/api/portal/home').set(starter.hostelerAuth).expect(200)
+    expect(s.body.features).toEqual({ mess: true, attendance: false, notices: true, complaints: true, documents: true, gateLog: false, moveOut: true })
+    await api().get('/api/portal/mess/menu').set(starter.hostelerAuth).expect(200)
+    await api().get('/api/portal/move-out').set(starter.hostelerAuth).expect(200)
+    await api().get('/api/portal/leaves').set(starter.hostelerAuth).expect(402)
+    await api().get('/api/portal/attendance').set(starter.hostelerAuth).expect(402)
+    await api().get('/api/portal/gate-logs').set(starter.hostelerAuth).expect(402)
   })
 
   it('checked-out hosteler -> 401; staff token -> 403; no token -> 401', async () => {

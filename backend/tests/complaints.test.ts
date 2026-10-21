@@ -4,7 +4,7 @@ import { Activity, Complaint, Staff } from '../src/models/Operations.js'
 
 describe('complaints', () => {
   it('create, list with filters, get, comment, delete', async () => {
-    const w = await makeWorld({ plan: 'free' }) // complaints are on every plan
+    const w = await makeWorld({ plan: 'starter' }) // complaints are Starter and up
     const hid = String(w.hostel._id)
     const c = await api()
       .post('/api/complaints')

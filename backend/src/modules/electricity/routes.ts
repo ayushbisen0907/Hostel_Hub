@@ -15,6 +15,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { withTransaction } from '../../config/db.js'
+import { requirePlan } from '../../lib/plans.js'
 import { requireStaff, staffOf } from '../../middleware/auth.js'
 import { ah, dateStr, idParam, objectId, parse, todayStr } from '../../lib/http.js'
 import { assertHostel } from '../../lib/org.js'
@@ -32,7 +33,7 @@ import { User } from '../../models/User.js'
 import { toApi } from '../../models/_base.js'
 
 export const router = Router()
-router.use(requireStaff('rooms'))
+router.use(requireStaff('rooms'), requirePlan('electricity'))
 
 async function readingOut(orgId: string, r: Record<string, unknown> & { _id: unknown; roomId: unknown; bedId?: unknown; splits: { invoiceId?: unknown }[] }) {
   const [room, bed] = await Promise.all([

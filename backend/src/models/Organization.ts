@@ -20,7 +20,11 @@ const organizationSchema = new Schema(
     ownerName: { type: String, required: true, trim: true, maxlength: 80 },
     email: { type: String, required: true, trim: true, lowercase: true },
     phone: { type: String, default: '' },
-    plan: { type: String, enum: ['free', 'basic', 'pro'], default: 'free' },
+    plan: { type: String, enum: ['free', 'starter', 'pro', 'business'], default: 'free' },
+    // how the paid plan was bought; null for Free
+    billingCycle: { type: String, enum: ['monthly', 'yearly', 'onetime', null], default: null },
+    // monthly/yearly plans run out here and work like Free until renewed; null = never
+    planExpiresAt: { type: Date, default: null },
     settings: { type: settingsSchema, default: () => ({}) },
     // counters for human-readable numbers (incremented atomically)
     invoiceSeq: { type: Number, default: 1000 },

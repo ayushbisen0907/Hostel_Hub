@@ -111,9 +111,12 @@ export default function Profile() {
   useScrollToHash()
 
   const attendanceOn = home.data?.features.attendance === true
+  const docsOn = home.data?.features.documents === true
+  const gateOn = home.data?.features.gateLog === true
+  const moveOutOn = home.data?.features.moveOut === true
   const month = currentMonth()
-  const docsQ = useMyDocuments()
-  const gateQ = useMyGateLogs()
+  const docsQ = useMyDocuments(docsOn)
+  const gateQ = useMyGateLogs(gateOn)
   const attQ = useMyAttendance(month, attendanceOn)
 
   const updateProfile = useUpdateProfile()
@@ -341,12 +344,16 @@ export default function Profile() {
         </Card>
       </div>
 
-      {/* Rules + move-out */}
-      <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-        <RulesCard />
-        {me.status === 'active' && <MoveOutCard />}
-      </div>
+      {/* Rules + move-out (Starter and up) */}
+      {moveOutOn && (
+        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <RulesCard />
+          {me.status === 'active' && <MoveOutCard />}
+        </div>
+      )}
 
+      {docsOn && (
+        <>
       {/* Documents */}
       <SectionTitle id="documents">My documents</SectionTitle>
       <Card>
@@ -406,8 +413,10 @@ export default function Profile() {
         </div>
       </Card>
 
+        </>
+      )}
       {/* Attendance & gate */}
-      <div className={cn('grid grid-cols-1 gap-x-4', attendanceOn && 'md:grid-cols-2')}>
+      <div className={cn('grid grid-cols-1 gap-x-4', attendanceOn && gateOn && 'md:grid-cols-2')}>
         {attendanceOn && (
           <div>
             <SectionTitle>Attendance · {format(new Date(), 'MMMM')}</SectionTitle>
@@ -452,6 +461,7 @@ export default function Profile() {
             </Card>
           </div>
         )}
+        {gateOn && (
         <div>
           <SectionTitle>Gate log · last 10</SectionTitle>
           <Card>
@@ -484,6 +494,7 @@ export default function Profile() {
             )}
           </Card>
         </div>
+        )}
       </div>
 
       {/* Password */}

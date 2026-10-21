@@ -9,7 +9,7 @@ const month = today.slice(0, 7)
 
 describe('visitors', () => {
   it('log, list with filters, check out once', async () => {
-    const w = await makeWorld({ plan: 'basic' })
+    const w = await makeWorld({ plan: 'pro' })
     const hId = String(w.hosteler._id)
     const v = await api()
       .post('/api/visitors')
@@ -46,7 +46,7 @@ describe('visitors', () => {
   })
 
   it('stats: inside now, today, this month, average visit', async () => {
-    const w = await makeWorld({ plan: 'basic' })
+    const w = await makeWorld({ plan: 'pro' })
     const now = Date.now()
     await Visitor.create([
       { orgId: w.org._id, hostelId: w.hostel._id, hostelerId: w.hosteler._id, name: 'Inside', inTime: new Date(now - 1000) }, // seconds ago, so it's 'today' even right after midnight
@@ -82,7 +82,7 @@ describe('visitors', () => {
 
 describe('notices', () => {
   it('CRUD, hostel scope incl. all-hostel notices, pinned first', async () => {
-    const w = await makeWorld({ plan: 'free' })
+    const w = await makeWorld({ plan: 'pro' }) // checks staff roles too
     const hid = String(w.hostel._id)
     const h2 = await makeHostel(w.org._id, 'Second')
     const a = await api().post('/api/notices').set(w.auth).send({ title: 'Holi holiday', body: 'Office closed' }).expect(201)
@@ -115,7 +115,7 @@ describe('notices', () => {
 
 describe('staff', () => {
   it('CRUD with filters', async () => {
-    const w = await makeWorld({ plan: 'basic' })
+    const w = await makeWorld({ plan: 'pro' })
     const hid = String(w.hostel._id)
     const s = await api().post('/api/staff').set(w.auth).send({ hostelId: hid, name: 'Ramu Kaka', role: 'cook', salary: 12000, joinDate: '2026-01-01' }).expect(201)
     expect(s.body).toMatchObject({ active: true, salary: 12000 })
@@ -139,7 +139,7 @@ describe('staff', () => {
   })
 
   it('pay salaries: one expense per active staff, skips already paid', async () => {
-    const w = await makeWorld({ plan: 'basic' })
+    const w = await makeWorld({ plan: 'pro' })
     const hid = String(w.hostel._id)
     const a = await api().post('/api/staff').set(w.auth).send({ hostelId: hid, name: 'Ramu', role: 'cook', salary: 12000 }).expect(201)
     const b = await api().post('/api/staff').set(w.auth).send({ hostelId: hid, name: 'Shyam', role: 'security', salary: 10000 }).expect(201)

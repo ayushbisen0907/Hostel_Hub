@@ -33,7 +33,8 @@ import { roleCan, useStaffSession, type StaffModule } from '@/api/session'
 import type { ListResponse } from '@/api/types'
 import { Avatar, Badge, Select } from '@/components/ui'
 import { cn } from '@/lib/utils'
-import { hasModule, planInfo, type ModuleKey } from '@/lib/plans'
+import { effectivePlan, hasModule, planInfo, type ModuleKey } from '@/lib/plans'
+import { useEffectivePlan } from '@/api/plan'
 
 interface NavItem {
   to: string
@@ -54,7 +55,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { to: '/app/hostelers', label: 'Hostelers', icon: <Users className="h-4 w-4" />, module: 'hostelers' },
       { to: '/app/check-in', label: 'Check-in', icon: <LogIn className="h-4 w-4" />, module: 'checkin' },
       { to: '/app/check-out', label: 'Check-out', icon: <DoorOpen className="h-4 w-4" />, module: 'checkin' },
-      { to: '/app/gate-log', label: 'Gate Log', icon: <ShieldCheck className="h-4 w-4" />, module: 'checkin' },
+      { to: '/app/gate-log', label: 'Gate Log', icon: <ShieldCheck className="h-4 w-4" />, module: 'visitors' },
       { to: '/app/documents', label: 'Documents', icon: <FileText className="h-4 w-4" />, module: 'documents' },
     ],
   },
@@ -88,13 +89,12 @@ const NAV: { section: string; items: NavItem[] }[] = [
 /** Counts for the sidebar badges & bell. Query keys share prefixes with the modules, so they refresh after changes. */
 function usePendingCounts() {
   const staff = useStaffSession()
-  const { data: org } = useOrg()
   const role = staff?.user.role
-  const plan = org?.plan ?? staff?.organization.plan
+  const plan = useEffectivePlan()
   const complaints = useQuery({
     queryKey: ['complaints', 'stats'],
     queryFn: () => get<{ open: number; inProgress: number }>('/complaints/stats'),
-    enabled: roleCan(role, 'complaints'),
+    enabled: roleCan(role, 'complaints') && hasModule(plan, 'complaints'),
     refetchInterval: 60_000,
   })
   const leaves = useQuery({
@@ -109,7 +109,7 @@ function usePendingCounts() {
   const moveOuts = useQuery({
     queryKey: ['move-out-requests', { status: 'pending' }],
     queryFn: () => get<ListResponse<unknown>>('/move-out-requests', { status: 'pending' }),
-    enabled: roleCan(role, 'checkin') && hasModule(plan, 'checkin'),
+    enabled: roleCan(role, 'checkin') && hasModule(plan, 'rules'),
     refetchInterval: 60_000,
   })
   const openComplaints = (complaints.data?.open ?? 0) + (complaints.data?.inProgress ?? 0)
@@ -124,8 +124,7 @@ function usePendingCounts() {
 
 function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const staff = useStaffSession()
-  const { data: org } = useOrg()
-  const plan = org?.plan ?? staff?.organization.plan
+  const plan = useEffectivePlan()
   const role = staff?.user.role
   const { openComplaints, pendingLeaves, pendingPayments, pendingMoveOuts } = usePendingCounts()
   const badges: Record<string, number> = {
@@ -185,8 +184,8 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       {role === 'owner' && <div className="border-t border-slate-200 p-4">
         <Link to="/app/settings?tab=billing" onClick={onNavigate} className="block rounded-lg bg-gradient-to-br from-brand-600 to-brand-800 p-3 text-white">
           <p className="text-xs opacity-80">Current plan</p>
-          <p className="font-semibold">{planInfo(plan ?? 'free').name}</p>
-          {plan !== 'pro' && <p className="mt-1 text-xs underline opacity-90">Upgrade →</p>}
+          <p className="font-semibold">{planInfo(plan).name}</p>
+          {plan !== 'business' && <p className="mt-1 text-xs underline opacity-90">Upgrade →</p>}
         </Link>
       </div>}
     </nav>
@@ -257,7 +256,7 @@ export function AdminLayout() {
                     <p className="truncate text-xs text-slate-500">{user?.email}</p>
                     <div className="mt-1 flex flex-wrap gap-1">
                       <Badge>{user?.role ? user.role[0]!.toUpperCase() + user.role.slice(1) : ''}</Badge>
-                      <Badge tone="blue">{planInfo(org?.plan ?? 'free').name} plan</Badge>
+                      <Badge tone="blue">{planInfo(effectivePlan(org)).name} plan</Badge>
                     </div>
                   </div>
                   <button

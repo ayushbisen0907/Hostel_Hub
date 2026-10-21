@@ -32,6 +32,7 @@ import { getSettings, logActivity } from '../../lib/org.js'
 import { notifyHostelers } from '../../lib/notify.js'
 import { defaultRulesText } from '../../lib/rules.js'
 import { withTransaction } from '../../config/db.js'
+import { assertLimit, orgPlan } from '../../lib/plans.js'
 import { requireStaff, staffOf } from '../../middleware/auth.js'
 import { Hostel, UPI_ID_RE } from '../../models/Hostel.js'
 import { Room } from '../../models/Room.js'
@@ -169,6 +170,7 @@ router.post(
   ah(async (req, res) => {
     const body = parse(createSchema, req.body)
     const { orgId } = staffOf(req)
+    assertLimit(await orgPlan(orgId), 'hostels', await Hostel.countDocuments({ orgId }))
     let hostelCode: string
     if (body.code) {
       if (await Hostel.exists({ code: body.code })) throw conflict(`Hostel code ${body.code} is already taken. Choose another.`)

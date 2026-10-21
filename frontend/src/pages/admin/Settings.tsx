@@ -26,7 +26,6 @@ import { HOSTEL_TYPES, HostelChargeChips, HostelModal, HostelStayChips } from '.
 import {
   orgApi,
   useChangeOwnPassword,
-  useChangePlan,
   useCreateUser,
   useDeleteUser,
   useResetUserPassword,
@@ -38,7 +37,7 @@ import {
   type UserWithPassword,
 } from '@/api/org'
 import { toastError } from '@/api/query'
-import type { Hostel, OrgDetails, Plan, Settings as SettingsT, StaffRole, User } from '@/api/types'
+import type { BillingCycle, Hostel, OrgDetails, Plan, Settings as SettingsT, StaffRole, User } from '@/api/types'
 import {
   Badge,
   Button,
@@ -67,6 +66,9 @@ import {
   type BadgeTone,
 } from '@/components/ui'
 import { PLANS, planInfo, type PlanInfo } from '@/lib/plans'
+import { MONEY_BACK_DAYS } from '@/lib/pricing'
+import { LimitNote, ModuleNote } from '@/components/PlanGate'
+import { SUPPORT, useHasModule, usePlanLimit } from '@/api/plan'
 import { cn, formatDate, formatDateTime, formatMoney } from '@/lib/utils'
 
 type TabKey = 'profile' | 'hostels' | 'team' | 'billing' | 'preferences' | 'data'
@@ -301,6 +303,7 @@ function HostelsTab() {
 
   const [editing, setEditing] = useState<Hostel | null>(null)
   const [open, setOpen] = useState(false)
+  const hostelLimit = usePlanLimit('hostels')
 
   const openNew = () => {
     setEditing(null)
@@ -332,10 +335,11 @@ function HostelsTab() {
               <p className="text-sm text-slate-500">
                 {hostels.length} hostel{hostels.length === 1 ? '' : 's'} · {totalBeds} beds in total
               </p>
-              <Button icon={<Plus className="h-4 w-4" />} onClick={openNew}>
+              <Button icon={<Plus className="h-4 w-4" />} onClick={openNew} disabled={hostelLimit.reached}>
                 Add hostel
               </Button>
             </div>
+            <LimitNote limit="hostels" className="mb-4" />
 
             {hostels.length === 0 ? (
               <Card>
@@ -499,6 +503,7 @@ function TeamTab() {
   const [editing, setEditing] = useState<User | null>(null)
   const [creds, setCreds] = useState<{ result: UserWithPassword; reset: boolean } | null>(null)
   const reset = useResetUserPassword((r) => setCreds({ result: r, reset: true }))
+  const loginLimit = usePlanLimit('staffLogins')
 
   const doReset = async (u: User) => {
     const ok = await confirm({
@@ -526,11 +531,12 @@ function TeamTab() {
           title="Staff logins"
           subtitle="People who can sign in to manage your hostels."
           action={
-            <Button size="sm" icon={<UserPlus className="h-4 w-4" />} onClick={() => setInviteOpen(true)}>
+            <Button size="sm" icon={<UserPlus className="h-4 w-4" />} onClick={() => setInviteOpen(true)} disabled={loginLimit.reached}>
               Add login
             </Button>
           }
         />
+        <LimitNote limit="staffLogins" className="mx-5 mt-4" />
         <QueryView query={teamQ}>
           {(users) =>
             users.length <= 1 ? (
@@ -539,9 +545,11 @@ function TeamTab() {
                 title="Only you so far"
                 description="Create logins for your managers, wardens or accountant. Each person gets their own email and password."
                 action={
-                  <Button icon={<UserPlus className="h-4 w-4" />} onClick={() => setInviteOpen(true)}>
-                    Add login
-                  </Button>
+                  loginLimit.reached ? undefined : (
+                    <Button icon={<UserPlus className="h-4 w-4" />} onClick={() => setInviteOpen(true)}>
+                      Add login
+                    </Button>
+                  )
                 }
               />
             ) : (
@@ -824,89 +832,102 @@ function CredentialsModal({ result, reset, onClose }: { result: UserWithPassword
 /* Billing                                                             */
 /* ------------------------------------------------------------------ */
 
+const CYCLE_LABEL: Record<BillingCycle, string> = { monthly: 'Monthly', yearly: 'Yearly', onetime: 'One-time' }
+const CYCLE_SUFFIX: Record<BillingCycle, string> = { monthly: '/month', yearly: '/year', onetime: 'one time' }
+
 function BillingTab() {
   const orgQ = useOrg()
-  const changePlan = useChangePlan()
+  const [cycle, setCycle] = useState<BillingCycle>('yearly')
+  const [upgradeTo, setUpgradeTo] = useState<PlanInfo | null>(null)
 
   return (
     <QueryView query={orgQ}>
       {(org) => {
-        const current = planInfo(org.plan)
-        const beds = org.usage.beds
-        const maxBeds = org.limits.maxBeds
-        const usagePct = maxBeds ? (beds / maxBeds) * 100 : 0
-        const monthly = (p: PlanInfo) => p.pricePerBed * beds
+        const now = org.limits.plan
+        const bought = planInfo(org.plan)
         const order = (p: Plan) => PLANS.findIndex((x) => x.id === p)
-
-        const choose = async (p: PlanInfo) => {
-          const up = order(p.id) > order(current.id)
-          const ok = await confirm({
-            title: up ? `Upgrade to ${p.name}?` : `Switch to ${p.name}?`,
-            message: `${p.name}: ${p.pricePerBed ? `${formatMoney(p.pricePerBed)} per bed per month (about ${formatMoney(monthly(p))}/month for your ${beds} beds)` : 'free'}.${
-              up ? '' : ` Modules not included in ${p.name} will be locked; your data stays safe and unlocks again if you upgrade.`
-            }`,
-            confirmText: up ? `Upgrade to ${p.name}` : `Switch to ${p.name}`,
-            danger: !up,
-          })
-          if (ok) changePlan.mutate(p.id)
-        }
+        const status =
+          org.plan === 'free'
+            ? 'Free forever'
+            : org.limits.expired
+              ? `Your ${bought.name} plan ended on ${formatDate(org.planExpiresAt)}`
+              : org.planExpiresAt
+                ? `${CYCLE_LABEL[org.billingCycle ?? 'monthly']} · valid till ${formatDate(org.planExpiresAt)}`
+                : 'One-time · never expires'
+        const meters = [
+          { label: 'Beds', used: org.usage.beds, max: org.limits.beds },
+          { label: 'Hostels', used: org.usage.hostels, max: org.limits.hostels },
+          { label: 'Staff logins', used: org.usage.staffLogins, max: org.limits.staffLogins },
+        ]
 
         return (
           <div className="space-y-6">
+            {org.limits.expired && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                Your {bought.name} plan ended on {formatDate(org.planExpiresAt)}. HostelHub works like the Free plan until you renew it — nothing has been
+                deleted.{' '}
+                <button className="font-semibold underline" onClick={() => setUpgradeTo(bought)}>
+                  Renew {bought.name}
+                </button>
+              </div>
+            )}
+
             <Card className="p-5 sm:p-6">
-              <div className="flex flex-col gap-6 md:flex-row md:items-center">
-                <div className="flex-1">
+              <div className="flex flex-col gap-6 lg:flex-row lg:items-center">
+                <div className="lg:w-64">
                   <p className="text-sm text-slate-500">Current plan</p>
-                  <div className="mt-1 flex items-center gap-2">
-                    <h2 className="text-2xl font-bold text-slate-900">{org.limits.name}</h2>
-                    <Badge tone="blue">{org.limits.pricePerBed ? `${formatMoney(org.limits.pricePerBed)}/bed/mo` : 'Free'}</Badge>
-                  </div>
-                  <p className="mt-1 text-sm text-slate-500">{current.tagline}</p>
-                  <p className="mt-2 text-xs text-slate-500">
-                    {org.usage.hostels} hostel{org.usage.hostels === 1 ? '' : 's'} · {org.usage.activeHostelers} active hostelers
-                  </p>
+                  <h2 className="mt-1 text-2xl font-bold text-slate-900">{org.limits.name}</h2>
+                  <p className="mt-1 text-sm text-slate-500">{status}</p>
                 </div>
-                <div className="w-full md:w-80">
-                  <div className="mb-1.5 flex justify-between text-sm">
-                    <span className="text-slate-600">Beds used</span>
-                    <span className="font-medium text-slate-900">
-                      {beds} / {maxBeds ?? '∞'}
-                    </span>
-                  </div>
-                  <ProgressBar value={maxBeds ? usagePct : 8} tone={usagePct > 100 ? 'red' : usagePct > 85 ? 'amber' : 'brand'} />
-                  {maxBeds && beds > maxBeds ? (
-                    <p className="mt-1.5 text-xs text-red-600">You're over your plan's bed limit. Upgrade to keep adding beds.</p>
-                  ) : (
-                    <p className="mt-1.5 text-xs text-slate-500">
-                      Estimated bill: <span className="font-semibold text-slate-800">{formatMoney(org.limits.pricePerBed * beds)}</span> / month
-                    </p>
-                  )}
+                <div className="grid flex-1 gap-5 sm:grid-cols-3">
+                  {meters.map((m) => (
+                    <UsageMeter key={m.label} {...m} />
+                  ))}
                 </div>
               </div>
             </Card>
 
-            <div className="grid gap-5 lg:grid-cols-3">
+            <div className="flex justify-center">
+              <div role="tablist" aria-label="Billing" className="inline-grid grid-cols-3 rounded-xl bg-slate-100 p-1">
+                {(Object.keys(CYCLE_LABEL) as BillingCycle[]).map((c) => (
+                  <button
+                    key={c}
+                    role="tab"
+                    aria-selected={cycle === c}
+                    onClick={() => setCycle(c)}
+                    className={cn(
+                      'rounded-lg px-4 py-1.5 text-sm font-semibold transition sm:px-6',
+                      cycle === c ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800',
+                    )}
+                  >
+                    {CYCLE_LABEL[c]}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
               {PLANS.map((p) => {
-                const isCurrent = p.id === org.plan
-                const tooSmall = p.maxBeds !== null && beds > p.maxBeds
-                const up = order(p.id) > order(current.id)
-                const busy = changePlan.isPending && changePlan.variables === p.id
+                const isCurrent = p.id === now
+                const up = order(p.id) > order(now)
+                const price = p.price[cycle]
                 return (
-                  <Card key={p.id} className={cn('flex flex-col p-6', isCurrent && 'border-brand-600 ring-1 ring-brand-600')}>
-                    <div className="flex items-center justify-between">
+                  <Card key={p.id} className={cn('flex flex-col p-5', isCurrent && 'border-brand-600 ring-1 ring-brand-600')}>
+                    <div className="flex items-center justify-between gap-2">
                       <h3 className="text-lg font-semibold text-slate-900">{p.name}</h3>
                       {isCurrent && <Badge tone="blue">Current</Badge>}
                     </div>
                     <p className="mt-1 text-sm text-slate-500">{p.tagline}</p>
                     <p className="mt-4">
-                      <span className="text-3xl font-extrabold text-slate-900">{formatMoney(p.pricePerBed)}</span>
-                      <span className="text-sm text-slate-500"> / bed / month</span>
+                      <span className="text-3xl font-extrabold text-slate-900">{formatMoney(price)}</span>
+                      <span className="text-sm text-slate-500"> {price === 0 ? 'forever' : CYCLE_SUFFIX[cycle]}</span>
                     </p>
                     <p className="mt-1 text-xs text-slate-500">
-                      {p.maxBeds ? `Up to ${p.maxBeds} beds` : 'Unlimited beds'} · your estimate{' '}
-                      <span className="font-semibold text-slate-700">{formatMoney(monthly(p))}/mo</span>
+                      {p.beds ? `${p.beds} beds` : 'Unlimited beds'} · {p.hostels ? `${p.hostels} hostel${p.hostels === 1 ? '' : 's'}` : 'unlimited hostels'} ·{' '}
+                      {p.staffLogins === null ? 'unlimited staff' : p.staffLogins ? `${p.staffLogins} staff logins` : 'no staff logins'}
                     </p>
-                    <ul className="mt-5 flex-1 space-y-2">
+                    <ul className="mt-4 flex-1 space-y-2">
+                      <li className="text-sm font-medium text-slate-500">{p.includes}</li>
                       {p.features.map((f) => (
                         <li key={f} className="flex items-start gap-2 text-sm text-slate-700">
                           <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" /> {f}
@@ -914,31 +935,94 @@ function BillingTab() {
                       ))}
                     </ul>
                     <Button
-                      className="mt-6 w-full"
+                      className="mt-5 w-full"
                       variant={isCurrent ? 'secondary' : up ? 'primary' : 'outline'}
-                      disabled={isCurrent || tooSmall || changePlan.isPending}
-                      loading={busy}
-                      icon={up && !isCurrent ? <Sparkles className="h-4 w-4" /> : undefined}
-                      onClick={() => void choose(p)}
+                      disabled={isCurrent || !up}
+                      icon={up ? <Sparkles className="h-4 w-4" /> : undefined}
+                      onClick={() => setUpgradeTo(p)}
                     >
-                      {isCurrent ? 'Current plan' : tooSmall ? `Too many beds (${beds})` : up ? `Upgrade to ${p.name}` : `Switch to ${p.name}`}
+                      {isCurrent ? 'Current plan' : up ? `Upgrade to ${p.name}` : 'Included in your plan'}
                     </Button>
                   </Card>
                 )
               })}
             </div>
+            <p className="text-center text-xs text-slate-500">Every paid plan comes with a {MONEY_BACK_DAYS}-day money-back guarantee.</p>
 
-            <Card className="p-5">
-              <p className="font-medium text-slate-900">Payments for subscriptions coming soon</p>
-              <p className="mt-1 text-sm text-slate-500">
-                Plan changes apply immediately. Online billing and invoices for your HostelHub subscription will be added here later — you won't be charged
-                until then.
-              </p>
-            </Card>
+            <UpgradeModal plan={upgradeTo} cycle={cycle} org={org} onClose={() => setUpgradeTo(null)} />
           </div>
         )
       }}
     </QueryView>
+  )
+}
+
+function UsageMeter({ label, used, max }: { label: string; used: number; max: number | null }) {
+  const over = max !== null && used > max
+  const full = max !== null && used >= max
+  const value = max === null ? 4 : max === 0 ? (used ? 100 : 0) : Math.min(100, (used / max) * 100)
+  return (
+    <div>
+      <div className="mb-1.5 flex justify-between gap-2 text-sm">
+        <span className="text-slate-600">{label}</span>
+        <span className="font-medium text-slate-900">
+          {used} / {max === null ? 'Unlimited' : max}
+        </span>
+      </div>
+      <ProgressBar value={value} tone={over ? 'red' : full ? 'amber' : 'brand'} />
+      {over && <p className="mt-1 text-xs text-red-600">Over the limit: existing ones stay, new ones are blocked.</p>}
+    </div>
+  )
+}
+
+/** How to buy a plan: there is no online checkout yet, so the owner contacts HostelHub and pays by UPI. */
+function UpgradeModal({ plan, cycle, org, onClose }: { plan: PlanInfo | null; cycle: BillingCycle; org: OrgDetails; onClose: () => void }) {
+  if (!plan) return null
+  const price = plan.price[cycle]
+  const message = `Hi HostelHub, I want the ${plan.name} plan (${CYCLE_LABEL[cycle]}, ${formatMoney(price)}) for ${org.name}. My account email is ${org.email}.`
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(message)
+      toast.success('Message copied')
+    } catch {
+      toast.error('Could not copy. Select the text and copy it.')
+    }
+  }
+  return (
+    <Modal open onClose={onClose} title={`Upgrade to ${plan.name}`} description={`${CYCLE_LABEL[cycle]} · ${formatMoney(price)} ${CYCLE_SUFFIX[cycle]}`} size="sm">
+      <ol className="space-y-3 text-sm text-slate-700">
+        {[
+          'Send us the message below from your phone or email.',
+          'Pay by UPI — we reply with the payment details.',
+          `Your ${plan.name} plan is switched on as soon as the payment is confirmed. Not happy? Full refund within ${MONEY_BACK_DAYS} days.`,
+        ].map((t, i) => (
+          <li key={t} className="flex gap-3">
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-50 text-xs font-bold text-brand-700">{i + 1}</span>
+            {t}
+          </li>
+        ))}
+      </ol>
+      <p className="mt-4 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">{message}</p>
+      <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+        {SUPPORT.whatsapp && (
+          <a href={`https://wa.me/${SUPPORT.whatsapp}?text=${encodeURIComponent(message)}`} target="_blank" rel="noreferrer" className="flex-1">
+            <Button className="w-full" icon={<MessageCircle className="h-4 w-4" />}>
+              WhatsApp us
+            </Button>
+          </a>
+        )}
+        {SUPPORT.email && (
+          <a href={`mailto:${SUPPORT.email}?subject=${encodeURIComponent(`${plan.name} plan for ${org.name}`)}&body=${encodeURIComponent(message)}`} className="flex-1">
+            <Button variant="outline" className="w-full">
+              Email us
+            </Button>
+          </a>
+        )}
+        <Button variant="outline" className="flex-1" icon={<Copy className="h-4 w-4" />} onClick={() => void copy()}>
+          Copy message
+        </Button>
+      </div>
+    </Modal>
   )
 }
 
@@ -1054,6 +1138,7 @@ function PreferencesForm({ settings }: { settings: SettingsT }) {
 
 function DataTab() {
   const orgQ = useOrg()
+  const canExport = useHasModule('export')
   const [exporting, setExporting] = useState(false)
 
   const exportBackup = async () => {
@@ -1100,10 +1185,11 @@ function DataTab() {
               files are not included. Passwords are never exported.
             </p>
           </div>
-          <Button variant="outline" icon={<Download className="h-4 w-4" />} loading={exporting} onClick={() => void exportBackup()}>
+          <Button variant="outline" icon={<Download className="h-4 w-4" />} loading={exporting} disabled={!canExport} onClick={() => void exportBackup()}>
             Export backup
           </Button>
         </div>
+        {!canExport && <ModuleNote module="export" what="Data export" className="mx-5 mb-5" />}
       </Card>
     </div>
   )

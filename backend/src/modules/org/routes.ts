@@ -4,7 +4,8 @@
  *   GET    /api/org                            any staff: organization + settings, plan, usage, plan limits
  *   PATCH  /api/org                            owner: name, ownerName, email, phone
  *   PATCH  /api/org/settings                   owner: settings fields
- *   PATCH  /api/org/plan                       owner: { plan } (409 if beds exceed the target plan)
+ *
+ *   Plans are turned on by HostelHub after payment (npm run plan:set), not from the app.
  *
  *   GET    /api/org/users                      owner: staff logins
  *   POST   /api/org/users                      owner: create manager / warden / accountant login
@@ -12,7 +13,7 @@
  *   POST   /api/org/users/:id/reset-password   owner: new temporary password (signs the user out)
  *   DELETE /api/org/users/:id                  owner
  *
- *   GET    /api/org/export                     owner: JSON backup of every org collection
+ *   GET    /api/org/export                     owner: JSON backup of every org collection (Business plan)
  */
 import { Router } from 'express'
 import mongoose from 'mongoose'
@@ -20,7 +21,7 @@ import { z } from 'zod'
 import { ah, idParam, parse } from '../../lib/http.js'
 import { conflict, forbidden, notFound } from '../../lib/errors.js'
 import { generateTempPassword, hashPassword, isStrongPassword, PASSWORD_RULE } from '../../lib/auth.js'
-import { PLANS, type Plan } from '../../lib/plans.js'
+import { PLANS, assertLimit, effectivePlan, orgPlan, planExpired, requirePlan } from '../../lib/plans.js'
 import { logActivity } from '../../lib/org.js'
 import { requireStaff, staffOf } from '../../middleware/auth.js'
 import { toApi } from '../../models/_base.js'
@@ -37,23 +38,25 @@ export const router = Router()
 /* ------------------------------------------------------------------ */
 
 async function orgUsage(orgId: string) {
-  const [hostels, beds, activeHostelers] = await Promise.all([
+  const [hostels, beds, activeHostelers, staffLogins] = await Promise.all([
     Hostel.countDocuments({ orgId }),
     Bed.countDocuments({ orgId }),
     Hosteler.countDocuments({ orgId, status: 'active' }),
+    activeStaffLogins(orgId),
   ])
-  return { hostels, beds, activeHostelers }
+  return { hostels, beds, activeHostelers, staffLogins }
 }
 
 async function orgResponse(orgId: string) {
   const org = await Organization.findById(orgId)
   if (!org) throw notFound('Organization')
-  const plan = (org.plan ?? 'free') as Plan
+  // `plan` is what was bought; `limits.plan` is what works now (Free once a plan has run out)
+  const plan = effectivePlan(org)
   const p = PLANS[plan]
   return {
     ...org.toJSON(),
     usage: await orgUsage(orgId),
-    limits: { plan, name: p.name, pricePerBed: p.pricePerBed, maxBeds: p.maxBeds, modules: p.modules },
+    limits: { plan, name: p.name, ...p.limits, modules: p.modules, expired: org.plan !== 'free' && planExpired(org) },
   }
 }
 
@@ -117,24 +120,6 @@ router.patch(
   }),
 )
 
-router.patch(
-  '/plan',
-  requireStaff('org'),
-  ah(async (req, res) => {
-    const { plan } = parse(z.object({ plan: z.enum(['free', 'basic', 'pro']) }), req.body)
-    const { orgId } = staffOf(req)
-    const max = PLANS[plan].maxBeds
-    if (max !== null) {
-      const beds = await Bed.countDocuments({ orgId })
-      if (beds > max)
-        throw conflict(`You have ${beds} beds but the ${PLANS[plan].name} plan allows up to ${max}. Remove beds before switching.`)
-    }
-    await Organization.updateOne({ _id: orgId }, { $set: { plan } })
-    await logActivity(orgId, `Plan changed to ${PLANS[plan].name}`)
-    res.json(await orgResponse(orgId))
-  }),
-)
-
 /* ------------------------------------------------------------------ */
 /* Staff logins                                                        */
 /* ------------------------------------------------------------------ */
@@ -165,6 +150,7 @@ router.post(
       req.body,
     )
     const { orgId } = staffOf(req)
+    assertLimit(await orgPlan(orgId), 'staffLogins', await activeStaffLogins(orgId))
     if (await User.exists({ email: body.email })) throw conflict('An account with this email already exists')
     const tempPassword = body.password ? null : generateTempPassword()
     const user = await User.create({
@@ -180,6 +166,11 @@ router.post(
     res.status(201).json({ user: user.toJSON(), tempPassword })
   }),
 )
+
+/** Manager / warden / accountant logins that are switched on (the owner doesn't count). */
+function activeStaffLogins(orgId: string) {
+  return User.countDocuments({ orgId, role: { $ne: 'owner' }, active: true })
+}
 
 /** A staff login of this org the caller may manage (not the owner, not themselves). */
 async function manageableUser(orgId: string, userId: string, selfId: string) {
@@ -208,6 +199,7 @@ router.patch(
     )
     const { orgId, userId } = staffOf(req)
     const user = await manageableUser(orgId, idParam(req), userId)
+    if (body.active === true && !user.active) assertLimit(await orgPlan(orgId), 'staffLogins', await activeStaffLogins(orgId))
     const deactivating = body.active === false && user.active
     Object.assign(user, body)
     if (deactivating) user.tokenVersion += 1 // sign them out everywhere
@@ -251,6 +243,7 @@ const SECRET_FIELDS = ['passwordHash', 'tokenVersion', 'storageKey']
 router.get(
   '/export',
   requireStaff('org'),
+  requirePlan('export'),
   ah(async (req, res) => {
     const { orgId } = staffOf(req)
     const org = await Organization.findById(orgId)

@@ -6,7 +6,7 @@ import { MOVE_OUT_STATUS_LABEL, useCancelMoveOut, useMyMoveOut, useRequestMoveOu
 import { usePortalHome } from '@/api/portal'
 import { Badge, Button, Card, ErrorState, Field, Input, LoadingState, Textarea, confirm, type BadgeTone } from '@/components/ui'
 import { cn, daysBetween, formatDate, formatDateTime } from '@/lib/utils'
-import { PortalTitle, SectionTitle, useMoney } from './_shared'
+import { NotAvailable, PortalTitle, SectionTitle, useMoney } from './_shared'
 
 const TONE: Record<MoveOutRequest['status'], BadgeTone> = {
   pending: 'amber',
@@ -54,8 +54,9 @@ export function MoveOutCard() {
  * notice period away) and the office approves or rejects it.
  */
 export default function MoveOut() {
-  const q = useMyMoveOut()
   const home = usePortalHome()
+  const enabled = home.data?.features.moveOut
+  const q = useMyMoveOut(enabled !== false)
   const money = useMoney()
   const request = useRequestMoveOut()
   const cancel = useCancelMoveOut()
@@ -64,6 +65,7 @@ export default function MoveOut() {
   const [reason, setReason] = useState('')
   const [errors, setErrors] = useState<{ date?: string; reason?: string }>({})
 
+  if (enabled === false) return <NotAvailable description="Move-out requests are not part of your hostel's plan. Please tell the hostel office directly." />
   if (q.isLoading) return <LoadingState />
   if (q.error || !q.data)
     return (

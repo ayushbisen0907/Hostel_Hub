@@ -92,12 +92,12 @@ export function useRejectMoveOut() {
 
 export const portalMoveOutKey = ['portal', 'move-out'] as const
 
-export function useMyMoveOut() {
+export function useMyMoveOut(enabled = true) {
   const s = useHostelerSession()
   return useQuery({
     queryKey: portalMoveOutKey,
     queryFn: () => get<PortalMoveOut>('/portal/move-out'),
-    enabled: !!s && !s.mustChangePassword && !s.consentRequired,
+    enabled: enabled && !!s && !s.mustChangePassword && !s.consentRequired,
   })
 }
 

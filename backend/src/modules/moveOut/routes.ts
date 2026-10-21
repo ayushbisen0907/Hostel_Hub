@@ -152,7 +152,7 @@ portalMoveOutRouter.delete(
 /* ================================================================== */
 
 export const router = Router()
-const checkin = [requireStaff('checkin'), requirePlan('checkin')]
+const checkin = [requireStaff('checkin'), requirePlan('rules')]
 
 const listQuery = z.object({
   status: z.enum([...MOVE_OUT_STATUSES, 'all']).optional(),

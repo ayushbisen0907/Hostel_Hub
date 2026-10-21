@@ -15,6 +15,7 @@ import { Router } from 'express'
 import type { Types } from 'mongoose'
 import { z } from 'zod'
 import { withTransaction } from '../../config/db.js'
+import { requirePlan } from '../../lib/plans.js'
 import { requireStaff, staffOf } from '../../middleware/auth.js'
 import { notFound } from '../../lib/errors.js'
 import { ah, escapeRegex, idParam, objectId, parse, todayStr } from '../../lib/http.js'
@@ -29,7 +30,7 @@ import { hostelerInfo, roomNumbers } from '../attendance/lookup.js'
 export const router = Router()
 
 // mounted at /api/complaints
-router.use(requireStaff('complaints'))
+router.use(requireStaff('complaints'), requirePlan('complaints'))
 
 const CATEGORIES = ['electrical', 'plumbing', 'internet', 'cleaning', 'furniture', 'food', 'security', 'other'] as const
 const PRIORITIES = ['low', 'medium', 'high'] as const

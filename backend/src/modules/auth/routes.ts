@@ -37,7 +37,7 @@ import { Organization } from '../../models/Organization.js'
 import { User } from '../../models/User.js'
 import { Hosteler } from '../../models/Hosteler.js'
 import { Hostel } from '../../models/Hostel.js'
-import { consentPending, hostelerOf, requireHosteler, requireStaff, staffOf } from '../../middleware/auth.js'
+import { assertStaffLoginsAllowed, consentPending, hostelerOf, requireHosteler, requireStaff, staffOf } from '../../middleware/auth.js'
 import { RulesConsent } from '../../models/RulesConsent.js'
 import { logActivity } from '../../lib/org.js'
 
@@ -101,6 +101,7 @@ staffAuthRouter.post(
     // same error for unknown email and wrong password (don't reveal which accounts exist)
     if (!user || !(await verifyPassword(body.password, user.passwordHash))) throw unauthorized('Email or password is incorrect')
     if (!user.active) throw unauthorized('This account is disabled. Contact the owner.')
+    if (user.role !== 'owner') await assertStaffLoginsAllowed(user.orgId)
     user.lastLoginAt = new Date()
     await user.save()
     const org = await Organization.findById(user.orgId)
@@ -153,7 +154,7 @@ function hostelerToken(h: { _id: unknown; orgId: unknown; hostelId: unknown; mus
 async function portalProfile(h: InstanceType<typeof Hosteler>) {
   const hostel = await Hostel.findById(h.hostelId).select('name code city phone rulesVersion rulesText').lean()
   return {
-    consentRequired: !!hostel && !!hostel.rulesText && (hostel.rulesVersion ?? 0) > (h.consentVersion ?? 0),
+    consentRequired: await consentPending(h),
     rulesVersion: hostel && hostel.rulesText ? (hostel.rulesVersion ?? 0) : 0,
     hosteler: h.toJSON(),
     hostel: hostel ? { id: String(hostel._id), name: hostel.name, code: hostel.code, city: hostel.city, phone: hostel.phone } : null,

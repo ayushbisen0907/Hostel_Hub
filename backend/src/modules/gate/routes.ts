@@ -25,7 +25,7 @@ import { GateLog } from '../../models/Operations.js'
 
 export const router = Router()
 
-const auth = [requireStaff('checkin'), requirePlan('checkin')]
+const auth = [requireStaff('checkin'), requirePlan('visitors')]
 
 /** Local HH:MM of a Date */
 function localTime(d: Date) {

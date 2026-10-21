@@ -100,6 +100,7 @@ import {
 } from './_residents'
 import { RecordPaymentModal } from './_fees'
 import { RulesConsentSection } from './_consents'
+import { useHasModule } from '@/api/plan'
 
 type Tab = 'overview' | 'fees' | 'documents' | 'attendance' | 'gate' | 'requests'
 
@@ -946,7 +947,7 @@ function Profile({ h }: { h: HostelerDetailT }) {
   const canFees = can('fees') && planHas('fees')
   const canDocs = can('documents') && planHas('documents')
   const canAttendance = can('attendance') && planHas('attendance')
-  const canGate = can('checkin') && planHas('checkin')
+  const canGate = can('checkin') && planHas('visitors')
   const canComplaints = can('complaints') && planHas('complaints')
   const canCheckin = can('checkin')
   const canDelete = role === 'owner' || role === 'manager'
@@ -1024,6 +1025,7 @@ function Profile({ h }: { h: HostelerDetailT }) {
   ]
   const activeTab = tabs.some((t) => t.value === tab) ? tab : 'overview'
 
+  const hasRules = useHasModule('rules')
   return (
     <>
       <Link to="/app/hostelers" className="mb-4 inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-800">
@@ -1243,7 +1245,7 @@ function Profile({ h }: { h: HostelerDetailT }) {
                 </p>
               )}
             </Section>
-            <RulesConsentSection h={h} />
+            {hasRules && <RulesConsentSection h={h} />}
             <DepositSection h={h} canFees={canFees} />
             <Section title="Notes">
               <p className="whitespace-pre-wrap text-sm text-slate-700">{h.notes || <span className="text-slate-400">No notes.</span>}</p>

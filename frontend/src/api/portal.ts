@@ -36,7 +36,8 @@ export type AttendanceStatus = 'present' | 'late' | 'leave' | 'absent'
 export interface PortalHome {
   today: string
   currencySymbol: string
-  features: { mess: boolean; attendance: boolean }
+  /** what the hostel's plan includes in the app */
+  features: { mess: boolean; attendance: boolean; notices: boolean; complaints: boolean; documents: boolean; gateLog: boolean; moveOut: boolean }
   hosteler: Hosteler
   bed: string | null
   hostel: { id: ID; name: string; phone: string } | null
@@ -229,8 +230,8 @@ export function useMyFeedback(enabled = true) {
   })
 }
 
-export function useMyComplaints() {
-  return useQuery({ queryKey: portalKeys.complaints, queryFn: async () => items(await get<ListResponse<Complaint>>('/portal/complaints')) })
+export function useMyComplaints(enabled = true) {
+  return useQuery({ queryKey: portalKeys.complaints, queryFn: async () => items(await get<ListResponse<Complaint>>('/portal/complaints')), enabled })
 }
 
 export function useMyLeaves(enabled = true) {
@@ -241,12 +242,12 @@ export function useMyLeaves(enabled = true) {
   })
 }
 
-export function useMyNotices() {
-  return useQuery({ queryKey: portalKeys.notices, queryFn: async () => items(await get<ListResponse<Notice>>('/portal/notices')) })
+export function useMyNotices(enabled = true) {
+  return useQuery({ queryKey: portalKeys.notices, queryFn: async () => items(await get<ListResponse<Notice>>('/portal/notices')), enabled })
 }
 
-export function useMyDocuments() {
-  return useQuery({ queryKey: portalKeys.documents, queryFn: async () => items(await get<ListResponse<HDocument>>('/portal/documents')) })
+export function useMyDocuments(enabled = true) {
+  return useQuery({ queryKey: portalKeys.documents, queryFn: async () => items(await get<ListResponse<HDocument>>('/portal/documents')), enabled })
 }
 
 export function useMyAttendance(month: string, enabled = true) {
@@ -257,8 +258,15 @@ export function useMyAttendance(month: string, enabled = true) {
   })
 }
 
-export function useMyGateLogs() {
-  return useQuery({ queryKey: portalKeys.gateLogs, queryFn: async () => items(await get<ListResponse<GateLog>>('/portal/gate-logs')) })
+export function useMyGateLogs(enabled = true) {
+  return useQuery({ queryKey: portalKeys.gateLogs, queryFn: async () => items(await get<ListResponse<GateLog>>('/portal/gate-logs')), enabled })
+}
+
+export type PortalFeature = keyof PortalHome['features']
+
+/** Whether the hostel's plan includes a portal feature: true / false once known, undefined while loading. */
+export function usePortalFeature(f: PortalFeature): boolean | undefined {
+  return usePortalHome().data?.features[f]
 }
 
 /**

@@ -4,14 +4,15 @@ import { ApiError } from '@/api/client'
 import { isPlanError, useCancelLeave, useMyLeaves, useMyNotices, usePortalHome, useRequestLeave } from '@/api/portal'
 import { Button, Card, EmptyState, ErrorState, Field, Input, LoadingState, StatusBadge, Textarea, confirm } from '@/components/ui'
 import { cn, daysBetween, formatDate, today } from '@/lib/utils'
-import { NoticeCard, PortalTitle, SectionTitle, useScrollToHash } from './_shared'
+import { NoticeCard, NotAvailable, PortalTitle, SectionTitle, useScrollToHash } from './_shared'
 
 export default function Leave() {
   const home = usePortalHome()
-  // leave is part of the Pro plan's "Attendance & leave"; notices are always available
+  // leave is part of the Pro plan's "Attendance & leave"; notices are Starter and up
   const leaveEnabled = home.data?.features.attendance !== false
+  const noticesOn = home.data?.features.notices !== false
   const leavesQ = useMyLeaves(leaveEnabled)
-  const noticesQ = useMyNotices()
+  const noticesQ = useMyNotices(noticesOn)
   const requestLeave = useRequestLeave()
   const cancelLeave = useCancelLeave()
   const leaveLocked = !leaveEnabled || isPlanError(leavesQ.error)
@@ -63,10 +64,12 @@ export default function Leave() {
     if (await confirm({ title: 'Cancel this leave request?', confirmText: 'Cancel request', danger: true })) cancelLeave.mutate(id)
   }
 
+  if (leaveLocked && !noticesOn) return <NotAvailable description="Leave requests and notices are not part of your hostel's plan." />
+
   return (
     <div className="pb-4">
       <PortalTitle
-        title={leaveLocked ? 'Notices' : 'Leave & notices'}
+        title={leaveLocked ? 'Notices' : noticesOn ? 'Leave & notices' : 'Leave'}
         subtitle={leaveLocked ? 'Announcements from your hostel.' : 'Going home or travelling? Let the warden know.'}
       />
 
@@ -171,6 +174,8 @@ export default function Leave() {
         </>
       )}
 
+      {noticesOn && (
+        <>
       {leaveLocked ? <div id="notices" /> : <SectionTitle id="notices">Notices</SectionTitle>}
       {noticesQ.isLoading ? (
         <LoadingState />
@@ -188,6 +193,8 @@ export default function Leave() {
             <NoticeCard key={n.id} notice={n} />
           ))}
         </div>
+      )}
+        </>
       )}
     </div>
   )

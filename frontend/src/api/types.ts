@@ -6,7 +6,8 @@
 
 export type ID = string
 
-export type Plan = 'free' | 'basic' | 'pro'
+export type Plan = 'free' | 'starter' | 'pro' | 'business'
+export type BillingCycle = 'monthly' | 'yearly' | 'onetime'
 export type StaffRole = 'owner' | 'manager' | 'warden' | 'accountant'
 export type PaymentMode = 'cash' | 'upi' | 'card' | 'bank' | 'online'
 export type Meal = 'breakfast' | 'lunch' | 'snacks' | 'dinner'
@@ -39,7 +40,11 @@ export interface Organization {
   ownerName: string
   email: string
   phone: string
+  /** the plan that was bought (see OrgDetails.limits.plan for the one that works now) */
   plan: Plan
+  billingCycle: BillingCycle | null
+  /** monthly/yearly plans run out here; null = never */
+  planExpiresAt: string | null
   settings: Settings
   createdAt: string
   updatedAt: string
@@ -47,8 +52,9 @@ export interface Organization {
 
 /** GET /org */
 export interface OrgDetails extends Organization {
-  usage: { hostels: number; beds: number; activeHostelers: number }
-  limits: { plan: Plan; name: string; pricePerBed: number; maxBeds: number | null; modules: string[] }
+  usage: { hostels: number; beds: number; activeHostelers: number; staffLogins: number }
+  /** what works right now — Free once a monthly/yearly plan has run out (`expired`) */
+  limits: { plan: Plan; name: string; beds: number | null; hostels: number | null; staffLogins: number | null; modules: string[]; expired: boolean }
 }
 
 export interface User {

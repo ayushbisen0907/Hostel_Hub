@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express'
 import { verifyToken, type StaffRole } from '../lib/auth.js'
 import { AppError, forbidden, unauthorized } from '../lib/errors.js'
+import { PLANS, hasModule, orgPlan } from '../lib/plans.js'
 import { User } from '../models/User.js'
 import { Hosteler } from '../models/Hosteler.js'
 import { Hostel } from '../models/Hostel.js'
@@ -86,6 +87,7 @@ export function requireStaff(module?: Module) {
       const user = await User.findById(payload.sub).select('orgId role active tokenVersion').lean()
       if (!user || !user.active || String(user.orgId) !== payload.orgId) throw unauthorized('Account not found or disabled')
       if ((payload as { tv?: number }).tv !== user.tokenVersion) throw unauthorized('Session expired. Please log in again.')
+      if (user.role !== 'owner') await assertStaffLoginsAllowed(user.orgId)
       req.staff = { kind: 'staff', userId: String(user._id), orgId: String(user.orgId), role: user.role }
       if (module && !canAccess(user.role, module)) throw forbidden(`Your role (${user.role}) can't access ${module}`)
       next()
@@ -99,8 +101,20 @@ export function requireStaff(module?: Module) {
  * True when the hosteler must (re-)sign their hostel's rules: the hostel has
  * rules and their version is newer than the one the hosteler signed.
  */
-export async function consentPending(h: { hostelId: unknown; consentVersion?: number | null }) {
+export async function consentPending(h: { orgId: unknown; hostelId: unknown; consentVersion?: number | null }) {
+  // signing the rules is part of the Starter plan and up
+  if (!hasModule(await orgPlan(String(h.orgId)), 'rules')) return false
   return !!(await Hostel.exists({ _id: h.hostelId, rulesVersion: { $gt: h.consentVersion ?? 0 }, rulesText: { $nin: ['', null] } }))
+}
+
+/** Staff logins (manager / warden / accountant) need a plan that includes them (Pro and up). */
+export async function assertStaffLoginsAllowed(orgId: unknown) {
+  const plan = await orgPlan(String(orgId))
+  if (PLANS[plan].limits.staffLogins === 0)
+    throw new AppError(402, `Staff logins are not part of the ${PLANS[plan].name} plan. Ask the owner to upgrade to Pro.`, 'PLAN_UPGRADE_REQUIRED', {
+      plan,
+      requiredPlan: 'Pro',
+    })
 }
 
 /**

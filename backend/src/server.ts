@@ -4,6 +4,7 @@ import { connectDB, disconnectDB } from './config/db.js'
 import { createApp } from './app.js'
 import { backfillStays } from './lib/stays.js'
 import { migrateLegacyReadings } from './lib/electricity.js'
+import { migrateLegacyPlans } from './lib/plans.js'
 import { generateDueBillsForAllOrgs } from './lib/rentCycle.js'
 
 const HOUR = 60 * 60 * 1000
@@ -21,6 +22,7 @@ async function billingTick() {
 async function main() {
   await connectDB(env.MONGODB_URI)
   await migrateLegacyReadings()
+  await migrateLegacyPlans()
   // keep indexes in line with the schemas (adds new ones, drops ones that were removed)
   await Promise.all(Object.values(mongoose.models).map((m) => m.syncIndexes()))
   await backfillStays()

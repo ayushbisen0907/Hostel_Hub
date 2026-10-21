@@ -7,7 +7,7 @@ import { api, del, get, patch, post } from './client'
 import { useApiMutation } from './query'
 import { refreshStaffMe, staffChangePassword } from './auth'
 import { useStaffSession } from './session'
-import type { ID, ListResponse, OrgDetails, Plan, Settings, StaffRole, User } from './types'
+import type { ID, ListResponse, OrgDetails, Settings, StaffRole, User } from './types'
 
 export type TeamRole = Exclude<StaffRole, 'owner'>
 
@@ -34,7 +34,6 @@ export interface UserWithPassword {
 export const orgApi = {
   updateProfile: (body: Partial<OrgProfileInput>) => patch<OrgDetails>('/org', body),
   updateSettings: (body: Partial<Settings>) => patch<Settings>('/org/settings', body),
-  changePlan: (plan: Plan) => patch<OrgDetails>('/org/plan', { plan }),
 
   users: async () => (await get<ListResponse<User>>('/org/users')).items,
   createUser: (body: NewUserInput) => post<UserWithPassword>('/org/users', body),
@@ -77,14 +76,6 @@ export function useChangeOwnPassword(onSuccess?: () => void) {
 
 export function useUpdateOrgSettings() {
   return useApiMutation(orgApi.updateSettings, { invalidate: [['org']], success: 'Preferences saved', onSuccess: syncSession })
-}
-
-export function useChangePlan() {
-  return useApiMutation(orgApi.changePlan, {
-    invalidate: [['org']],
-    success: (o) => `You're now on the ${o.limits.name} plan`,
-    onSuccess: syncSession,
-  })
 }
 
 /* ---------------- team ---------------- */

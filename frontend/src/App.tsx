@@ -3,12 +3,12 @@ import { BrowserRouter, Link, Navigate, Route, Routes } from 'react-router-dom'
 import { Lock } from 'lucide-react'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClient } from '@/api/query'
-import { useCan, useHostelerSession, useSession, useStaffSession } from '@/api/session'
+import { useCan, useHostelerSession, useSession, useStaffSession, type StaffModule } from '@/api/session'
 import { useOrg } from '@/api/common'
 import { AdminLayout } from '@/components/layout/AdminLayout'
 import { PortalLayout } from '@/components/layout/PortalLayout'
 import { Button, Card, ConfirmHost, LoadingState, Toaster } from '@/components/ui'
-import { hasModule, planInfo, PLANS, type ModuleKey } from '@/lib/plans'
+import { effectivePlan, hasModule, planInfo, planWithModule, type ModuleKey } from '@/lib/plans'
 
 import Login from '@/pages/auth/Login'
 import Signup from '@/pages/auth/Signup'
@@ -89,17 +89,20 @@ function LockedCard({ title, message, action }: { title: string; message: string
  * Blocks a module when the staff member's role can't use it, or the
  * organization's plan doesn't include it (the API enforces the same rules).
  */
+/** Plan modules that aren't staff permissions of their own map to the permission that covers them. */
+const ROLE_MODULE: Partial<Record<ModuleKey, StaffModule>> = { electricity: 'rooms', rules: 'checkin', export: 'org', portal: 'hostelers' }
+
 function Gate({ module, children }: { module: ModuleKey; children: ReactNode }) {
   const staff = useStaffSession()
   const { data: org, isLoading } = useOrg()
   const can = useCan()
-  if (module !== 'portal' && !can(module)) {
+  if (!can(ROLE_MODULE[module] ?? (module as StaffModule))) {
     return <LockedCard title="No access" message={`Your role (${staff?.user.role}) can't open this section. Ask the owner for access.`} />
   }
   if (isLoading) return <LoadingState />
-  const plan = org?.plan ?? staff?.organization.plan ?? 'free'
+  const plan = effectivePlan(org ?? staff?.organization)
   if (hasModule(plan, module)) return <>{children}</>
-  const needed = PLANS.find((p) => p.modules.includes(module))
+  const needed = planWithModule(module)
   return (
     <LockedCard
       title="Upgrade to unlock"
@@ -155,7 +158,7 @@ export default function App() {
           <Route path="check-out" element={<Gate module="checkin"><CheckOut /></Gate>} />
           {/* link used by move-out notifications */}
           <Route path="move-out-requests" element={<Navigate to="/app/check-out?view=requests" replace />} />
-          <Route path="gate-log" element={<Gate module="checkin"><GateLog /></Gate>} />
+          <Route path="gate-log" element={<Gate module="visitors"><GateLog /></Gate>} />
           <Route path="documents" element={<Gate module="documents"><Documents /></Gate>} />
           <Route path="fees" element={<Gate module="fees"><Fees /></Gate>} />
           <Route path="expenses" element={<Gate module="expenses"><Expenses /></Gate>} />

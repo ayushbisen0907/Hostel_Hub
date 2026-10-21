@@ -9,18 +9,17 @@
  *   DELETE /api/rooms/:id          409 if any bed is occupied
  *   GET    /api/beds/vacant        ?hostelId  vacant beds in active rooms (any staff; used by check-in / transfer)
  *
- * Adding beds is limited by the plan's maxBeds (402 PLAN_LIMIT).
+ * Adding beds is limited by the plan's bed limit (402 PLAN_LIMIT).
  */
 import { Router } from 'express'
 import type { ClientSession, Types } from 'mongoose'
 import { z } from 'zod'
 import { ah, idParam, money, objectId, parse } from '../../lib/http.js'
-import { AppError, conflict, notFound } from '../../lib/errors.js'
+import { conflict, notFound } from '../../lib/errors.js'
 import { assertHostel, hostelScope, logActivity } from '../../lib/org.js'
-import { PLANS, requirePlan, type Plan } from '../../lib/plans.js'
+import { PLANS, assertLimit, orgPlan, requirePlan } from '../../lib/plans.js'
 import { withTransaction } from '../../config/db.js'
 import { requireStaff, staffOf } from '../../middleware/auth.js'
-import { Organization } from '../../models/Organization.js'
 import { Room } from '../../models/Room.js'
 import { Bed } from '../../models/Bed.js'
 import { Hosteler } from '../../models/Hosteler.js'
@@ -35,18 +34,9 @@ const byNumber = (a: string, b: string) => a.localeCompare(b, undefined, { numer
 /** 402 PLAN_LIMIT if adding `extra` beds would exceed the organization's plan. */
 export async function assertBedCapacity(orgId: string | Types.ObjectId, extra: number, session?: ClientSession) {
   if (extra <= 0) return
-  const org = await Organization.findById(orgId).select('plan').session(session ?? null).lean()
-  const plan = (org?.plan ?? 'free') as Plan
-  const max = PLANS[plan].maxBeds
-  if (max === null) return
-  const current = await Bed.countDocuments({ orgId }).session(session ?? null)
-  if (current + extra > max)
-    throw new AppError(
-      402,
-      `${PLANS[plan].name} plan allows up to ${max} beds. You have ${current}; this would add ${extra}. Upgrade to add more.`,
-      'PLAN_LIMIT',
-      { maxBeds: max, current, adding: extra },
-    )
+  const plan = await orgPlan(orgId, session)
+  if (PLANS[plan].limits.beds === null) return
+  assertLimit(plan, 'beds', await Bed.countDocuments({ orgId }).session(session ?? null), extra)
 }
 
 /* ---------------- shaping ---------------- */

@@ -1,3 +1,4 @@
+import type { Plan } from '../src/lib/plans.js'
 import { describe, expect, it } from 'vitest'
 import mongoose from 'mongoose'
 import { api, makeHostel, makeHosteler, makeOrg, makeRoom, makeStaffUser, makeWorld } from './helpers.js'
@@ -22,7 +23,7 @@ async function payment(orgId: Id, hostelId: Id, hostelerId: Id, kind: 'rent' | '
 }
 
 /** World with money: this month 6000 billed / 4000 paid, last month 6000 billed fully paid, a deposit, expenses. */
-async function moneyWorld(plan: 'free' | 'basic' | 'pro' = 'pro') {
+async function moneyWorld(plan: Plan = 'pro') {
   const w = await makeWorld({ plan })
   const [prev, cur] = lastMonths(2)
   const o = w.org._id
@@ -186,7 +187,7 @@ describe('reports', () => {
   })
 
   it('requires the Pro plan and the reports role; isolates organizations', async () => {
-    const basic = await moneyWorld('basic')
+    const basic = await moneyWorld('starter')
     const r = await api().get('/api/reports/pnl').set(basic.auth).expect(402)
     expect(r.body.error.code).toBe('PLAN_UPGRADE_REQUIRED')
 

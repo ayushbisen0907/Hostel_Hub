@@ -94,7 +94,7 @@ describe('portal: request a move-out', () => {
     await api().get('/api/portal/move-out').expect(401)
   })
 
-  it('needs the portal plan', async () => {
+  it('needs the Starter plan', async () => {
     const w = await makeWorld({ plan: 'free' })
     await api().get('/api/portal/move-out').set(w.hostelerAuth).expect(402)
   })
@@ -195,9 +195,10 @@ describe('staff: list, approve, reject', () => {
     await api().post('/api/move-out-requests/bad/approve').set(w.auth).send({}).expect(400)
     expect((await MoveOutRequest.findById(r.body.id).lean())!.status).toBe('pending')
 
-    // free plan has check-in but no portal; staff routes still work there
+    // move-out requests are part of Starter and up
     await Organization.updateOne({ _id: w.org._id }, { plan: 'free' })
-    await api().get('/api/move-out-requests').set(w.auth).expect(200)
+    const locked = await api().get('/api/move-out-requests').set(w.auth).expect(402)
+    expect(locked.body.error.code).toBe('PLAN_UPGRADE_REQUIRED')
   })
 })
 

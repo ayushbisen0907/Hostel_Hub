@@ -15,7 +15,7 @@ import {
   Wifi,
   Zap,
 } from 'lucide-react'
-import { useCommentOnComplaint, useMyComplaints, useRaiseComplaint } from '@/api/portal'
+import { useCommentOnComplaint, useMyComplaints, usePortalFeature, useRaiseComplaint } from '@/api/portal'
 import type { Complaint, ComplaintCategory, ComplaintStatus, Priority } from '@/api/types'
 import { Badge, Button, Card, EmptyState, Field, Input, QueryView, StatusBadge, Tabs, Textarea } from '@/components/ui'
 import { cn, formatDate, formatDateTime } from '@/lib/utils'
@@ -174,7 +174,8 @@ function ComplaintCard({ c }: { c: Complaint }) {
 type Filter = 'active' | 'resolved' | 'all'
 
 export default function Complaints() {
-  const complaintsQ = useMyComplaints()
+  const enabled = usePortalFeature('complaints')
+  const complaintsQ = useMyComplaints(enabled !== false)
   const raise = useRaiseComplaint()
 
   const [showForm, setShowForm] = useState(false)

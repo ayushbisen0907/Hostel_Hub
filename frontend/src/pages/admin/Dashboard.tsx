@@ -26,7 +26,7 @@ import {
   X,
 } from 'lucide-react'
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { useHostels, useOrg, useScope, useScopeStore } from '@/api/common'
+import { useHostels, useScope, useScopeStore } from '@/api/common'
 import { useCan, useStaffSession } from '@/api/session'
 import { usePendingClaimCount } from '@/api/claims'
 import { useMoveOutRequests } from '@/api/moveOut'
@@ -51,6 +51,7 @@ import {
   Textarea,
 } from '@/components/ui'
 import { hasModule } from '@/lib/plans'
+import { useEffectivePlan } from '@/api/plan'
 import { cn, formatDate, formatDateTime, formatMoney, formatMonth, titleCase, today } from '@/lib/utils'
 
 const C_COLLECTED = '#2554eb'
@@ -102,11 +103,9 @@ function bedText(h: Pick<DashboardHosteler, 'roomNumber' | 'bedLabel' | 'status'
   return `Room ${h.roomNumber}${h.bedLabel ? ` · Bed ${h.bedLabel}` : ''}`
 }
 
-/** Plan of the organization (falls back to the session copy while loading). */
+/** The plan that works now (falls back to the session copy while loading). */
 function usePlan(): Plan {
-  const { data } = useOrg()
-  const staff = useStaffSession()
-  return data?.plan ?? staff?.organization.plan ?? 'free'
+  return useEffectivePlan()
 }
 
 /* ------------------------------------------------------------------ */
@@ -452,7 +451,7 @@ function OverviewBody({ data, hostels, plan, onPickHostel }: { data: DashboardDa
   const canDecideLeaves = hasAttendance && can('attendance')
   const hasMess = hasModule(plan, 'mess')
   const pendingPayments = usePendingClaimCount(scope, { enabled: hasModule(plan, 'fees') }).data ?? 0
-  const moveOutsQ = useMoveOutRequests({ status: 'pending' }, { enabled: can('checkin') && hasModule(plan, 'checkin') })
+  const moveOutsQ = useMoveOutRequests({ status: 'pending' }, { enabled: can('checkin') && hasModule(plan, 'rules') })
   const pendingMoveOuts = moveOutsQ.data?.items ?? []
 
   const chart = useMemo(

@@ -120,7 +120,27 @@ try {
   /* ------------------------------------------------------------ */
   /* 2. Setup through the API with the owner's token               */
   /* ------------------------------------------------------------ */
-  await apiCall('PATCH', '/org/plan', { plan: 'pro' }, token)
+  // a new owner starts on Free: pages load, locked modules show the upgrade card, no locked API is called
+  const freeOrg = await apiCall('GET', '/org', null, token)
+  ok('new owners start on Free (7 beds, 1 hostel, no staff logins)', freeOrg.limits.plan === 'free' && freeOrg.limits.beds === 7 && freeOrg.limits.hostels === 1 && freeOrg.limits.staffLogins === 0, JSON.stringify(freeOrg.limits))
+  for (const pth of ['/app/dashboard', '/app/rooms', '/app/hostelers', '/app/check-in', '/app/check-out', '/app/fees', '/app/visitors', '/app/notices', '/app/reports', '/app/settings?tab=billing', '/app/settings?tab=team', '/app/settings?tab=data'])
+    await visit(page, pth, 'owner on Free')
+  await page.goto(WEB + '/app/visitors', { waitUntil: 'networkidle' })
+  ok('Free plan: a locked module shows the upgrade card (UI)', /Upgrade to unlock/.test(await page.evaluate(() => document.body.innerText)))
+  await page.goto(WEB + '/app/settings?tab=billing', { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Upgrade to Business' }).click()
+  ok('Free plan: upgrading explains how to pay (UI)', await page.getByText('My account email is owner@sunrise.test').isVisible())
+  await page.keyboard.press('Escape')
+
+  // HostelHub switches the plan on after payment (backend: npm run plan:set)
+  const setPlan = spawnSync('npx', ['tsx', 'src/scripts/setPlan.ts', 'owner@sunrise.test', 'business', 'yearly'], {
+    cwd: BACKEND,
+    env: { ...process.env, MONGODB_URI: rs.getUri('hostelhub-e2e'), JWT_SECRET: 'e2e-secret-e2e-secret-e2e-secret', NODE_ENV: 'development' },
+    encoding: 'utf8',
+    shell: process.platform === 'win32',
+  })
+  const paidOrg = await apiCall('GET', '/org', null, token)
+  ok('plan:set turns on Business (yearly) with an expiry date', setPlan.status === 0 && paidOrg.limits.plan === 'business' && paidOrg.billingCycle === 'yearly' && !!paidOrg.planExpiresAt, (setPlan.stdout + setPlan.stderr).trim().slice(-300))
   const hostel = await apiCall('POST', '/hostels', { name: 'Sunrise Boys Hostel', type: 'boys', city: 'Indore', address: '12 Vijay Nagar', phone: '9826012345', code: 'SBH', upiId: 'sunrise.hostel@okhdfc', payeeName: 'Sunrise Hostels', charges: { mess: 3000 }, electricityRate: 10, electricityBasis: 'room' }, token)
   await apiCall('POST', '/rooms/bulk', { hostelId: hostel.id, numbers: ['101', '102', '103'], floor: 1, type: 'ac', sharing: 2, rentPerBed: 6500, amenities: ['AC', 'Wi-Fi'] }, token)
   const vacant = (await apiCall('GET', `/beds/vacant?hostelId=${hostel.id}`, null, token)).items

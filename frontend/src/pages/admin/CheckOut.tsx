@@ -45,6 +45,7 @@ import { billPeriod, cn, daysBetween, formatDate, formatMoney, today, uid } from
 import { HostelerAvatar, Pager, bedText, useDebounced } from './_residents'
 import { RecordPaymentModal } from './_fees'
 import { MoveOutBadge, MoveOutRequests } from './_moveOut'
+import { useHasModule } from '@/api/plan'
 
 interface Deduction {
   key: string
@@ -248,11 +249,13 @@ function ChooseResident({ onSelect, notice, showRequests }: { onSelect: (id: ID)
   useEffect(() => {
     if (showRequests) document.getElementById('move-out-requests')?.scrollIntoView({ block: 'start' })
   }, [showRequests])
+  // move-out requests from the hosteler app are part of Starter and up
+  const hasMoveOuts = useHasModule('rules')
   return (
     <>
       <PageHeader title="Check-out" subtitle="Clear all dues, settle the deposit, then free up the bed." />
       {notice && <p className="mb-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800">{notice}</p>}
-      <MoveOutRequests onStart={onSelect} defaultOpen={showRequests} />
+      {hasMoveOuts && <MoveOutRequests onStart={onSelect} defaultOpen={showRequests} />}
       <Card>
         <div className="border-b border-slate-100 p-4">
           <SearchInput value={q} onChange={setQ} placeholder="Search active residents by name, phone or Hosteler ID…" className="sm:max-w-md" />

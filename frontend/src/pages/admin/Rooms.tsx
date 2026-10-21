@@ -35,6 +35,8 @@ import {
 import { cn, formatMoney } from '@/lib/utils'
 import { AMENITIES, Chip, FilterBar, firstName } from './_residents'
 import { ElectricityPanel } from './_electricity'
+import { ModuleNote } from '@/components/PlanGate'
+import { useHasModule } from '@/api/plan'
 
 type View = 'grid' | 'table'
 type RoomType = Room['type']
@@ -413,6 +415,7 @@ function BedChip({ bed, onClick, disabled }: { bed: RoomBed; onClick: () => void
 /* ------------------------------------------------------------------ */
 
 export default function Rooms() {
+  const hasElectricity = useHasModule('electricity')
   const navigate = useNavigate()
   const can = useCan()
   const scope = useScope()
@@ -629,7 +632,11 @@ export default function Rooms() {
       />
 
       {tab === 'electricity' ? (
-        <ElectricityPanel />
+        hasElectricity ? (
+          <ElectricityPanel />
+        ) : (
+          <ModuleNote module="electricity" what="Electricity billing (meter readings split by days stayed)" />
+        )
       ) : (
         <>
           <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">

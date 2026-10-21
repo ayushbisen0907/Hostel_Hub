@@ -36,6 +36,28 @@ cd backend && npm test     # 96 API tests (in-memory MongoDB)
 cd frontend && npm test    # UI smoke tests
 ```
 
+## Plans
+
+| Plan | Beds | Hostels | Staff logins | Adds |
+|---|---|---|---|---|
+| Free | 7 | 1 | – | rooms, check-in/out, hosteler app, rent bills, UPI payments |
+| Starter | 30 | 1 | – | electricity, mess, documents, complaints, notices, rules & move-out |
+| Pro | 100 | 3 | 3 | attendance & leave, visitors & gate log, staff, reports, expenses |
+| Business | unlimited | unlimited | unlimited | data export |
+
+The API enforces these (`402 PLAN_UPGRADE_REQUIRED` / `402 PLAN_LIMIT`); see `backend/src/lib/plans.ts`.
+New owners start on Free. There is no online checkout yet: after an owner pays, turn their plan on with
+
+```bash
+cd backend
+npm run plan:set -- owner@example.com pro yearly     # monthly | yearly | onetime
+npm run plan:set -- owner@example.com free           # back to Free
+```
+
+It uses `MONGODB_URI` from `backend/.env`. Monthly/yearly plans get an end date; when it passes the
+account works like Free (nothing is deleted) until the plan is set again. Set `VITE_SUPPORT_WHATSAPP` /
+`VITE_SUPPORT_EMAIL` on the website so the Upgrade dialog shows how to reach you.
+
 ## Deploy on Render
 
 `render.yaml` sets up both services:

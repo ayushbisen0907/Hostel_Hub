@@ -22,13 +22,13 @@
  *   POST   /mess/opt-outs              { date, meal }  (plan: mess)
  *   DELETE /mess/opt-outs              { date, meal }  (plan: mess)
  *   GET    /mess/feedback, POST /mess/feedback (plan: mess)
- *   GET    /complaints, POST /complaints, POST /complaints/:id/comments
+ *   GET    /complaints, POST /complaints, POST /complaints/:id/comments   (plan: complaints)
  *   GET    /leaves, POST /leaves, DELETE /leaves/:id  (plan: attendance)
- *   GET    /notices
- *   GET    /documents, POST /documents, GET /documents/:id/file
+ *   GET    /notices                    (plan: notices)
+ *   GET    /documents, POST /documents, GET /documents/:id/file   (plan: documents)
  *   GET    /attendance?month=          (plan: attendance)
- *   GET    /gate-logs
- *   GET    /move-out, POST /move-out, DELETE /move-out/:id   (see modules/moveOut/routes.ts)
+ *   GET    /gate-logs                  (plan: visitors)
+ *   GET    /move-out, POST /move-out, DELETE /move-out/:id   (plan: rules; see modules/moveOut/routes.ts)
  *
  * Every route needs the hosteler's own password (PASSWORD_CHANGE_REQUIRED) and
  * a signature on the current hostel rules (CONSENT_REQUIRED, see /portal/auth/rules).
@@ -45,7 +45,7 @@ import { notifyStaff } from '../../lib/notify.js'
 import { notificationHandlers } from '../notifications/routes.js'
 import { PaymentClaim } from '../../models/PaymentClaim.js'
 import { logActivity } from '../../lib/org.js'
-import { hasModule, requirePlan, type Plan } from '../../lib/plans.js'
+import { effectivePlan, hasModule, requirePlan } from '../../lib/plans.js'
 import { removeStoredFile, sendStoredFile, upload } from '../../lib/upload.js'
 import { toApi } from '../../models/_base.js'
 import { Bed } from '../../models/Bed.js'
@@ -77,7 +77,7 @@ export const router = Router()
 router.use(requireHosteler(), requirePlan('portal'))
 
 // move-out requests (notice period) — see modules/moveOut/routes.ts
-router.use('/move-out', portalMoveOutRouter)
+router.use('/move-out', requirePlan('rules'), portalMoveOutRouter)
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -180,18 +180,20 @@ router.get(
     const me = await Hosteler.findOne({ _id: hostelerId, orgId }).lean()
     if (!me) throw unauthorized()
     const t = today()
-    const org = await Organization.findById(orgId).select('plan settings.currencySymbol').lean()
-    const plan = (org?.plan ?? 'free') as Plan
+    const org = await Organization.findById(orgId).select('plan planExpiresAt settings.currencySymbol').lean()
+    const plan = effectivePlan(org)
     const hasMess = hasModule(plan, 'mess')
     const hasAttendance = hasModule(plan, 'attendance')
+    const hasNotices = hasModule(plan, 'notices')
+    const hasComplaints = hasModule(plan, 'complaints')
     const last7 = Array.from({ length: 7 }, (_, i) => addDays(t, i - 6))
 
     const [hostel, bed, invoices, notices, openComplaints, menu, skips, attendance] = await Promise.all([
       Hostel.findById(hostelId).select('name phone').lean(),
       bedLabelOf(me.roomId, me.bedId),
       Invoice.find({ orgId, hostelerId, cancelled: false }).select('total paidAmount dueDate').lean(),
-      Notice.find({ orgId, hostelId: { $in: [hostelId, null] } }).sort({ pinned: -1, createdAt: -1 }).limit(3).lean(),
-      Complaint.find({ orgId, hostelerId, status: { $ne: 'resolved' } }).sort({ createdAt: -1 }).lean(),
+      hasNotices ? Notice.find({ orgId, hostelId: { $in: [hostelId, null] } }).sort({ pinned: -1, createdAt: -1 }).limit(3).lean() : [],
+      hasComplaints ? Complaint.find({ orgId, hostelerId, status: { $ne: 'resolved' } }).sort({ createdAt: -1 }).lean() : [],
       hasMess ? MessMenu.find({ orgId, hostelId, day: weekdayOf(t) }).lean() : [],
       hasMess ? MealOptOut.find({ orgId, hostelerId, date: t }).lean() : [],
       hasAttendance ? Attendance.find({ orgId, hostelerId, date: { $in: last7 } }).lean() : [],
@@ -204,7 +206,15 @@ router.get(
     res.json({
       today: t,
       currencySymbol: org?.settings?.currencySymbol ?? '₹',
-      features: { mess: hasMess, attendance: hasAttendance },
+      features: {
+        mess: hasMess,
+        attendance: hasAttendance,
+        notices: hasNotices,
+        complaints: hasComplaints,
+        documents: hasModule(plan, 'documents'),
+        gateLog: hasModule(plan, 'visitors'),
+        moveOut: hasModule(plan, 'rules'),
+      },
       hosteler: toApi(me, HOSTELER_HIDDEN),
       bed,
       hostel: hostel ? { id: String(hostel._id), name: hostel.name, phone: hostel.phone } : null,
@@ -633,6 +643,7 @@ mess.post(
 
 router.get(
   '/complaints',
+  requirePlan('complaints'),
   ah(async (req, res) => {
     const { hostelerId, orgId } = hostelerOf(req)
     const items = await Complaint.find({ orgId, hostelerId }).sort({ createdAt: -1 }).lean()
@@ -649,6 +660,7 @@ const complaintSchema = z.object({
 
 router.post(
   '/complaints',
+  requirePlan('complaints'),
   ah(async (req, res) => {
     const body = parse(complaintSchema, req.body)
     const me = await loadMe(req)
@@ -666,6 +678,7 @@ router.post(
 
 router.post(
   '/complaints/:id/comments',
+  requirePlan('complaints'),
   ah(async (req, res) => {
     const id = idParam(req)
     const body = parse(z.object({ text: z.string().trim().min(1, 'Write a comment').max(1000) }), req.body)
@@ -749,6 +762,7 @@ router.delete(
 
 router.get(
   '/notices',
+  requirePlan('notices'),
   ah(async (req, res) => {
     const { orgId, hostelId } = hostelerOf(req)
     const items = await Notice.find({ orgId, hostelId: { $in: [hostelId, null] } }).sort({ pinned: -1, createdAt: -1 }).limit(200).lean()
@@ -762,6 +776,7 @@ router.get(
 
 router.get(
   '/documents',
+  requirePlan('documents'),
   ah(async (req, res) => {
     const { hostelerId, orgId } = hostelerOf(req)
     const items = await HDocument.find({ orgId, hostelerId }).sort({ createdAt: -1 }).lean()
@@ -771,6 +786,7 @@ router.get(
 
 router.post(
   '/documents',
+  requirePlan('documents'),
   upload.single('file'),
   ah(async (req, res) => {
     const file = checkUpload(req.file)
@@ -808,6 +824,7 @@ router.post(
 
 router.get(
   '/documents/:id/file',
+  requirePlan('documents'),
   ah(async (req, res) => {
     const { hostelerId, orgId } = hostelerOf(req)
     const doc = await HDocument.findOne({ _id: idParam(req), orgId, hostelerId }).lean()
@@ -836,6 +853,7 @@ router.get(
 
 router.get(
   '/gate-logs',
+  requirePlan('visitors'),
   ah(async (req, res) => {
     const { hostelerId, orgId } = hostelerOf(req)
     const items = await GateLog.find({ orgId, hostelerId }).sort({ time: -1 }).limit(30).lean()

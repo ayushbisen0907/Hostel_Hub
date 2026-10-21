@@ -77,7 +77,7 @@ describe('attendance', () => {
   })
 
   it('plan gating, roles and isolation', async () => {
-    const basic = await makeWorld({ plan: 'basic' })
+    const basic = await makeWorld({ plan: 'starter' }) // attendance is Pro and up
     await api().get('/api/attendance').set(basic.auth).expect(402)
     await api().get('/api/leaves').set(basic.auth).expect(402)
 

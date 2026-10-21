@@ -2,16 +2,22 @@ import { useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ArrowRight,
+  BadgeCheck,
   BarChart3,
   BedDouble,
+  Bell,
   Check,
   ChevronDown,
   ClipboardCheck,
   DoorOpen,
+  FileSignature,
   FileText,
-  LogIn,
+  IndianRupee,
   Menu,
   MessageSquareWarning,
+  Minus,
+  Plus,
+  QrCode,
   ShieldCheck,
   Smartphone,
   Sparkles,
@@ -20,225 +26,227 @@ import {
   UtensilsCrossed,
   Wallet,
   X,
+  Zap,
 } from 'lucide-react'
-import { Badge, Button } from '@/components/ui'
-import { PLANS } from '@/lib/plans'
+import { Button } from '@/components/ui'
+import { LIFETIME_SPOTS, PRICING, TRIAL_DAYS, planTotal, type BillingPeriod } from '@/lib/pricing'
 import { cn, formatMoney } from '@/lib/utils'
 
 const FEATURES: { icon: ReactNode; title: string; text: string }[] = [
-  { icon: <BedDouble className="h-5 w-5" />, title: 'Rooms & beds', text: 'Map every floor, room and bed. See vacant beds at a glance and allot in one click.' },
-  { icon: <Users className="h-5 w-5" />, title: 'Hosteler records', text: 'Complete profiles with guardian details, ID proofs, course or company and notes.' },
-  { icon: <DoorOpen className="h-5 w-5" />, title: 'Check-in / check-out', text: 'Guided admission with deposits, bed reservation and settlement on check-out.' },
-  { icon: <FileText className="h-5 w-5" />, title: 'Documents', text: 'Store Aadhaar, college IDs and police verification. Track expiry and verification.' },
-  { icon: <Wallet className="h-5 w-5" />, title: 'Fees & receipts', text: 'Generate monthly rent in bulk, record payments by UPI or cash and print receipts.' },
-  { icon: <UtensilsCrossed className="h-5 w-5" />, title: 'Mess management', text: 'Weekly menu, meal opt-outs for accurate headcounts and food feedback.' },
-  { icon: <ClipboardCheck className="h-5 w-5" />, title: 'Attendance & leave', text: 'Night roll-call in seconds and a leave approval flow the warden actually uses.' },
-  { icon: <MessageSquareWarning className="h-5 w-5" />, title: 'Complaints', text: 'Residents raise issues, staff get assigned, everyone sees progress till it is resolved.' },
-  { icon: <UserCog className="h-5 w-5" />, title: 'Visitors & gate log', text: 'Log every visitor and every in/out movement at the gate with timestamps.' },
-  { icon: <BarChart3 className="h-5 w-5" />, title: 'Reports', text: 'Profit & loss, collections, dues ageing and occupancy across all your hostels.' },
-  { icon: <Smartphone className="h-5 w-5" />, title: 'Hosteler portal', text: 'Residents check dues, mess menu, notices and apply for leave from their phone.' },
-  { icon: <ShieldCheck className="h-5 w-5" />, title: 'Multi-hostel', text: 'Run boys, girls and co-ed properties from a single account with one switcher.' },
+  { icon: <BedDouble className="h-5 w-5" />, title: 'Rooms & beds', text: 'Every floor, room and bed on one screen. See vacant beds and allot in one tap.' },
+  { icon: <DoorOpen className="h-5 w-5" />, title: 'Check-in / check-out', text: 'Admission with deposit, Hosteler ID and login in a minute. Check-out only after dues are clear.' },
+  { icon: <Wallet className="h-5 w-5" />, title: 'Rent on autopilot', text: 'Bills are made automatically from each hosteler’s check-in date, with the due date sent to them.' },
+  { icon: <QrCode className="h-5 w-5" />, title: 'UPI straight to you', text: 'Hostelers pay to your own UPI ID and send the UTR. You verify. No gateway, no commission.' },
+  { icon: <Zap className="h-5 w-5" />, title: 'Electricity split', text: 'Enter the meter reading; the bill is split by the days each hosteler stayed in the room.' },
+  { icon: <UtensilsCrossed className="h-5 w-5" />, title: 'Mess', text: 'Weekly menu, mess on/off per hosteler and mess fees added to the bill.' },
+  { icon: <FileText className="h-5 w-5" />, title: 'Documents', text: 'Aadhaar, college ID and police verification stored safely with each hosteler.' },
+  { icon: <ClipboardCheck className="h-5 w-5" />, title: 'Attendance & leave', text: 'Night roll-call in seconds and leave requests from the hosteler’s phone.' },
+  { icon: <MessageSquareWarning className="h-5 w-5" />, title: 'Complaints', text: 'Hostelers raise issues, staff fix them, everyone sees the status.' },
+  { icon: <UserCog className="h-5 w-5" />, title: 'Visitors & staff', text: 'Gate log for visitors, and logins for your manager, warden and accountant.' },
+  { icon: <FileSignature className="h-5 w-5" />, title: 'Rules & move-out', text: 'Hostelers sign your rules on first login and give notice before moving out.' },
+  { icon: <BarChart3 className="h-5 w-5" />, title: 'Reports', text: 'Collections, dues, expenses and occupancy for every hostel you run.' },
+]
+
+const BEFORE = [
+  'Rent written in a register, dues remembered by heart',
+  'Chasing every hosteler on WhatsApp for payment',
+  'Splitting the electricity bill on a calculator',
+  'Photocopies of ID proofs lost in a drawer',
+  'No idea which bed is free without walking the floor',
+]
+
+const AFTER = [
+  'Every bill made on time, automatically',
+  'Hostelers pay by UPI and report it in the app',
+  'Electricity split by stay days in one click',
+  'All documents safe with each hosteler',
+  'Live view of every room and bed',
+]
+
+const STEPS = [
+  { title: 'Add your hostel', text: 'Enter your UPI ID, rent rules and electricity rate once.' },
+  { title: 'Create rooms & beds', text: 'Set the rent per room. Add as many floors as you have.' },
+  { title: 'Check in hostelers', text: 'Each one gets a Hosteler ID and login. Bills start on their own.' },
 ]
 
 const FAQS: { q: string; a: string }[] = [
   {
-    q: 'Is HostelHub really free for small hostels?',
-    a: 'Yes. The Free plan covers up to 20 beds with rooms, hosteler records, check-in/out, documents and rent tracking. No card needed.',
+    q: `What do I get in the ${TRIAL_DAYS}-day free trial?`,
+    a: `Everything. All features are open for ${TRIAL_DAYS} days and no card is needed to start. Pick a plan when you are ready.`,
   },
   {
-    q: 'How is pricing calculated on paid plans?',
-    a: 'You pay per bed per month, based on the total beds configured across your hostels. Add or remove rooms and your bill adjusts automatically.',
+    q: 'What happens when the trial or my plan ends?',
+    a: 'Your data stays safe. You can still see everything, but you cannot add new entries until you choose a plan.',
   },
   {
-    q: 'Can my residents log in?',
-    a: 'Yes. At check-in every hosteler gets a unique Hosteler ID and a temporary password (sent on WhatsApp). On first login they set their own password. They can view dues, the mess menu, notices and raise complaints or leave requests.',
+    q: 'How is the price counted?',
+    a: 'Only by the number of beds you create. ₹30 per bed per month — the same price for a 10-bed PG or a 300-bed hostel. Every plan has every feature.',
   },
   {
-    q: 'Where is my data stored?',
-    a: 'Your data is stored securely in the cloud (MongoDB), separated per account, with hashed passwords. Owners can export a full backup any time from Settings → Data.',
+    q: 'Do you take a cut from the rent I collect?',
+    a: 'No. Hostelers pay directly to your own UPI ID. HostelHub only records the payment after you verify it.',
+  },
+  {
+    q: 'How do my hostelers log in?',
+    a: 'At check-in each hosteler gets a Hosteler ID and a temporary password. On first login they set their own password and see only their own bills, mess and notices.',
+  },
+  {
+    q: 'What is the Lifetime plan?',
+    a: `Pay once per bed and use HostelHub for as long as it runs, with no monthly bill. It is only open to the first ${LIFETIME_SPOTS} hostels.`,
   },
   {
     q: 'I run more than one hostel. Does that work?',
-    a: 'Absolutely. Add as many hostels as you like and switch between them from the top bar, or view everything combined.',
+    a: 'Yes. Add all your hostels to one account and switch between them from the top bar.',
   },
+]
+
+const NAV = [
+  { href: '#features', label: 'Features' },
+  { href: '#how', label: 'How it works' },
+  { href: '#pricing', label: 'Pricing' },
+  { href: '#faq', label: 'FAQ' },
 ]
 
 export default function Landing() {
   const [menuOpen, setMenuOpen] = useState(false)
-  const [openFaq, setOpenFaq] = useState<number | null>(0)
-
-  const navLinks = [
-    { href: '#features', label: 'Features' },
-    { href: '#pricing', label: 'Pricing' },
-    { href: '#faq', label: 'FAQ' },
-  ]
 
   return (
-    <div className="min-h-screen bg-white">
+    <div className="min-h-screen overflow-x-hidden bg-white text-slate-900">
       {/* Header */}
-      <header className="sticky top-0 z-30 border-b border-slate-200/70 bg-white/90 backdrop-blur">
+      <header className="sticky top-0 z-30 border-b border-slate-200/70 bg-white/85 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-6 px-4 sm:px-6">
-          <Link to="/" className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-600 text-white">
-              <BedDouble className="h-5 w-5" />
-            </div>
-            <span className="text-lg font-bold text-slate-900">HostelHub</span>
-          </Link>
+          <Logo />
           <nav className="hidden items-center gap-6 md:flex">
-            {navLinks.map((l) => (
+            {NAV.map((l) => (
               <a key={l.href} href={l.href} className="text-sm font-medium text-slate-600 hover:text-slate-900">
                 {l.label}
               </a>
             ))}
-            <Link to="/portal/login" className="text-sm font-medium text-slate-600 hover:text-slate-900">
+          </nav>
+          <div className="ml-auto hidden items-center gap-2 md:flex">
+            <Link to="/portal/login" className="px-3 text-sm font-medium text-slate-600 hover:text-slate-900">
               Hosteler login
             </Link>
-          </nav>
-          <div className="flex-1" />
-          <div className="hidden items-center gap-2 md:flex">
             <Link to="/login">
-              <Button variant="ghost">Log in</Button>
+              <Button variant="outline" size="sm">
+                Owner login
+              </Button>
             </Link>
             <Link to="/signup">
-              <Button>Start free</Button>
+              <Button size="sm">Start free trial</Button>
             </Link>
           </div>
-          <button className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 md:hidden" onClick={() => setMenuOpen((v) => !v)} aria-label="Menu">
-            {menuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          <button className="ml-auto rounded-lg p-2 text-slate-600 md:hidden" onClick={() => setMenuOpen((v) => !v)} aria-label="Menu" aria-expanded={menuOpen}>
+            {menuOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
           </button>
         </div>
         {menuOpen && (
-          <div className="border-t border-slate-100 bg-white px-4 py-3 md:hidden">
-            <div className="flex flex-col gap-1">
-              {navLinks.map((l) => (
-                <a key={l.href} href={l.href} onClick={() => setMenuOpen(false)} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
-                  {l.label}
-                </a>
-              ))}
-              <Link to="/portal/login" className="rounded-lg px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
-                Hosteler login
+          <div className="border-t border-slate-200 bg-white px-4 pb-4 md:hidden">
+            {NAV.map((l) => (
+              <a key={l.href} href={l.href} onClick={() => setMenuOpen(false)} className="block py-3 text-sm font-medium text-slate-700">
+                {l.label}
+              </a>
+            ))}
+            <Link to="/portal/login" className="block py-3 text-sm font-medium text-slate-700">
+              Hosteler login
+            </Link>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <Link to="/login">
+                <Button variant="outline" className="w-full">
+                  Owner login
+                </Button>
               </Link>
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                <Link to="/login">
-                  <Button variant="outline" className="w-full">Log in</Button>
-                </Link>
-                <Link to="/signup">
-                  <Button className="w-full">Start free</Button>
-                </Link>
-              </div>
+              <Link to="/signup">
+                <Button className="w-full">Free trial</Button>
+              </Link>
             </div>
           </div>
         )}
       </header>
 
       {/* Hero */}
-      <section className="relative overflow-hidden">
-        <div className="absolute inset-0 -z-10 bg-gradient-to-b from-brand-50 via-white to-white" />
-        <div className="absolute -right-40 -top-40 -z-10 h-96 w-96 rounded-full bg-brand-200/40 blur-3xl" />
-        <div className="mx-auto grid max-w-6xl items-center gap-12 px-4 pb-16 pt-14 sm:px-6 lg:grid-cols-2 lg:pb-24 lg:pt-20">
+      <section className="relative isolate">
+        <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(60%_50%_at_70%_0%,theme(colors.brand.100),transparent)]" />
+        <div className="mx-auto grid max-w-6xl items-center gap-14 px-4 pb-20 pt-12 sm:px-6 lg:grid-cols-2 lg:pb-24 lg:pt-20">
           <div>
-            <Badge tone="blue" className="mb-5">
-              <Sparkles className="h-3 w-3" /> Built for Indian hostels & PGs
-            </Badge>
-            <h1 className="text-4xl font-extrabold tracking-tight text-slate-900 sm:text-5xl lg:text-6xl">
-              Run your hostel <span className="text-brand-600">from one place</span>
+            <span className="inline-flex items-center gap-2 rounded-full border border-brand-200 bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-700">
+              <Sparkles className="h-3.5 w-3.5" /> Made for hostels & PGs in India
+            </span>
+            <h1 className="mt-5 text-4xl font-extrabold leading-tight tracking-tight sm:text-5xl">
+              Run your hostel from your phone.
+              <span className="block text-brand-600">Not from a register.</span>
             </h1>
-            <p className="mt-5 max-w-xl text-lg text-slate-600">
-              Rooms, residents, rent, mess, attendance and complaints — all in one simple dashboard. Stop juggling registers,
-              spreadsheets and WhatsApp groups.
+            <p className="mt-5 max-w-xl text-lg leading-relaxed text-slate-600">
+              Rooms, check-ins, rent, UPI payments, electricity, mess and documents — in one simple app. Your hostelers get their own login too.
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Link to="/signup">
                 <Button size="lg" className="w-full sm:w-auto" icon={<ArrowRight className="h-4 w-4" />}>
-                  Start free
+                  Start {TRIAL_DAYS}-day free trial
                 </Button>
               </Link>
-              <Link to="/login">
+              <a href="#pricing">
                 <Button size="lg" variant="outline" className="w-full sm:w-auto">
-                  Owner login
+                  See pricing
                 </Button>
-              </Link>
+              </a>
             </div>
-            <p className="mt-4 text-sm text-slate-500">Free up to 20 beds · No credit card · Set up in 10 minutes</p>
+            <ul className="mt-6 flex flex-wrap gap-x-5 gap-y-2 text-sm text-slate-600">
+              {['No card needed', '₹1 per bed a day', 'All features included'].map((t) => (
+                <li key={t} className="flex items-center gap-1.5">
+                  <Check className="h-4 w-4 text-emerald-600" /> {t}
+                </li>
+              ))}
+            </ul>
           </div>
-
-          {/* Product preview */}
-          <div className="relative">
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl shadow-brand-900/10 sm:p-5">
-              <div className="mb-4 flex items-center gap-1.5">
-                <span className="h-2.5 w-2.5 rounded-full bg-red-300" />
-                <span className="h-2.5 w-2.5 rounded-full bg-amber-300" />
-                <span className="h-2.5 w-2.5 rounded-full bg-emerald-300" />
-                <span className="ml-3 truncate text-xs text-slate-400">app.hostelhub.in/dashboard</span>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                {[
-                  { l: 'Occupancy', v: '92%', s: '138 / 150 beds', c: 'text-brand-600' },
-                  { l: 'Collected', v: formatMoney(412500), s: 'this month', c: 'text-emerald-600' },
-                  { l: 'Dues', v: formatMoney(38200), s: '14 hostelers', c: 'text-amber-600' },
-                  { l: 'Complaints', v: '3', s: 'open', c: 'text-red-600' },
-                ].map((s) => (
-                  <div key={s.l} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-                    <p className="text-xs text-slate-500">{s.l}</p>
-                    <p className={cn('mt-1 text-xl font-bold', s.c)}>{s.v}</p>
-                    <p className="text-[11px] text-slate-400">{s.s}</p>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-3 rounded-xl border border-slate-100 p-3">
-                <p className="mb-3 text-xs font-medium text-slate-500">Collection vs expenses</p>
-                <div className="flex h-24 items-end gap-2">
-                  {[55, 62, 58, 70, 74, 88].map((h, i) => (
-                    <div key={i} className="flex h-full flex-1 items-end gap-0.5">
-                      <div className="flex-1 rounded-t bg-brand-500" style={{ height: `${h}%` }} />
-                      <div className="flex-1 rounded-t bg-slate-300" style={{ height: `${h * 0.55}%` }} />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <div className="absolute -bottom-5 -left-3 hidden rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-lg sm:block">
-              <p className="flex items-center gap-2 text-sm font-medium text-slate-800">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
-                  <Check className="h-3.5 w-3.5" />
-                </span>
-                {formatMoney(8500)} received from Aarav via UPI
-              </p>
-            </div>
-          </div>
+          <HeroMock />
         </div>
       </section>
 
-      {/* Stats strip */}
-      <section className="border-y border-slate-100 bg-slate-50">
-        <div className="mx-auto grid max-w-6xl grid-cols-2 gap-6 px-4 py-10 text-center sm:px-6 md:grid-cols-4">
-          {[
-            ['11+', 'modules in one app'],
-            ['2 min', 'to check in a resident'],
-            ['0', 'registers to maintain'],
-            ['₹0', 'to start, up to 20 beds'],
-          ].map(([v, l]) => (
-            <div key={l}>
-              <p className="text-3xl font-extrabold text-slate-900">{v}</p>
-              <p className="mt-1 text-sm text-slate-500">{l}</p>
+      {/* Before / after */}
+      <section className="bg-slate-50">
+        <div className="mx-auto max-w-6xl px-4 py-20 sm:px-6">
+          <SectionHead eyebrow="Why HostelHub" title="Register, Excel aur WhatsApp ka jhanjhat khatam" />
+          <div className="mt-12 grid gap-6 md:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200 bg-white p-6">
+              <p className="text-sm font-semibold uppercase tracking-wide text-slate-400">Today</p>
+              <ul className="mt-4 space-y-3">
+                {BEFORE.map((t) => (
+                  <li key={t} className="flex gap-3 text-slate-600">
+                    <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-500">
+                      <X className="h-3.5 w-3.5" />
+                    </span>
+                    {t}
+                  </li>
+                ))}
+              </ul>
             </div>
-          ))}
+            <div className="rounded-2xl border border-brand-200 bg-white p-6 shadow-lg shadow-brand-100/60">
+              <p className="text-sm font-semibold uppercase tracking-wide text-brand-600">With HostelHub</p>
+              <ul className="mt-4 space-y-3">
+                {AFTER.map((t) => (
+                  <li key={t} className="flex gap-3 text-slate-800">
+                    <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
+                      <Check className="h-3.5 w-3.5" />
+                    </span>
+                    {t}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
         </div>
       </section>
 
       {/* Features */}
       <section id="features" className="scroll-mt-16">
         <div className="mx-auto max-w-6xl px-4 py-20 sm:px-6">
-          <div className="mx-auto max-w-2xl text-center">
-            <p className="text-sm font-semibold uppercase tracking-wider text-brand-600">Everything you need</p>
-            <h2 className="mt-2 text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">One app for the whole hostel</h2>
-            <p className="mt-4 text-slate-600">From the day a resident books a bed to the day they collect their deposit back.</p>
-          </div>
-          <div className="mt-14 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          <SectionHead eyebrow="Features" title="Everything your hostel needs" text="One app for the owner, the staff and every hosteler." />
+          <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {FEATURES.map((f) => (
-              <div key={f.title} className="rounded-2xl border border-slate-200 bg-white p-6 transition hover:border-brand-200 hover:shadow-md">
-                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-50 text-brand-600">{f.icon}</div>
-                <h3 className="mt-4 font-semibold text-slate-900">{f.title}</h3>
+              <div key={f.title} className="rounded-2xl border border-slate-200 p-5 transition hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-md">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-50 text-brand-600">{f.icon}</div>
+                <h3 className="mt-4 font-semibold">{f.title}</h3>
                 <p className="mt-1.5 text-sm leading-relaxed text-slate-600">{f.text}</p>
               </div>
             ))}
@@ -246,141 +254,88 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* Portal callout */}
-      <section className="bg-slate-900">
-        <div className="mx-auto grid max-w-6xl items-center gap-10 px-4 py-16 sm:px-6 lg:grid-cols-2">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-wider text-brand-300">Hosteler portal</p>
-            <h2 className="mt-2 text-3xl font-bold text-white">Your residents get their own app</h2>
-            <p className="mt-4 text-slate-300">
-              Fewer calls to the warden. Residents log in with their own Hosteler ID and password to see their dues and receipts,
-              this week's mess menu, notices, and to raise complaints or apply for leave.
-            </p>
-            <ul className="mt-6 space-y-2 text-sm text-slate-200">
-              {['Dues and receipt history', 'Skip a meal to save food', 'Track complaint status', 'Leave requests with approval'].map((t) => (
-                <li key={t} className="flex items-center gap-2">
-                  <Check className="h-4 w-4 text-emerald-400" /> {t}
-                </li>
-              ))}
-            </ul>
-            <Link to="/portal/login" className="mt-8 inline-block">
-              <Button variant="secondary" icon={<LogIn className="h-4 w-4" />}>
-                Hosteler login
-              </Button>
-            </Link>
-          </div>
-          <div className="mx-auto w-64 rounded-[2rem] border-8 border-slate-700 bg-white p-4 shadow-2xl">
-            <p className="text-xs text-slate-500">Hi Aarav</p>
-            <p className="text-lg font-bold text-slate-900">Room 101 · Bed A</p>
-            <div className="mt-3 rounded-xl bg-brand-600 p-3 text-white">
-              <p className="text-xs opacity-80">Due this month</p>
-              <p className="text-2xl font-bold">{formatMoney(8500)}</p>
-              <p className="text-[11px] opacity-80">Due on 05 Nov</p>
-            </div>
-            <div className="mt-3 space-y-2">
-              {['Tonight: Paneer, Roti, Rice', 'Notice: Water tank cleaning', 'Leave approved · 12–14 Nov'].map((t) => (
-                <div key={t} className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700">{t}</div>
-              ))}
-            </div>
-          </div>
+      {/* Deep dives */}
+      <section className="bg-slate-50">
+        <div className="mx-auto max-w-6xl space-y-20 px-4 py-20 sm:px-6">
+          <Spotlight
+            eyebrow="Payments"
+            title="Rent comes straight to your UPI"
+            points={[
+              'Your UPI ID and QR show on every hosteler’s bill',
+              'They pay, enter the UTR and upload a screenshot',
+              'You verify in one tap — full or part payment',
+              'Whatever is left moves to next month’s bill',
+            ]}
+            visual={<PaymentMock />}
+          />
+          <Spotlight
+            reverse
+            eyebrow="Electricity"
+            title="Fair electricity bills, no calculator"
+            points={[
+              'Set your rate per unit once',
+              'Enter the meter reading with its from–to dates',
+              'The bill is split by the days each hosteler stayed',
+              'It is added to their next bill automatically',
+            ]}
+            visual={<ElectricityMock />}
+          />
+          <Spotlight
+            eyebrow="Hosteler app"
+            title="Your hostelers get their own login"
+            points={[
+              'Unique Hosteler ID at check-in, like SBH-0001',
+              'See bills, pay by UPI and download receipts',
+              'Mess menu, notices, complaints and leave',
+              'Request move-out with your notice period',
+            ]}
+            visual={<PhoneMock />}
+          />
         </div>
       </section>
 
-      {/* Pricing */}
-      <section id="pricing" className="scroll-mt-16">
+      {/* How it works */}
+      <section id="how" className="scroll-mt-16">
         <div className="mx-auto max-w-6xl px-4 py-20 sm:px-6">
-          <div className="mx-auto max-w-2xl text-center">
-            <p className="text-sm font-semibold uppercase tracking-wider text-brand-600">Pricing</p>
-            <h2 className="mt-2 text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">Simple, per-bed pricing</h2>
-            <p className="mt-4 text-slate-600">Free up to 20 beds. Pay only for the beds you run, billed monthly.</p>
-          </div>
-          <div className="mt-14 grid gap-6 lg:grid-cols-3">
-            {PLANS.map((p) => {
-              const featured = p.id === 'basic'
-              return (
-                <div
-                  key={p.id}
-                  className={cn(
-                    'relative flex flex-col rounded-2xl border bg-white p-7',
-                    featured ? 'border-brand-600 shadow-xl shadow-brand-900/10 ring-1 ring-brand-600' : 'border-slate-200',
-                  )}
-                >
-                  {featured && (
-                    <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-brand-600 px-3 py-1 text-xs font-semibold text-white">
-                      Most popular
-                    </span>
-                  )}
-                  <h3 className="text-lg font-semibold text-slate-900">{p.name}</h3>
-                  <p className="mt-1 text-sm text-slate-500">{p.tagline}</p>
-                  <div className="mt-5 flex items-baseline gap-1">
-                    <span className="text-4xl font-extrabold text-slate-900">{formatMoney(p.pricePerBed)}</span>
-                    <span className="text-sm text-slate-500">/ bed / month</span>
-                  </div>
-                  <p className="mt-1 text-xs text-slate-500">
-                    {p.maxBeds ? `Up to ${p.maxBeds} beds` : 'Unlimited beds'}
-                    {p.pricePerBed > 0 && ` · e.g. 50 beds = ${formatMoney(p.pricePerBed * 50)}/mo`}
-                  </p>
-                  <ul className="mt-6 flex-1 space-y-2.5">
-                    {p.features.map((f) => (
-                      <li key={f} className="flex items-start gap-2 text-sm text-slate-700">
-                        <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" /> {f}
-                      </li>
-                    ))}
-                  </ul>
-                  <Link to="/signup" className="mt-7">
-                    <Button variant={featured ? 'primary' : 'outline'} className="w-full">
-                      {p.pricePerBed === 0 ? 'Start free' : `Choose ${p.name}`}
-                    </Button>
-                  </Link>
-                </div>
-              )
-            })}
-          </div>
+          <SectionHead eyebrow="How it works" title="Ready in 10 minutes" />
+          <ol className="mt-12 grid gap-6 md:grid-cols-3">
+            {STEPS.map((s, i) => (
+              <li key={s.title} className="rounded-2xl border border-slate-200 p-6">
+                <span className="flex h-10 w-10 items-center justify-center rounded-full bg-brand-600 text-lg font-bold text-white">{i + 1}</span>
+                <h3 className="mt-4 text-lg font-semibold">{s.title}</h3>
+                <p className="mt-1.5 text-slate-600">{s.text}</p>
+              </li>
+            ))}
+          </ol>
         </div>
       </section>
+
+      <Pricing />
 
       {/* FAQ */}
-      <section id="faq" className="scroll-mt-16 bg-slate-50">
+      <section id="faq" className="scroll-mt-16">
         <div className="mx-auto max-w-3xl px-4 py-20 sm:px-6">
-          <h2 className="text-center text-3xl font-bold tracking-tight text-slate-900">Frequently asked questions</h2>
-          <div className="mt-10 divide-y divide-slate-200 rounded-2xl border border-slate-200 bg-white">
-            {FAQS.map((f, i) => (
-              <div key={f.q}>
-                <button
-                  className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left"
-                  onClick={() => setOpenFaq(openFaq === i ? null : i)}
-                  aria-expanded={openFaq === i}
-                >
-                  <span className="font-medium text-slate-900">{f.q}</span>
-                  <ChevronDown className={cn('h-5 w-5 shrink-0 text-slate-400 transition', openFaq === i && 'rotate-180')} />
-                </button>
-                {openFaq === i && <p className="px-5 pb-5 text-sm leading-relaxed text-slate-600">{f.a}</p>}
-              </div>
-            ))}
-          </div>
+          <SectionHead eyebrow="FAQ" title="Questions owners ask" />
+          <Faq />
         </div>
       </section>
 
       {/* CTA */}
-      <section>
-        <div className="mx-auto max-w-6xl px-4 py-20 sm:px-6">
-          <div className="rounded-3xl bg-gradient-to-br from-brand-600 to-brand-800 px-6 py-14 text-center sm:px-12">
-            <h2 className="text-3xl font-bold text-white sm:text-4xl">Ready to ditch the register?</h2>
-            <p className="mx-auto mt-4 max-w-xl text-brand-100">
-              Create your workspace in a minute and add your first hostel today.
-            </p>
-            <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
-              <Link to="/signup">
-                <Button size="lg" variant="secondary" className="w-full sm:w-auto">
-                  Create free account
-                </Button>
-              </Link>
-              <Link to="/portal/login">
-                <Button size="lg" variant="outline" className="w-full border-white/40 bg-transparent text-white hover:bg-white/10 sm:w-auto">
-                  Hosteler login
-                </Button>
-              </Link>
-            </div>
+      <section className="px-4 pb-20 sm:px-6">
+        <div className="mx-auto max-w-6xl rounded-3xl bg-gradient-to-br from-brand-600 to-brand-900 px-6 py-14 text-center sm:px-12">
+          <h2 className="text-3xl font-bold text-white sm:text-4xl">Close the register. Open HostelHub.</h2>
+          <p className="mx-auto mt-4 max-w-xl text-brand-100">Set up your hostel today and try everything free for {TRIAL_DAYS} days.</p>
+          <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
+            <Link to="/signup">
+              <Button size="lg" variant="secondary" className="w-full sm:w-auto">
+                Start free trial
+              </Button>
+            </Link>
+            <Link to="/portal/login">
+              <Button size="lg" variant="outline" className="w-full border-white/40 bg-transparent text-white hover:bg-white/10 sm:w-auto">
+                Hosteler login
+              </Button>
+            </Link>
           </div>
         </div>
       </section>
@@ -389,35 +344,429 @@ export default function Landing() {
       <footer className="border-t border-slate-200">
         <div className="mx-auto grid max-w-6xl gap-8 px-4 py-12 sm:px-6 md:grid-cols-4">
           <div className="md:col-span-2">
-            <div className="flex items-center gap-2.5">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-white">
-                <BedDouble className="h-4 w-4" />
-              </div>
-              <span className="font-bold text-slate-900">HostelHub</span>
-            </div>
-            <p className="mt-3 max-w-sm text-sm text-slate-500">Hostel & PG management software for owners, wardens and residents.</p>
+            <Logo />
+            <p className="mt-3 max-w-sm text-sm text-slate-500">Hostel & PG management for owners, staff and hostelers.</p>
           </div>
           <div>
-            <p className="text-sm font-semibold text-slate-900">Product</p>
+            <p className="text-sm font-semibold">Product</p>
             <ul className="mt-3 space-y-2 text-sm text-slate-500">
-              <li><a href="#features" className="hover:text-slate-900">Features</a></li>
-              <li><a href="#pricing" className="hover:text-slate-900">Pricing</a></li>
-              <li><a href="#faq" className="hover:text-slate-900">FAQ</a></li>
+              {NAV.map((l) => (
+                <li key={l.href}>
+                  <a href={l.href} className="hover:text-slate-900">
+                    {l.label}
+                  </a>
+                </li>
+              ))}
             </ul>
           </div>
           <div>
-            <p className="text-sm font-semibold text-slate-900">Account</p>
+            <p className="text-sm font-semibold">Account</p>
             <ul className="mt-3 space-y-2 text-sm text-slate-500">
-              <li><Link to="/login" className="hover:text-slate-900">Owner login</Link></li>
-              <li><Link to="/signup" className="hover:text-slate-900">Sign up</Link></li>
-              <li><Link to="/portal/login" className="hover:text-slate-900">Hosteler login</Link></li>
+              <li>
+                <Link to="/signup" className="hover:text-slate-900">
+                  Start free trial
+                </Link>
+              </li>
+              <li>
+                <Link to="/login" className="hover:text-slate-900">
+                  Owner login
+                </Link>
+              </li>
+              <li>
+                <Link to="/portal/login" className="hover:text-slate-900">
+                  Hosteler login
+                </Link>
+              </li>
             </ul>
           </div>
         </div>
-        <div className="border-t border-slate-100 py-5 text-center text-xs text-slate-400">
-          © {new Date().getFullYear()} HostelHub. All rights reserved.
-        </div>
+        <div className="border-t border-slate-100 py-5 text-center text-xs text-slate-400">© {new Date().getFullYear()} HostelHub. All rights reserved.</div>
       </footer>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+
+function Logo() {
+  return (
+    <Link to="/" className="flex items-center gap-2.5">
+      <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-600 text-white">
+        <BedDouble className="h-5 w-5" />
+      </span>
+      <span className="text-lg font-bold">HostelHub</span>
+    </Link>
+  )
+}
+
+function SectionHead({ eyebrow, title, text }: { eyebrow: string; title: string; text?: string }) {
+  return (
+    <div className="mx-auto max-w-2xl text-center">
+      <p className="text-sm font-semibold uppercase tracking-wide text-brand-600">{eyebrow}</p>
+      <h2 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">{title}</h2>
+      {text && <p className="mt-4 text-lg text-slate-600">{text}</p>}
+    </div>
+  )
+}
+
+function Spotlight({ eyebrow, title, points, visual, reverse }: { eyebrow: string; title: string; points: string[]; visual: ReactNode; reverse?: boolean }) {
+  return (
+    <div className="grid items-center gap-10 lg:grid-cols-2">
+      <div className={cn(reverse && 'lg:order-2')}>
+        <p className="text-sm font-semibold uppercase tracking-wide text-brand-600">{eyebrow}</p>
+        <h3 className="mt-2 text-2xl font-bold tracking-tight sm:text-3xl">{title}</h3>
+        <ul className="mt-6 space-y-3">
+          {points.map((p) => (
+            <li key={p} className="flex gap-3 text-slate-700">
+              <BadgeCheck className="mt-0.5 h-5 w-5 shrink-0 text-brand-600" />
+              {p}
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className={cn('min-w-0', reverse && 'lg:order-1')}>{visual}</div>
+    </div>
+  )
+}
+
+/* ---------------- Pricing ---------------- */
+
+const MIN_BEDS = 1
+const MAX_BEDS = 1000
+const SLIDER_MAX = 300
+
+function Pricing() {
+  const [beds, setBeds] = useState(50)
+  const [selected, setSelected] = useState<BillingPeriod>('yearly')
+  const set = (n: number) => setBeds(Math.min(MAX_BEDS, Math.max(MIN_BEDS, Math.round(n) || MIN_BEDS)))
+  const monthly = PRICING.find((p) => p.id === 'monthly')!
+
+  return (
+    <section id="pricing" className="scroll-mt-16 bg-slate-50">
+      <div className="mx-auto max-w-6xl px-4 py-20 sm:px-6">
+        <SectionHead eyebrow="Pricing" title="₹30 per bed. That's it." text="One simple price. Every feature. Pay only for the beds you have." />
+
+        {/* Bed counter */}
+        <div className="mx-auto mt-10 max-w-xl rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
+          <div className="flex items-center justify-between gap-4">
+            <label htmlFor="beds" className="font-semibold">
+              How many beds?
+            </label>
+            <div className="flex items-center gap-1">
+              <button className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" onClick={() => set(beds - 1)} aria-label="Fewer beds">
+                <Minus className="h-4 w-4" />
+              </button>
+              <input
+                id="beds"
+                type="number"
+                inputMode="numeric"
+                min={MIN_BEDS}
+                max={MAX_BEDS}
+                value={beds}
+                onChange={(e) => set(Number(e.target.value))}
+                className="h-9 w-20 rounded-lg border border-slate-200 text-center font-semibold focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100"
+              />
+              <button className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50" onClick={() => set(beds + 1)} aria-label="More beds">
+                <Plus className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+          <input
+            type="range"
+            min={MIN_BEDS}
+            max={SLIDER_MAX}
+            value={Math.min(beds, SLIDER_MAX)}
+            onChange={(e) => set(Number(e.target.value))}
+            className="mt-5 w-full accent-brand-600"
+            aria-label="Beds"
+          />
+          <div className="mt-1 flex justify-between text-xs text-slate-400">
+            <span>1</span>
+            <span>100</span>
+            <span>200</span>
+            <span>300+</span>
+          </div>
+        </div>
+
+        {/* Plans */}
+        <div className="mt-10 grid gap-6 md:grid-cols-3">
+          {PRICING.map((p) => {
+            const active = selected === p.id
+            const total = planTotal(p, beds)
+            return (
+              <div
+                key={p.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => setSelected(p.id)}
+                onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && setSelected(p.id)}
+                className={cn(
+                  'relative flex cursor-pointer flex-col rounded-2xl border bg-white p-6 transition',
+                  active ? 'border-brand-500 shadow-xl shadow-brand-100 ring-2 ring-brand-500' : 'border-slate-200 hover:border-brand-200',
+                )}
+              >
+                {p.id === 'yearly' && <span className="absolute -top-3 left-6 rounded-full bg-brand-600 px-3 py-1 text-xs font-semibold text-white">Most popular</span>}
+                {p.id === 'lifetime' && <span className="absolute -top-3 left-6 rounded-full bg-amber-500 px-3 py-1 text-xs font-semibold text-white">Limited</span>}
+                <p className="text-lg font-semibold">{p.name}</p>
+                <p className="mt-1 text-sm text-slate-500">{p.note}</p>
+                <p className="mt-5 flex flex-wrap items-baseline gap-x-1.5">
+                  <span className="text-4xl font-extrabold tracking-tight">{formatMoney(p.perBed)}</span>
+                  <span className="text-sm text-slate-500">{p.unit}</span>
+                </p>
+                <div className="mt-5 rounded-xl bg-slate-50 px-4 py-3">
+                  <p className="text-xs text-slate-500">
+                    For {beds} {beds === 1 ? 'bed' : 'beds'}
+                  </p>
+                  <p className="text-xl font-bold">
+                    {formatMoney(total)} <span className="text-sm font-medium text-slate-500">{p.totalSuffix}</span>
+                  </p>
+                  {p.id === 'yearly' && <p className="mt-0.5 text-xs font-medium text-emerald-600">You save {formatMoney(planTotal(monthly, beds) * 12 - total)} a year</p>}
+                </div>
+                <Link to="/signup" className="mt-6" onClick={(e) => e.stopPropagation()}>
+                  <Button variant={active ? 'primary' : 'outline'} className="w-full">
+                    Start free trial
+                  </Button>
+                </Link>
+              </div>
+            )
+          })}
+        </div>
+
+        <div className="mx-auto mt-10 max-w-3xl rounded-2xl border border-slate-200 bg-white p-6">
+          <p className="text-center font-semibold">Every plan includes</p>
+          <ul className="mt-4 grid gap-x-6 gap-y-2.5 text-sm text-slate-700 sm:grid-cols-2">
+            {[
+              'Unlimited hostels and rooms',
+              'Hosteler app with own login',
+              'UPI payments with verification',
+              'Auto rent bills from check-in date',
+              'Electricity split by stay days',
+              'Mess, attendance, complaints',
+              'Staff logins with roles',
+              'Reports and receipts',
+            ].map((t) => (
+              <li key={t} className="flex gap-2">
+                <Check className="h-4 w-4 shrink-0 text-emerald-600" /> {t}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-5 text-center text-sm text-slate-500">Start with a {TRIAL_DAYS}-day free trial — no card needed. Your data stays safe even if you stop.</p>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function Faq() {
+  const [open, setOpen] = useState<number | null>(0)
+  return (
+    <div className="mt-10 divide-y divide-slate-200 rounded-2xl border border-slate-200 bg-white">
+      {FAQS.map((f, i) => (
+        <div key={f.q}>
+          <button className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left" onClick={() => setOpen(open === i ? null : i)} aria-expanded={open === i}>
+            <span className="font-medium">{f.q}</span>
+            <ChevronDown className={cn('h-5 w-5 shrink-0 text-slate-400 transition', open === i && 'rotate-180')} />
+          </button>
+          {open === i && <p className="px-5 pb-5 text-sm leading-relaxed text-slate-600">{f.a}</p>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/* ---------------- Illustrations (pure CSS, sample values) ---------------- */
+
+// o = occupied, v = vacant, r = reserved
+const BED_STATES = 'ooooovoooooooroooovoooooooooooooooooovooooooroooovo'.slice(0, 50).split('')
+
+function HeroMock() {
+  return (
+    <div className="relative mx-auto w-full max-w-lg pb-10 sm:pb-0">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl shadow-brand-200/50 sm:p-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs text-slate-500">Shree Balaji Hostel</p>
+            <p className="font-semibold">Dashboard</p>
+          </div>
+          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-500">
+            <Bell className="h-4 w-4" />
+          </span>
+        </div>
+        <div className="mt-4 grid grid-cols-3 gap-2">
+          {[
+            { k: 'Beds filled', v: '44/50', c: 'text-brand-600' },
+            { k: 'Collected', v: '₹2.1L', c: 'text-emerald-600' },
+            { k: 'Due', v: '₹18,400', c: 'text-amber-600' },
+          ].map((s) => (
+            <div key={s.k} className="rounded-xl bg-slate-50 p-2.5 sm:p-3">
+              <p className="text-[11px] text-slate-500">{s.k}</p>
+              <p className={cn('mt-0.5 text-sm font-bold sm:text-base', s.c)}>{s.v}</p>
+            </div>
+          ))}
+        </div>
+        <p className="mt-4 text-xs font-medium text-slate-500">Beds</p>
+        <div className="mt-2 grid grid-cols-10 gap-1.5">
+          {BED_STATES.map((s, i) => (
+            <span key={i} className={cn('h-5 rounded', s === 'o' ? 'bg-brand-500' : s === 'v' ? 'border border-dashed border-slate-300 bg-white' : 'bg-amber-400')} />
+          ))}
+        </div>
+        <div className="mt-3 flex gap-4 text-[11px] text-slate-500">
+          <span className="flex items-center gap-1">
+            <span className="h-2.5 w-2.5 rounded-sm bg-brand-500" /> Occupied
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="h-2.5 w-2.5 rounded-sm border border-dashed border-slate-300" /> Vacant
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="h-2.5 w-2.5 rounded-sm bg-amber-400" /> Reserved
+          </span>
+        </div>
+      </div>
+      <div className="absolute -bottom-2 left-0 w-64 sm:-bottom-12 rounded-xl border border-slate-200 bg-white p-3 shadow-xl sm:-left-8">
+        <div className="flex items-start gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
+            <IndianRupee className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold">₹6,500 paid by UPI</p>
+            <p className="truncate text-xs text-slate-500">Room 204 · UTR 4182…7731</p>
+          </div>
+        </div>
+        <div className="mt-2.5 grid grid-cols-2 gap-2">
+          <span className="rounded-lg bg-emerald-600 py-1.5 text-center text-xs font-semibold text-white">Verify</span>
+          <span className="rounded-lg border border-slate-200 py-1.5 text-center text-xs font-semibold text-slate-600">Part paid</span>
+        </div>
+      </div>
+      <div className="absolute -right-2 -top-5 hidden rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-lg sm:block">
+        <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+          <Users className="h-3.5 w-3.5 text-brand-600" /> 3 new check-ins today
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function PaymentMock() {
+  return (
+    <div className="mx-auto max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl">
+      <p className="text-sm font-semibold">Payment to verify</p>
+      <div className="mt-4 space-y-2 text-sm">
+        {[
+          ['Hosteler', 'SBH-0012 · Room 204'],
+          ['Bill', '13 Oct – 12 Nov'],
+          ['Paid', '₹6,500'],
+          ['UTR', '418236907731'],
+        ].map(([k, v]) => (
+          <div key={k} className="flex justify-between gap-4">
+            <span className="text-slate-500">{k}</span>
+            <span className="font-medium">{v}</span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-4 space-y-1 rounded-xl bg-slate-50 p-3 text-sm">
+        {[
+          ['Room rent', '₹5,000'],
+          ['Mess', '₹2,200'],
+          ['Electricity', '₹312'],
+        ].map(([k, v]) => (
+          <div key={k} className="flex justify-between">
+            <span className="text-slate-500">{k}</span>
+            <span>{v}</span>
+          </div>
+        ))}
+        <div className="!mt-2 flex justify-between border-t border-slate-200 pt-2 font-semibold">
+          <span>Total</span>
+          <span>₹7,512</span>
+        </div>
+      </div>
+      <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">₹1,012 left — added to next month’s bill</p>
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <span className="rounded-lg bg-brand-600 py-2 text-center text-sm font-semibold text-white">Verify part</span>
+        <span className="rounded-lg border border-slate-200 py-2 text-center text-sm font-semibold text-slate-600">Reject</span>
+      </div>
+    </div>
+  )
+}
+
+function ElectricityMock() {
+  // 62 units × ₹8 = ₹496, split 31 : 31 : 21 days
+  const rows = [
+    { name: 'Rahul', days: 31, amt: 185 },
+    { name: 'Aman', days: 31, amt: 185 },
+    { name: 'Karan', days: 21, amt: 126 },
+  ]
+  return (
+    <div className="mx-auto max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold">Room 105 · Meter reading</p>
+        <span className="shrink-0 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">₹8 / unit</span>
+      </div>
+      <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+        {[
+          ['Period', '1–31 Oct'],
+          ['Units', '62'],
+          ['Bill', '₹496'],
+        ].map(([k, v]) => (
+          <div key={k} className="rounded-xl bg-slate-50 p-2.5">
+            <p className="text-[11px] text-slate-500">{k}</p>
+            <p className="text-sm font-bold">{v}</p>
+          </div>
+        ))}
+      </div>
+      <p className="mt-4 text-xs font-medium text-slate-500">Split by days stayed</p>
+      <div className="mt-2 space-y-2.5">
+        {rows.map((r) => (
+          <div key={r.name}>
+            <div className="flex justify-between text-sm">
+              <span>{r.name}</span>
+              <span className="font-semibold">₹{r.amt}</span>
+            </div>
+            <div className="mt-1 h-2 rounded-full bg-slate-100">
+              <div className="h-2 rounded-full bg-amber-400" style={{ width: `${(r.days / 31) * 100}%` }} />
+            </div>
+            <p className="mt-0.5 text-[11px] text-slate-500">{r.days} days</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function PhoneMock() {
+  return (
+    <div className="mx-auto w-64 rounded-[2.5rem] border-[10px] border-slate-900 bg-slate-900 shadow-2xl">
+      <div className="overflow-hidden rounded-[1.8rem] bg-slate-50">
+        <div className="bg-brand-600 px-4 pb-5 pt-6 text-white">
+          <p className="text-xs text-brand-100">Hi Rahul · SBH-0012</p>
+          <p className="mt-3 text-xs text-brand-100">Due by 13 Nov</p>
+          <p className="text-2xl font-bold">₹7,512</p>
+          <span className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-brand-700">
+            <QrCode className="h-3.5 w-3.5" /> Pay by UPI
+          </span>
+        </div>
+        <div className="space-y-2 p-3">
+          {[
+            { icon: <UtensilsCrossed className="h-4 w-4" />, t: 'Today’s mess', s: 'Rajma chawal, salad' },
+            { icon: <Bell className="h-4 w-4" />, t: 'Notice', s: 'Water off 2–4 pm Sunday' },
+            { icon: <MessageSquareWarning className="h-4 w-4" />, t: 'Complaint', s: 'Fan fixed · Resolved' },
+            { icon: <ShieldCheck className="h-4 w-4" />, t: 'Receipts', s: '3 payments verified' },
+          ].map((r) => (
+            <div key={r.t} className="flex items-center gap-2.5 rounded-xl bg-white p-2.5 shadow-sm">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-brand-600">{r.icon}</span>
+              <div className="min-w-0">
+                <p className="text-xs font-semibold">{r.t}</p>
+                <p className="truncate text-[11px] text-slate-500">{r.s}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="flex justify-around border-t border-slate-200 bg-white py-2.5 text-slate-400">
+          <Smartphone className="h-4 w-4 text-brand-600" />
+          <Wallet className="h-4 w-4" />
+          <UtensilsCrossed className="h-4 w-4" />
+          <Users className="h-4 w-4" />
+        </div>
+      </div>
     </div>
   )
 }
